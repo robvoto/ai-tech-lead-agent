@@ -1,0 +1,18 @@
+# Python Bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual Environments (managed by uv)
+.venv/
+
+# Local Data and Databases
+data/
+*.sqlite3
+
+# Logs
+logs/
+
+# Environment Variables and Secrets
+.env
+.python-version
