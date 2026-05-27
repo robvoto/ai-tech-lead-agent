@@ -16,3 +16,9 @@ logs/
 # Environment Variables and Secrets
 .env
 .python-version
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+*.egg

@@ -1,7 +1,0 @@
-Metadata-Version: 2.4
-Name: ai-tech-lead
-Version: 0.1.0
-Summary: Local AI Technical Lead Assistant
-Requires-Python: >=3.14
-Requires-Dist: langgraph
-Requires-Dist: langchain-core
