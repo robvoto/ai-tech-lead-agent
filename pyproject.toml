@@ -2,7 +2,7 @@
 name = "ai-tech-lead"
 version = "0.1.0"
 description = "Local AI Technical Lead Assistant"
-requires-python = ">=3.13"
+requires-python = ">=3.13,<3.14"
 
 dependencies = [
   "langgraph",
