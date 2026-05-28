@@ -1,7 +1,6 @@
 from ai_tech_lead.config import PROJECT_ROOT
+from ai_tech_lead.brief_graph import run_sample_graph
 from ai_tech_lead.storage import initialize_database
-
-
  
 
 def main() -> None:
