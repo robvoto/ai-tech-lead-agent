@@ -12,8 +12,6 @@ Use this file as the source of truth for current planning:
 
 - VS Code app: Windows
 - Runtime/backend: WSL Ubuntu
-- Windows path: `E:\Programming\ai-tech-lead`
-- WSL path: `/mnt/e/Programming/ai-tech-lead`
 
 ## Current focus
 
