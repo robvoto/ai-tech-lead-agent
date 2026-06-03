@@ -1,6 +1,6 @@
-# Initial Plan
+# AI Technical Lead Agent - Project Plan and Notes
 
-## Source of truth
+## Durable hook
 
 This file is the durable planning hook for future chats:
 
@@ -8,25 +8,9 @@ This file is the durable planning hook for future chats:
 E:\Programming\ai-tech-lead\docs\plan\INITIAL_PLAN.md
 ```
 
-Future project sessions should read this file before proposing architecture or implementation steps.
+Future project sessions should read this file before proposing architecture, setup, or implementation steps.
 
-Current project root:
-
-```text
-E:\Programming\ai-tech-lead
-```
-
-WSL path:
-
-```text
-/mnt/e/Programming/ai-tech-lead
-```
-
-Do not move the repo yet. A possible future native WSL location is:
-
-```text
-~/projects/ai-tech-lead
-```
+Do not move or delete this file.
 
 ## Project identity
 
@@ -34,22 +18,150 @@ Build a local AI Technical Lead Assistant.
 
 The assistant should supervise coding tools rather than replace them.
 
-It should help plan work, prepare execution briefs, review outputs, manage task context, and keep token/cost usage controlled.
+Primary goal:
+- learning modern AI orchestration
+- controlling token/cost usage
+- building enterprise-relevant AI workflow experience
+- creating a demonstrable portfolio project
 
-A major purpose of this project is to prevent common coding-agent failure modes:
-
+The system should prevent common coding-agent failure modes:
 - doing more than requested
 - making risky changes without approval
 - adding unapproved fallbacks
 - preserving useless legacy code
 - leaving unused code
-- hardcoding small sample heuristics
-- skipping help text/docstrings where purpose is not obvious
+- hardcoding sample heuristics as general rules
+- skipping useful help text/docstrings
 - claiming completion without evidence
 
-## Confirmed environment
+## Current project root
 
-Use the Windows VS Code application opened in WSL mode.
+Windows path:
+
+```text
+E:\Programming\ai-tech-lead
+```
+
+WSL runtime path:
+
+```text
+/mnt/e/Programming/ai-tech-lead
+```
+
+Correct runtime terminal:
+
+```text
+robvoto@LAPOTENTE:/mnt/e/Programming/ai-tech-lead$
+```
+
+Wrong runtime terminal:
+
+```text
+PS E:\Programming\ai-tech-lead>
+```
+
+Do not use PowerShell as the project runtime terminal.
+
+## Current preferred stack
+
+- Python 3.13
+- WSL2 Ubuntu runtime
+- Windows VS Code opened in WSL mode
+- uv
+- LangGraph ecosystem
+- LangGraph Studio for visual/debug runs
+- SQLite
+- Later: Telegram Bot API, LiteLLM, Deep Agents, Codex/Claude/Gemini routing
+
+## Normal project commands
+
+From WSL:
+
+```bash
+cd /mnt/e/Programming/ai-tech-lead
+uv run python -m ai_tech_lead
+```
+
+Check project Python:
+
+```bash
+uv run python --version
+```
+
+Expected:
+
+```text
+Python 3.13.x
+```
+
+Validate LangGraph import:
+
+```bash
+uv run python -c "from langgraph.graph import StateGraph, START, END; print('LangGraph OK')"
+```
+
+Expected:
+
+```text
+LangGraph OK
+```
+
+Use `uv run ...` for project commands. Do not rely on plain `python3`, because that shows Ubuntu system Python.
+
+## Local admin app
+
+Run the local admin screen from WSL:
+
+```bash
+cd /mnt/e/Programming/ai-tech-lead
+uv run python -m ai_tech_lead --admin
+```
+
+Current default admin URL:
+
+```text
+http://127.0.0.1:8766/
+```
+
+Current settings API:
+
+```text
+http://127.0.0.1:8766/api/settings
+```
+
+The admin screen is a local HTML page served by Python:
+
+```text
+src/ai_tech_lead/admin/admin.html
+src/ai_tech_lead/admin/admin.js
+src/ai_tech_lead/admin_server.py
+```
+
+The JavaScript is intentionally separate from the HTML.
+
+The admin screen edits this JSON settings file through the API:
+
+```text
+config/settings.json
+```
+
+Python validates settings before saving them. The JSON contains adjustable
+prototype settings for values the app currently consumes: backlog path and
+runtime limit.
+
+Agent policy and prompt management are intentionally not exposed in the admin
+screen yet. Do not add edit scope, directory allowlists, model routing, tool
+permissions, or prompt-template management to admin until the application has a
+real agent-profile layer that consumes those settings.
+
+## VS Code / WSL rule
+
+Open the project from WSL:
+
+```bash
+cd /mnt/e/Programming/ai-tech-lead
+code .
+```
 
 Expected VS Code indicator:
 
@@ -57,188 +169,321 @@ Expected VS Code indicator:
 AI-TECH-LEAD [WSL: UBUNTU]
 ```
 
-Runtime commands must run from Ubuntu/WSL using:
+Select interpreter:
 
-```bash
-cd /mnt/e/Programming/ai-tech-lead
+```text
+/mnt/e/Programming/ai-tech-lead/.venv/bin/python
 ```
 
-Do not use PowerShell as the project runtime terminal.
+If VS Code shows Windows Python paths, the project is not open in WSL mode.
 
-Python/runtime:
+## Dependency workflow
 
-- Python: 3.13
-- Environment/dependency manager: uv
-- Dependency files: `pyproject.toml` and `uv.lock`
-- No `requirements.txt` unless a specific future deployment/tool requires it
+Use uv.
 
-Normal project run:
+Do not use raw pip, manual venv activation, or `requirements.txt` as the normal workflow.
+
+Useful commands:
 
 ```bash
-cd /mnt/e/Programming/ai-tech-lead
-uv run python -m ai_tech_lead
+uv sync --link-mode=copy
+uv add package-name
+uv add --dev "langgraph-cli[inmem]"
 ```
 
-LangGraph Studio/dev server run:
+Use `--link-mode=copy` because the repo is currently under `/mnt/e`, a Windows-mounted drive.
+
+## LangGraph Studio / local server
+
+Studio is a visual debugging UI. It does not replace VS Code.
+
+Run local server:
 
 ```bash
 cd /mnt/e/Programming/ai-tech-lead
 uv run langgraph dev
 ```
 
-One-time setup for Studio CLI, if missing:
-
-```bash
-uv add --dev "langgraph-cli[inmem]"
-```
-
-## Current LangGraph Studio status
-
-LangGraph Studio is a separate visual/debug workflow from the normal project run.
-
-Studio connects to a local server at:
+Expected local API:
 
 ```text
 http://127.0.0.1:2024
 ```
 
-Browser URL:
-
-```text
-https://smith.langchain.com/studio/thread?baseUrl=http%3A%2F%2F127.0.0.1%3A2024&mode=graph&render=interact
-```
-
-Current graph config is in:
-
-```text
-langgraph.json
-```
-
-Current graph mapping:
+Current `langgraph.json` mapping:
 
 ```json
 {
   "graphs": {
-    "brief_graph": "./src/ai_tech_lead/brief_graph.py:graph"
+    "coding_workflow_graph": "./src/ai_tech_lead/coding_workflow_graph.py:graph"
   }
 }
 ```
 
-## Primary goals
+Studio should import the exported `graph` object from:
 
-- Learn modern AI orchestration
-- Build enterprise-relevant AI engineering experience
-- Control token and model costs
-- Create a demonstrable portfolio project
-- Keep the system understandable and locally runnable
-- Build a supervising assistant that keeps coding agents scoped, safe, and evidence-based
+```text
+src/ai_tech_lead/coding_workflow_graph.py
+```
 
-## Assistant behaviour
+Important: the exported Studio graph must not pass `MemorySaver()`. LangGraph API / Studio provides persistence.
 
-The assistant should:
+Use `MemorySaver()` only in the local terminal demo runner.
 
-- Read backlog and task context carefully
-- Avoid full backlog or full repo reads by default
-- Use a compact backlog index/cache where possible
-- Fetch only specific rows, tasks, or files when needed
-- Create high-level execution briefs for coding agents
-- Ask for approval when scope, cost, or risk is unclear
-- Monitor token and cost usage
-- Update backlog and status notes only with evidence
-- Improve skills and Markdown instruction files only after showing proposed changes
-- Stop coding agents before broad, unrelated, risky, or unclear work
-- Require help text or module/function purpose text where future maintainers need it
-- Reject unapproved broad fallbacks, hidden defaults, and sample-only heuristics
-- Prefer explicit errors over silent fallback behaviour
-- Remove unused code and dead paths instead of preserving legacy code by default
+LangSmith tracing errors such as `403 Forbidden` are separate from the graph logic. For local graph learning, tracing can be disabled with:
 
-## Preferred stack
+```text
+LANGSMITH_TRACING=false
+LANGCHAIN_TRACING_V2=false
+```
 
-- Python 3.13
-- WSL2 Ubuntu runtime
-- Windows VS Code app with WSL backend
-- Deep Agents
-- LangGraph ecosystem
-- LiteLLM
-- uv
-- Telegram Bot API
-- SQLite
+## Current graph status
+
+Core graph file:
+
+```text
+src/ai_tech_lead/coding_workflow_graph.py
+```
+
+Normal CLI runner:
+
+```text
+src/ai_tech_lead/backlog_graph_runner.py
+```
+
+Backlog loader:
+
+```text
+src/ai_tech_lead/backlog_loader.py
+```
+
+Coding-agent subprocess runner:
+
+```text
+src/ai_tech_lead/coding_agent_runner.py
+```
+
+Current graph flow:
+
+```text
+read_request
+→ check_approval
+→ create_brief
+→ if approval required: approval_required interrupt → route by approved flag
+    → approved=True: create_agent_instruction → run_coding_agent → end_node → END
+    → approved=False: end_node → END
+→ if approval not required: create_agent_instruction → run_coding_agent → end_node → END
+```
+
+Current state fields:
+
+```text
+request
+brief
+needs_approval
+approval_reason
+approved
+agent_instruction
+coding_agent_result
+```
+
+Current behaviour:
+- Reads backlog item by explicit `--task-id`.
+- Converts it into graph state.
+- Uses explicit backlog approval fields instead of keyword risk heuristics.
+- Creates a bounded execution brief.
+- Pauses before `approval_required` when the backlog item requires approval.
+- Stores the generated coding-agent instruction in `state["agent_instruction"]`.
+- Runs `run_coding_agent` node after instruction creation.
+- Codex execution is controlled by settings and CLI override, and is currently safe when disabled.
+- Stores the coding-agent subprocess summary in `state["coding_agent_result"]`.
+
+## Backlog rule
+
+Current local backlog:
+
+```text
+docs/BACKLOG.md
+```
+
+Backlog selection must not be hidden.
+
+Normal prototype selection should use explicit ID:
+
+```python
+load_backlog_item_by_id("JH-001")
+```
+
+Demo-only selection is allowed only if the function name says so, for example:
+
+```python
+load_first_backlog_item_for_demo()
+```
+
+Do not silently select the first task in production-like flow.
 
 ## Initial prototype scope
 
-Start small. The first working version should include:
+The first useful prototype should include:
 
-1. Telegram message input
-2. Deep Agent execution
-3. One coding model call
-4. Basic backlog management
-5. One approval workflow
-6. Token usage logging
-7. Simple persistent memory
+1. Read one backlog task by explicit ID.
+2. Create a bounded execution brief.
+3. Pause for human approval when the backlog item requires approval.
+4. Store an agent instruction package in graph state.
+5. Run a controlled coding-agent subprocess node.
+6. Keep real coding-agent execution disabled unless explicitly enabled.
+7. Capture coding-agent stdout/stderr/result back into graph state.
+8. Log validation evidence.
+9. Add basic token/cost logging later, before real model usage grows.
 
-## Backlog handling rule
-
-Do not read a whole backlog by default.
-
-Preferred flow:
-
-1. Read compact backlog index/cache
-2. Identify likely task IDs or rows
-3. Fetch only the specific task detail needed
-4. Create a concise execution brief
-5. Ask for approval if scope or risk is unclear
-6. Update status only after evidence is available
-
-## Coding-agent supervision model
-
-Execution briefs should include:
-
-- Task objective
-- Relevant files only
-- Constraints
-- Acceptance criteria
-- Cost/risk notes
-- What not to touch
-- Expected output format
-- Required help text or docstring expectations
-- No unapproved fallbacks, heuristics, or legacy compatibility paths
-
-The assistant should review results before accepting them.
-
-The assistant should flag or stop coding-agent work when it sees:
-
-- unrelated file changes
-- broad refactors not requested
-- fallback logic added without approval
-- hardcoded small lists used as general rules
-- unused code or dead branches left behind
-- missing help text/docstrings where purpose is not obvious
-- hidden defaults or swallowed errors
-- claims of completion without test or runtime evidence
-
-## Learning workflow
-
-For each baby step:
-
-1. Explain the concept in plain English.
-2. Point to the relevant LangChain Academy lesson when possible.
-3. Describe the expected input and output in normal language.
-4. Let the human code a small version where useful.
-5. Review and correct only what is needed.
-6. Run the smallest validation.
-7. Explain the result.
-
-## Not in initial scope
-
+Not in initial scope:
 - RAG
-- Complex multi-agent architecture
-- Large memory architecture
-- Full IDE replacement
-- Unbounded retry loops
-- Large repository scans without a reason
+- full autonomous company/agent
+- broad multi-agent ecosystem
+- full IDE replacement
+- unbounded retry loops
+- large repo scans without reason
 
-## Next step
+## LangGraph learning notes
 
-Use LangChain Academy `module-1/simple-graph.ipynb` as the learning guide for the first LangGraph concept: state, node, edge, compile, invoke.
+### Node name vs function
 
-Then build a tiny local graph that turns a user request into a plain execution brief without using an LLM yet.
+In LangGraph:
+
+```python
+workflow.add_node("approval_required", approval_required_node)
+```
+
+means:
+- `"approval_required"` is the graph node name.
+- `approval_required_node` is the Python function that runs.
+
+A routing function returns the next node name, not a Python function.
+
+### Conditional routing
+
+Use explicit `path_map` for conditional edges so Studio diagrams stay readable.
+
+Preferred project pattern:
+
+```python
+workflow.add_conditional_edges(
+    NodeName.CREATE_BRIEF,
+    route_after_brief,
+    {
+        NodeName.APPROVAL_REQUIRED: NodeName.APPROVAL_REQUIRED,
+        NodeName.EXECUTE_TASK: NodeName.EXECUTE_TASK,
+    },
+)
+```
+
+### StrEnum convention
+
+The project currently uses `StrEnum` for node names once the graph has enough nodes that repeated strings become error-prone.
+
+This is a maintainability choice, not a LangGraph requirement.
+
+### Interrupt style currently used
+
+Current graph uses:
+
+```python
+interrupt_before=[NodeName.APPROVAL_REQUIRED]
+```
+
+This means:
+
+```text
+If the graph is about to enter approval_required, pause first.
+```
+
+For this breakpoint style, resume local terminal execution with:
+
+```python
+app.invoke(None, config=thread_config)
+```
+
+Do not use `app.resume(...)`; that method does not exist.
+
+Do not confuse this with `interrupt(...)` inside a node, which uses a different resume pattern.
+
+### Checkpointer / thread mental model
+
+Checkpoint:
+- saved snapshot of graph state and next node.
+
+MemorySaver:
+- temporary local checkpoint storage for the terminal demo.
+
+thread_id:
+- ID/name of one graph run, so LangGraph knows which paused run to resume.
+
+## Source priority for LangGraph questions
+
+Use sources in this order:
+1. Official LangChain / LangGraph / LangSmith docs.
+2. Official Python docs.
+3. LangGraph GitHub source/docstrings if docs are unclear.
+4. LangChain Academy material as learning examples only.
+5. Blogs/videos/forums/AI answers only as secondary clues.
+
+Academy material is useful for learning concepts, but it is not the production architecture source of truth.
+
+## Project operating rules
+
+- Inspect current code before giving code-specific advice.
+- Do not guess when current code or official docs can be checked.
+- Keep changes small and bounded.
+- Do not create hidden autonomous behaviour.
+- Do not hardcode hidden choices.
+- Do not mask failures with broad fallback logic or silent defaults.
+- Ask for approval before destructive, broad, risky, ambiguous, or expensive actions.
+- Touch only files required for the task.
+- Add concise help text/comments when behaviour is not obvious.
+- Do not claim done without validation evidence.
+
+## Skills
+
+Current project skills:
+
+```text
+.skills/code-change/SKILL.md
+.skills/backlog-management/SKILL.md
+.skills/instruction-maintenance/SKILL.md
+```
+
+Use only the one relevant skill before acting.
+
+Do not copy Job Hunter-specific skills into this project unless they are truly project-agnostic.
+
+## Testing rule
+
+Use risk-based validation:
+- For code changes, run the smallest relevant validation command.
+- For graph changes, test the affected route.
+- For startup/config changes, run app startup.
+- For instruction-only changes, check the file structure and avoid code validation unless required.
+
+Record the validation command/result before calling work done.
+
+## Current next step
+
+Next important implementation step:
+
+```text
+Inspect and harden the real coding-agent execution path before enabling Codex.
+```
+
+Purpose:
+- Confirm `coding_agent_runner.py` uses `subprocess.run` safely.
+- Confirm `shell=False`.
+- Confirm execution is disabled by default.
+- Confirm `--execute-coding-agent` is the only normal CLI path that enables real Codex execution.
+- Confirm the graph records the result in `state["coding_agent_result"]`.
+- Add a `restart_required` state flag if Codex changes files under `src/ai_tech_lead`.
+
+After that:
+
+```text
+Run one small real Codex task from a safe backlog item and inspect the graph state/result.
+```

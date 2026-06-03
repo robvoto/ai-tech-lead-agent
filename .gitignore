@@ -30,4 +30,3 @@ build/
 dist/
 *.egg-info/
 *.egg
-$p

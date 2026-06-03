@@ -1,4 +1,4 @@
-"""Validated settings for the local coding-agent supervisor."""
+"""Validated local settings for the AI Tech Lead prototype."""
 
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ from ai_tech_lead.config import SETTINGS_PATH
 REQUIRED_PROMPTS = {
     "execution_brief_template": {
         "acceptance_criteria",
+        "approval_reason",
         "constraint_list",
         "relevant_files",
         "request",
@@ -21,6 +22,7 @@ REQUIRED_PROMPTS = {
     },
     "agent_instruction_template": {
         "allowed_directories",
+        "approval_reason",
         "approved",
         "brief",
         "max_runtime_minutes",
@@ -31,21 +33,24 @@ REQUIRED_PROMPTS = {
 
 
 @dataclass(frozen=True)
-class CodingAgentSettings:
-    """Settings that control coding-agent supervision behaviour."""
+class AppSettings:
+    """Small local settings that are real inputs to the current prototype."""
 
+    backlog_path: str
     max_runtime_minutes: int
+    coding_agent_command: str
+    coding_agent_args: list[str]
+    execute_coding_agent: bool
     allowed_directories: list[str]
     watched_directories: list[str]
-    risk_terms: list[str]
     brief_constraints: list[str]
     acceptance_criteria: list[str]
     risk_notes: list[str]
     prompts: dict[str, str]
 
 
-def load_settings(settings_path: Path = SETTINGS_PATH) -> CodingAgentSettings:
-    """Load and validate coding-agent settings from JSON."""
+def load_settings(settings_path: Path = SETTINGS_PATH) -> AppSettings:
+    """Load and validate local app settings from JSON."""
 
     if not settings_path.exists():
         raise FileNotFoundError(f"Settings file not found: {settings_path}")
@@ -59,32 +64,56 @@ def load_settings(settings_path: Path = SETTINGS_PATH) -> CodingAgentSettings:
     return parse_settings(raw_settings)
 
 
-def save_settings(settings: CodingAgentSettings, settings_path: Path = SETTINGS_PATH) -> None:
-    """Write validated coding-agent settings to JSON."""
+def save_settings(settings: AppSettings, settings_path: Path = SETTINGS_PATH) -> None:
+    """Write validated local app settings to JSON."""
 
     settings_path.parent.mkdir(parents=True, exist_ok=True)
     settings_path.write_text(
-        json.dumps(_settings_to_dict(settings), indent=2) + "\n",
+        json.dumps(settings_to_dict(settings), indent=2) + "\n",
         encoding="utf-8",
     )
 
 
-def parse_settings(raw_settings: dict[str, Any]) -> CodingAgentSettings:
+def parse_settings(raw_settings: dict[str, Any]) -> AppSettings:
     """Convert raw JSON data into validated settings."""
 
-    settings = CodingAgentSettings(
+    settings = AppSettings(
+        backlog_path=_required_string(raw_settings, "backlog_path"),
         max_runtime_minutes=_required_positive_int(raw_settings, "max_runtime_minutes"),
+        coding_agent_command=_required_string(raw_settings, "coding_agent_command"),
+        coding_agent_args=_required_string_list(
+            raw_settings,
+            "coding_agent_args",
+            allow_empty=True,
+        ),
+        execute_coding_agent=_required_bool(raw_settings, "execute_coding_agent"),
         allowed_directories=_required_string_list(raw_settings, "allowed_directories"),
         watched_directories=_required_string_list(raw_settings, "watched_directories"),
-        risk_terms=_required_string_list(raw_settings, "risk_terms"),
         brief_constraints=_required_string_list(raw_settings, "brief_constraints"),
         acceptance_criteria=_required_string_list(raw_settings, "acceptance_criteria"),
         risk_notes=_required_string_list(raw_settings, "risk_notes"),
         prompts=_required_prompt_map(raw_settings),
     )
-
     _validate_prompt_placeholders(settings.prompts)
     return settings
+
+
+def settings_to_dict(settings: AppSettings) -> dict[str, Any]:
+    """Convert validated settings into JSON-serializable data."""
+
+    return {
+        "backlog_path": settings.backlog_path,
+        "max_runtime_minutes": settings.max_runtime_minutes,
+        "coding_agent_command": settings.coding_agent_command,
+        "coding_agent_args": settings.coding_agent_args,
+        "execute_coding_agent": settings.execute_coding_agent,
+        "allowed_directories": settings.allowed_directories,
+        "watched_directories": settings.watched_directories,
+        "brief_constraints": settings.brief_constraints,
+        "acceptance_criteria": settings.acceptance_criteria,
+        "risk_notes": settings.risk_notes,
+        "prompts": settings.prompts,
+    }
 
 
 def _required_positive_int(raw_settings: dict[str, Any], key: str) -> int:
@@ -94,16 +123,34 @@ def _required_positive_int(raw_settings: dict[str, Any], key: str) -> int:
     return value
 
 
-def _required_string_list(raw_settings: dict[str, Any], key: str) -> list[str]:
+def _required_string(raw_settings: dict[str, Any], key: str) -> str:
+    value = raw_settings.get(key)
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"Setting '{key}' must be a non-empty string.")
+    return value.strip()
+
+
+def _required_string_list(
+    raw_settings: dict[str, Any],
+    key: str,
+    allow_empty: bool = False,
+) -> list[str]:
     value = raw_settings.get(key)
     if not isinstance(value, list):
         raise ValueError(f"Setting '{key}' must be a list of strings.")
 
     cleaned_values = [item.strip() for item in value if isinstance(item, str) and item.strip()]
-    if len(cleaned_values) != len(value) or not cleaned_values:
-        raise ValueError(f"Setting '{key}' must contain at least one non-empty string.")
+    if len(cleaned_values) != len(value) or (not allow_empty and not cleaned_values):
+        raise ValueError(f"Setting '{key}' must contain non-empty strings.")
 
     return cleaned_values
+
+
+def _required_bool(raw_settings: dict[str, Any], key: str) -> bool:
+    value = raw_settings.get(key)
+    if not isinstance(value, bool):
+        raise ValueError(f"Setting '{key}' must be a boolean.")
+    return value
 
 
 def _required_prompt_map(raw_settings: dict[str, Any]) -> dict[str, str]:
@@ -139,16 +186,3 @@ def _validate_prompt_placeholders(prompts: dict[str, str]) -> None:
             raise ValueError(
                 f"Prompt '{prompt_name}' has unknown placeholders: {unexpected}"
             )
-
-
-def _settings_to_dict(settings: CodingAgentSettings) -> dict[str, Any]:
-    return {
-        "max_runtime_minutes": settings.max_runtime_minutes,
-        "allowed_directories": settings.allowed_directories,
-        "watched_directories": settings.watched_directories,
-        "risk_terms": settings.risk_terms,
-        "brief_constraints": settings.brief_constraints,
-        "acceptance_criteria": settings.acceptance_criteria,
-        "risk_notes": settings.risk_notes,
-        "prompts": settings.prompts,
-    }

@@ -9,6 +9,7 @@ Use before modifying existing code.
 
 ## Rules
 - Inspect the target file before editing.
+- Check `docs/ARCHITECTURE.md` before changing adapters, graph flow, settings, subprocess execution, or UI boundaries.
 - Touch only files required for the task.
 - Keep changes small and scoped.
 - Prefer small, single-purpose modules over monoliths.
@@ -28,6 +29,7 @@ Use before modifying existing code.
 
 ## Testing
 Use risk-based validation:
+- Use `uv run pytest` as the default core validation command when the change touches tested Python behavior.
 - Run the smallest command that proves the changed behaviour.
 - Add adjacent validation when a change crosses graph routing, persistence, CLI startup, logging, or config boundaries.
 - Record the exact validation command before calling work done.

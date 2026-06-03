@@ -4,9 +4,10 @@ Local AI Technical Lead Assistant project.
 
 ## Source of truth
 
-Read this first for planning and current project direction:
+Read these first for current project direction and structure:
 
 ```text
+docs/ARCHITECTURE.md
 docs/plan/INITIAL_PLAN.md
 ```
 
@@ -25,7 +26,31 @@ Run from Ubuntu/WSL:
 
 ```bash
 cd /mnt/e/Programming/ai-tech-lead
-uv run python -m ai_tech_lead
+uv run python -m ai_tech_lead --task-id JH-001
+```
+
+Real coding-agent execution is disabled unless explicitly requested:
+
+```bash
+uv run python -m ai_tech_lead --task-id JH-001 --execute-coding-agent
+```
+
+## Tests
+
+Run the core test suite:
+
+```bash
+uv run pytest
+```
+
+The default tests should stay fast and should not call real coding agents.
+
+## Local admin screen
+
+Run from Ubuntu/WSL:
+
+```bash
+uv run python -m ai_tech_lead --admin
 ```
 
 ## LangGraph Studio run
@@ -37,12 +62,9 @@ cd /mnt/e/Programming/ai-tech-lead
 uv run langgraph dev
 ```
 
-Then open the APAC Studio connection documented in:
-
-```text
-docs/setup/03-first-run.md
-```
-
 ## Current focus
 
-Start with a small local prototype that can receive Telegram input, create controlled execution briefs, call one coding model, log token/cost usage, and pause for approval when needed.
+Start with a small local prototype that can receive explicit local tasks, create
+controlled execution briefs, call one coding agent when explicitly enabled, and
+pause for approval when needed. Telegram or similar chat input should be added as
+an adapter around the core workflow, not baked into the graph.

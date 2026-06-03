@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AI Tech Lead Admin</title>
+  <link rel="stylesheet" href="/admin.css">
+</head>
+<body>
+<main>
+  <h1>AI Tech Lead Admin</h1>
+  <p class="screen-note">
+    This screen edits the JSON settings file through the local API. Python still
+    validates the values before saving them.
+  </p>
+  <p class="screen-note">
+    Approval is currently controlled by each backlog item. A future LLM review
+    node will replace this temporary manual approval flag.
+  </p>
+  <p id="status" class="status"></p>
+  <form id="settings-form">
+    <fieldset>
+      <legend>Runtime</legend>
+      <label>
+        Backlog path
+        <span class="field-help">Markdown backlog file to read. Relative paths resolve from the project root.</span>
+        <input name="backlog_path">
+      </label>
+      <label>
+        Max runtime minutes
+        <span class="field-help">Time limit written into the coding-agent instruction package.</span>
+        <input name="max_runtime_minutes" type="number" min="1">
+      </label>
+      <label>
+        Coding agent command
+        <span class="field-help">Executable used for the separate coding-agent subprocess.</span>
+        <input name="coding_agent_command">
+      </label>
+      <label>
+        Coding agent args
+        <span class="field-help">One subprocess argument per line. The generated instruction is appended after these args.</span>
+        <textarea name="coding_agent_args"></textarea>
+      </label>
+      <label>
+        <input name="execute_coding_agent" type="checkbox">
+        Execute coding agent
+        <span class="field-help">Codex can modify files on disk. Restart Python to load code changes made by Codex.</span>
+      </label>
+    </fieldset>
+    <fieldset>
+      <legend>Directories</legend>
+      <label>
+        Allowed directories
+        <span class="field-help">Paths written into the bounded coding-agent instructions.</span>
+        <textarea name="allowed_directories"></textarea>
+      </label>
+      <label>
+        Watched directories
+        <span class="field-help">Paths listed as likely context in generated briefs.</span>
+        <textarea name="watched_directories"></textarea>
+      </label>
+    </fieldset>
+    <fieldset>
+      <legend>Brief Content</legend>
+      <label>
+        Brief constraints
+        <span class="field-help">Constraint bullets inserted into generated briefs.</span>
+        <textarea name="brief_constraints"></textarea>
+      </label>
+      <label>
+        Acceptance criteria
+        <span class="field-help">Evidence bullets expected before work is accepted.</span>
+        <textarea name="acceptance_criteria"></textarea>
+      </label>
+      <label>
+        Risk notes
+        <span class="field-help">Notes shown in generated briefs. This is not keyword risk detection.</span>
+        <textarea name="risk_notes"></textarea>
+      </label>
+    </fieldset>
+    <fieldset>
+      <legend>Prompts</legend>
+      <label>
+        Execution brief template
+        <span class="field-help">Template for the generated execution brief. Required placeholders are validated on save.</span>
+        <textarea name="execution_brief_template" class="prompt"></textarea>
+      </label>
+      <label>
+        Agent instruction template
+        <span class="field-help">Template for the bounded coding-agent instruction text.</span>
+        <textarea name="agent_instruction_template" class="prompt"></textarea>
+      </label>
+    </fieldset>
+    <button type="submit">Save settings</button>
+  </form>
+</main>
+<script type="module" src="/admin.js"></script>
+</body>
+</html>

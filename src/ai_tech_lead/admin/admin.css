@@ -1,0 +1,97 @@
+:root {
+  color-scheme: light;
+  font-family: Arial, Helvetica, sans-serif;
+  line-height: 1.4;
+  color: #202124;
+  background: #f6f7f9;
+}
+
+body {
+  margin: 0;
+  padding: 28px;
+}
+
+main {
+  max-width: 980px;
+  margin: 0 auto;
+}
+
+h1 {
+  margin: 0 0 18px;
+  font-size: 30px;
+}
+
+form {
+  display: grid;
+  gap: 16px;
+}
+
+fieldset {
+  border: 1px solid #d6dae0;
+  border-radius: 8px;
+  padding: 16px;
+  background: #ffffff;
+}
+
+legend {
+  font-weight: 700;
+  padding: 0 6px;
+}
+
+label {
+  display: grid;
+  gap: 6px;
+  margin: 12px 0;
+  font-weight: 700;
+}
+
+input,
+textarea {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid #c6ccd4;
+  border-radius: 6px;
+  padding: 9px 10px;
+  font: inherit;
+}
+
+textarea {
+  min-height: 110px;
+  resize: vertical;
+  font-family: Consolas, "Liberation Mono", monospace;
+}
+
+.prompt {
+  min-height: 220px;
+}
+
+button {
+  width: fit-content;
+  border: 0;
+  border-radius: 6px;
+  padding: 10px 14px;
+  font: inherit;
+  font-weight: 700;
+  color: #ffffff;
+  background: #11695e;
+  cursor: pointer;
+}
+
+.status {
+  min-height: 22px;
+  margin: 0 0 14px;
+  color: #7a3f00;
+  font-weight: 700;
+}
+
+.screen-note,
+.field-help {
+  margin: 0 0 10px;
+  color: #4b5563;
+  font-size: 14px;
+  font-weight: 400;
+}
+
+.field-help {
+  margin-top: -4px;
+}

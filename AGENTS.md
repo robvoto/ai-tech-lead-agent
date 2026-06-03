@@ -17,14 +17,15 @@ Initial scope:
 - Create a bounded execution brief.
 - Pause for human approval when risky.
 - Prepare a coding-agent instruction package.
-- Later route approved work to Codex, Claude Code, or Gemini.
+- Run Codex only through the controlled coding-agent execution path.
+- Later add other approved coding-agent providers behind the same runner boundary.
 
 ## Source hierarchy
 
 - `AGENTS.md`: project-wide rules.
 - `.skills/*/SKILL.md`: scoped rules loaded only for that work area.
-- `docs/plan/INITIAL_PLAN.md`: durable project plan and direction. 
-- `docs/reference/*`: learning notes and source-backed references.
+- `docs/ARCHITECTURE.md`: durable module boundaries, adapter strategy, and test strategy.
+- `docs/plan/INITIAL_PLAN.md`: durable project plan, setup notes, LangGraph notes, and current direction.
 - `docs/BACKLOG.md`: current local prototype backlog.
 
 ## Skill routing
@@ -40,7 +41,10 @@ Do not read all skills. Choose the one best matching the task.
 ## Non-negotiables
 
 - Never guess when current code or docs can be checked.
+- Follow `docs/ARCHITECTURE.md` for module boundaries before adding new adapters, graph nodes, settings, or runner behavior.
 - Keep work bounded and small.
+- Prototype scope does not justify throwaway patterns. Use maintainable module boundaries, explicit validation, and code structure that can grow without a planned migration.
+- Browser JavaScript must use ES modules. Load scripts with `type="module"` and prefer module imports/exports over global script patterns as frontend code grows.
 - Do not create hidden autonomous behaviour.
 - Do not hardcode hidden choices. If a default exists, name it as demo or fallback explicitly.
 - Human approval is required for destructive, broad, risky, ambiguous, or expensive actions.
