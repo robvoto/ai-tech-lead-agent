@@ -1,0 +1,38 @@
+{
+  "max_runtime_minutes": 20,
+  "allowed_directories": [
+    "src/ai_tech_lead",
+    "docs",
+    "tests"
+  ],
+  "watched_directories": [
+    "src/ai_tech_lead",
+    "docs"
+  ],
+  "risk_terms": [
+    "delete",
+    "remove",
+    "refactor",
+    "rewrite",
+    "all files",
+    "entire project"
+  ],
+  "brief_constraints": [
+    "Keep the change small",
+    "Do not touch unrelated files",
+    "Do not add fallback logic without approval",
+    "Do not claim completion without validation evidence"
+  ],
+  "acceptance_criteria": [
+    "Code runs successfully",
+    "Changed files are listed",
+    "Validation command and result are reported"
+  ],
+  "risk_notes": [
+    "Human approval required before broad refactors or destructive changes"
+  ],
+  "prompts": {
+    "execution_brief_template": "Request:\n- {request}\n\nRelevant files:\n- {relevant_files}\n\nConstraints:\n{constraint_list}\n\nAcceptance criteria:\n{acceptance_criteria}\n\nRisk notes:\n{risk_notes}",
+    "agent_instruction_template": "Task:\n{request}\n\nBrief:\n{brief}\n\nApproval:\nNeeds approval: {needs_approval}\nApproved: {approved}\n\nRuntime limit:\n{max_runtime_minutes} minutes\n\nAllowed directories:\n{allowed_directories}\n\nInstruction:\nDo not edit files yet. This is a dry-run instruction package.\nThis proves the graph can prepare a bounded coding-agent handoff."
+  }
+}

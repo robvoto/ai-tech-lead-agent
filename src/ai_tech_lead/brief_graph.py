@@ -1,304 +1,204 @@
 """Small LangGraph workflow for producing a safe execution brief.
 
-This module is intentionally simple. It is the first project-shaped graph used to
-learn LangGraph concepts before adding model calls, Telegram input, or coding-agent
-handoffs.
-
-Current learning focus:
-- graph state
-- nodes
-- conditional routing
-- checkpoint storage
-- Studio export
-
-Interrupts are intentionally NOT added yet. The next exercise can add them cleanly.
+This module stays focused on the graph itself so LangGraph Studio can import it
+without the local demo runner getting in the way.
 """
 
+import logging
 from enum import StrEnum
 from typing import TypedDict
 
-from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
-from langchain_core.runnables import RunnableConfig
+
+from .app_settings import load_settings
+from .logging_setup import LOGGER_NAME
+
+logger = logging.getLogger(LOGGER_NAME)
+
 
 class NodeName(StrEnum):
-    """Stable LangGraph node names.
-
-    These are the names LangGraph uses internally to connect nodes.
-    They are not the same thing as the Python function names.
-    """
+    """Stable LangGraph node names."""
 
     READ_REQUEST = "read_request"
     ASSESS_RISK = "assess_risk"
     CREATE_BRIEF = "create_brief"
     APPROVAL_REQUIRED = "approval_required"
+    EXECUTE_TASK = "execute_task"
     END_NODE = "end_node"
 
 
 class GraphState(TypedDict):
-    """State carried through the brief-generation workflow.
-
-    request:
-        The original user request, after basic cleanup.
-
-    brief:
-        The execution brief created for a future coding agent.
-
-    needs_approval:
-        True when the request looks risky and should require human approval.
-    """
+    """State carried through the brief-generation workflow."""
 
     request: str
     brief: str
     needs_approval: bool
-
-
-RISKY_WORDS = [
-    "delete",
-    "remove",
-    "refactor",
-    "rewrite",
-    "all files",
-    "entire project",
-]
-
-
-SAFE_SAMPLE_INPUT: GraphState = {
-    "request": "Build Telegram input",
-    "brief": "",
-    "needs_approval": False,
-}
-
-
-RISKY_SAMPLE_INPUT: GraphState = {
-    "request": "Refactor the entire project",
-    "brief": "",
-    "needs_approval": False,
-}
-
+    approved: bool
+    agent_instruction: str
 
 def read_request_node(state: GraphState) -> GraphState:
     """Validate and normalize the incoming user request."""
 
-    print("---------Reading request---------")
+    logger.info("---------Reading request---------")
 
-    # Normalize the request so later nodes do not have to care about
-    # accidental leading/trailing spaces.
     request = state["request"].strip()
-
     if not request:
         raise ValueError("Request cannot be empty.")
 
     state["request"] = request
-    print(f"User request: {state['request']}")
-
+    logger.info("User request: %s", state["request"])
     return state
 
 
 def assess_risk_node(state: GraphState) -> GraphState:
-    """Set the approval flag based on simple deterministic risk words."""
+    """Set the approval flag based on configured deterministic risk terms."""
 
-    print("---------Assessing risk---------")
+    logger.info("---------Assessing risk---------")
 
+    settings = load_settings()
     request_lower = state["request"].lower()
-
     state["needs_approval"] = any(
-        risky_word in request_lower
-        for risky_word in RISKY_WORDS
+        risk_term.lower() in request_lower
+        for risk_term in settings.risk_terms
     )
 
-    print(f"Needs approval: {state['needs_approval']}")
+    logger.info("Needs approval: %s", state["needs_approval"])
     return state
 
 
 def create_brief_node(state: GraphState) -> GraphState:
     """Create a structured execution brief for a safe coding task."""
 
-    print("---------Creating execution brief---------")
+    logger.info("---------Creating execution brief---------")
 
-    state["brief"] = f"""
-Request:
-- {state["request"]}
-
-Relevant files:
-- Not identified yet
-
-Constraints:
-- Keep the change small
-- Do not touch unrelated files
-- Do not add fallback logic without approval
-- Do not claim completion without validation evidence
-
-Acceptance criteria:
-- Code runs successfully
-- Changed files are listed
-- Validation command and result are reported
-
-Risk notes:
-- Human approval required before broad refactors or destructive changes
-""".strip()
+    settings = load_settings()
+    state["brief"] = settings.prompts["execution_brief_template"].format(
+        request=state["request"],
+        relevant_files=_format_bullets(settings.watched_directories),
+        constraint_list=_format_bullets(settings.brief_constraints),
+        acceptance_criteria=_format_bullets(settings.acceptance_criteria),
+        risk_notes=_format_bullets(settings.risk_notes),
+    )
 
     return state
-
+ 
 
 def route_after_brief(state: GraphState) -> str:
-    """Choose the next LangGraph node name after the brief is created.
+    """Choose the next LangGraph node name after the brief is created."""
 
-    This is a routing function, not a graph node.
-
-    It returns a node name string. LangGraph then uses that returned name to
-    decide where the workflow goes next.
-    """
-
-    print("---------Routing after brief---------")
+    logger.info("---------Routing after brief---------")
 
     if state["needs_approval"]:
-        print("Route: approval_required")
+        logger.info("Route: approval_required")
         return NodeName.APPROVAL_REQUIRED
 
-    print("Route: end_node")
+    logger.info("Route: execute_task")
+    return NodeName.EXECUTE_TASK
+ 
+
+def route_after_approval(state: GraphState) -> str:
+    """Choose the next LangGraph node name after the approval is received."""
+
+    logger.info("---------Routing after approval---------")
+
+
+    if state["approved"]:
+        logger.info("Route: execute_task")
+        return NodeName.EXECUTE_TASK
+
+    logger.info("Route: end_node")
     return NodeName.END_NODE
 
 
 def approval_required_node(state: GraphState) -> GraphState:
-    """Mark the point where human approval will be added next.
+    """Mark the point where human approval will be added next."""
 
-    Today this node only prints a warning.
-    The next exercise will make this node actually pause the graph.
-    """
-
-    print("---------Request requires approval---------")
-    print("This request should not be sent to a coding agent yet.")
+    logger.info("---------Request requires approval---------")
+    logger.info("This request should not be sent to a coding agent yet.")
 
     return state
+
+
+def execute_task_node(state: GraphState) -> GraphState:
+    """Prepare the instruction package that would be sent to a coding agent."""
+
+    settings = load_settings()
+    agent_instruction = settings.prompts["agent_instruction_template"].format(
+        request=state["request"],
+        brief=state["brief"],
+        needs_approval=state["needs_approval"],
+        approved=state["approved"],
+        max_runtime_minutes=settings.max_runtime_minutes,
+        allowed_directories=_format_bullets(settings.allowed_directories),
+    )
+
+    state["agent_instruction"] = agent_instruction
+
+    logger.info("--------- Agent instruction package ---------")
+    logger.info("%s", state["agent_instruction"])
+
+    return state
+
+
+def _format_bullets(values: list[str]) -> str:
+    """Format configured list values for prompt templates."""
+
+    return "\n".join(f"- {value}" for value in values)
 
 
 def end_node(state: GraphState) -> GraphState:
     """Print the final brief and approval status for review."""
 
-    print("---------Finishing workflow---------")
-    print(f"Request: {state['request']}")
-    print(f"Brief: {state['brief']}")
-    print("--------------------")
-    print(f"Needs approval: {state['needs_approval']}")
-    print("--------------------")
-    print("---END---\n")
-
+    logger.info("---------Finishing workflow---------")
+    logger.info("Request: %s", state["request"])
+    logger.info("--------------------")
+    logger.info("Needs approval: %s", state["needs_approval"])
+    logger.info("Approved: %s", state["approved"])
+    logger.info("-" * 30)
+    logger.info("---END---")
+    logger.info("-" * 30)
     return state
 
 
 def build_graph(checkpointer_storage=None):
-    """Build and compile the brief workflow.
-
-    checkpointer:
-        Optional checkpoint storage.
-        It is needed later for pause/resume behavior.
-        Passing it here does not create an interrupt by itself.
-    """
+    """Build and compile the brief workflow."""
 
     workflow = StateGraph(GraphState)
 
-    # Register graph nodes.
-    # First argument = LangGraph node name.
-    # Second argument = Python function to run for that node.
     workflow.add_node(NodeName.READ_REQUEST, read_request_node)
     workflow.add_node(NodeName.ASSESS_RISK, assess_risk_node)
     workflow.add_node(NodeName.CREATE_BRIEF, create_brief_node)
     workflow.add_node(NodeName.APPROVAL_REQUIRED, approval_required_node)
+    workflow.add_node(NodeName.EXECUTE_TASK, execute_task_node)
     workflow.add_node(NodeName.END_NODE, end_node)
 
-    # Fixed path.
     workflow.add_edge(START, NodeName.READ_REQUEST)
     workflow.add_edge(NodeName.READ_REQUEST, NodeName.ASSESS_RISK)
     workflow.add_edge(NodeName.ASSESS_RISK, NodeName.CREATE_BRIEF)
-
-    # Conditional path.
-    # route_after_brief returns either "approval_required" or "end_node".
-    # path_map makes that routing explicit for LangGraph Studio diagrams.
     workflow.add_conditional_edges(
         NodeName.CREATE_BRIEF,
         route_after_brief,
         {
             NodeName.APPROVAL_REQUIRED: NodeName.APPROVAL_REQUIRED,
-            NodeName.END_NODE: NodeName.END_NODE,
+            NodeName.EXECUTE_TASK: NodeName.EXECUTE_TASK,
+        },
+    ) 
+    workflow.add_conditional_edges(
+        NodeName.APPROVAL_REQUIRED,
+        route_after_approval,
+        {
+            NodeName.EXECUTE_TASK: NodeName.EXECUTE_TASK,
+            NodeName.END_NODE: NodeName.END_NODE,            
         },
     )
 
-    # End paths.
-    workflow.add_edge(NodeName.APPROVAL_REQUIRED, END)
+    workflow.add_edge(NodeName.EXECUTE_TASK, NodeName.END_NODE)
     workflow.add_edge(NodeName.END_NODE, END)
 
     return workflow.compile(
         interrupt_before=[NodeName.APPROVAL_REQUIRED],
-        checkpointer=checkpointer_storage)
-
-
-def run_sample_graph() -> None:
-    """Run two sample requests from the terminal.
-
-    This is for local testing only.
-    LangGraph Studio does not call this function.
-    """
-
-    # Temporary checkpoint storage for this local test run.
-    memory = MemorySaver()
-
-    # app = local compiled graph used by this terminal test.
-    app = build_graph(checkpointer_storage=memory)
-    save_graph_diagram(app)
-
-    thread_safe: RunnableConfig = {
-        "configurable": {"thread_id": "sample-safe-request"}
-    }
-
-    app.invoke(
-        SAFE_SAMPLE_INPUT,
-        config=thread_safe,
-    )
-    
-    thread_risky: RunnableConfig = {
-        "configurable": {"thread_id": "sample-risky-request"}
-    }
-    
-    app.invoke(
-        RISKY_SAMPLE_INPUT,
-        config=thread_risky,
+        checkpointer=checkpointer_storage,
     )
 
-    state = app.get_state(thread_risky)
-    print("\nFinal graph state:")
-    
-    state_string = str(state)
-    for piece in state_string.split(", "):
-        print(piece)
 
-    print("\nNext state:", state.next)
-
-    user_approval = input("\nApprove the risky request? (y/n): ").strip().lower()
-    
-    if user_approval == "y":
-        print("User approved the risky request. Resuming graph...")
-        app.invoke(
-           None,
-            config=thread_risky,
-    )
-    else:
-        print("User did not approve the risky request. Not resuming.")
-
-
-
-
-def save_graph_diagram(app) -> None:
-    """Save a generated PNG diagram of the compiled LangGraph workflow."""
-
-    png_bytes = app.get_graph().draw_mermaid_png()
-
-    with open("graph_diagram.png", "wb") as file:
-        file.write(png_bytes)
-
-    print("Graph diagram saved to graph_diagram.png")
-
-
-# graph = exported compiled graph used by LangGraph Studio.
-# This does not run the graph. It only lets Studio import and run it.
 graph = build_graph()

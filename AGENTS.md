@@ -1,83 +1,67 @@
-# AI Tech Lead - Contributor Instructions
-
-## Purpose
-
-This file defines how humans and AI coding assistants should work on this repository.
-
-It is not the runtime instruction prompt for the AI Technical Lead Assistant.
-
-Runtime agent instructions will live separately inside the application when needed.
+# AI Technical Lead Agent - Agent Instructions
 
 ## Startup protocol
 
-Before architecture or implementation work:
+Before searching or editing:
+1. Read this file.
+2. Load the single most relevant `.skills/<area>/SKILL.md`.
+3. Inspect current code before giving code-specific advice.
+4. Do not read the whole repo unless explicitly needed.
 
-1. Read `docs/plan/INITIAL_PLAN.md`.
-2. Read this file.
-3. Read only the specific files needed for the current step.
+## Project goal
 
-Do not scan the whole repository by default.
+Build a local AI orchestration system for learning, portfolio value, and controlled coding-agent handoff.
 
-## Learning-first workflow
+Initial scope:
+- Read one backlog task.
+- Create a bounded execution brief.
+- Pause for human approval when risky.
+- Prepare a coding-agent instruction package.
+- Later route approved work to Codex, Claude Code, or Gemini.
 
-This project is for learning as well as building.
+## Source hierarchy
 
-For each meaningful change:
+- `AGENTS.md`: project-wide rules.
+- `.skills/*/SKILL.md`: scoped rules loaded only for that work area.
+- `docs/plan/INITIAL_PLAN.md`: durable project plan and direction. 
+- `docs/reference/*`: learning notes and source-backed references.
+- `docs/BACKLOG.md`: current local prototype backlog.
 
-1. Explain the concept in plain English.
-2. Point to the relevant Academy lesson or project doc when available.
-3. Show the small change.
-4. Run the smallest useful validation.
-5. Explain the result.
+## Skill routing
 
-## Project direction
+Do not read all skills. Choose the one best matching the task.
 
-Build a local AI Technical Lead Assistant.
+| Skill | Use when | File |
+|---|---|---|
+| `code-change` | Code, tests, runtime, graph, or integration changes. | `.skills/code-change/SKILL.md` |
+| `backlog-management` | Backlog parsing, selection, status, evidence, or task handoff. | `.skills/backlog-management/SKILL.md` |
+| `instruction-maintenance` | Editing AGENTS.md, skills, handoff docs, or project instructions. | `.skills/instruction-maintenance/SKILL.md` |
 
-The assistant should supervise Codex, Claude Code, and Gemini rather than replace them.
+## Non-negotiables
 
-The first version should stay small and controlled.
-
-## Current environment
-
-- Project root: `E:\Programming\ai-tech-lead`
-- WSL path: `/mnt/e/Programming/ai-tech-lead`
-- VS Code app: Windows
-- VS Code backend/runtime: WSL Ubuntu
-- Expected VS Code indicator: `AI-TECH-LEAD [WSL: UBUNTU]`
-- Runtime commands: WSL terminal from `/mnt/e/Programming/ai-tech-lead`
-- Python: 3.13
-- Package manager: uv
-
-## Design rules
-
-- Prefer small, single-purpose modules.
-- Avoid hardcoded business rules, model names, thresholds, and hidden defaults.
-- Do not add broad fallback behaviour without evidence and approval.
-- Do not hide errors with broad exception swallowing.
-- Add concise module docstrings for Python modules.
-- Touch only files needed for the current task.
-- Remove dead code instead of preserving unused paths.
-
-## Context discipline
-
-- Do not read full repositories by default.
-- Do not read full backlog files by default.
-- Use compact indexes or targeted reads where possible.
-- Ask before expensive, broad, destructive, or unclear work.
+- Never guess when current code or docs can be checked.
+- Keep work bounded and small.
+- Do not create hidden autonomous behaviour.
+- Do not hardcode hidden choices. If a default exists, name it as demo or fallback explicitly.
+- Human approval is required for destructive, broad, risky, ambiguous, or expensive actions.
+- Do not mask failures with broad fallback logic or silent defaults.
+- Touch only files required for the task.
+- Add concise help text/comments when behaviour is not obvious.
+- Do not claim done without validation evidence.
 
 ## Testing rule
 
-Run the smallest validation that proves the changed behaviour.
+Use risk-based validation:
+- For code changes, run the smallest relevant validation command.
+- For graph changes, test the affected route.
+- For startup/config changes, run the app startup command.
+- Record the exact validation result before calling work done.
 
-Record the exact command and result before claiming work is done.
+## Definition of Done
 
-## Definition of done
-
-A step is done only when:
-
-1. The change is explained.
-2. The relevant files are updated.
-3. The smallest useful validation has run.
-4. The result is recorded.
-5. No unrelated files were changed.
+A change is done only when:
+1. The changed behaviour was validated.
+2. The validation command/result is reported.
+3. No unrelated refactor was introduced.
+4. Any new non-obvious behaviour has concise comments or help text.
+5. Remaining risks or unfinished parts are stated clearly.

@@ -1,7 +1,10 @@
+"""Project paths for the local AI Technical Lead Assistant."""
+
 from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+SETTINGS_PATH = PROJECT_ROOT / "config" / "coding_agent_settings.json"
 DATA_DIR = PROJECT_ROOT / "data"
 LOGS_DIR = PROJECT_ROOT / "logs"
 DB_PATH = DATA_DIR / "ai_tech_lead.sqlite3"
