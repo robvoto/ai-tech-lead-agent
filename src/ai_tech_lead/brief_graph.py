@@ -272,8 +272,21 @@ def run_sample_graph() -> None:
     for piece in state_string.split(", "):
         print(piece)
 
-
     print("\nNext state:", state.next)
+
+    user_approval = input("\nApprove the risky request? (y/n): ").strip().lower()
+    
+    if user_approval == "y":
+        print("User approved the risky request. Resuming graph...")
+        app.invoke(
+           None,
+            config=thread_risky,
+    )
+    else:
+        print("User did not approve the risky request. Not resuming.")
+
+
+
 
 def save_graph_diagram(app) -> None:
     """Save a generated PNG diagram of the compiled LangGraph workflow."""
