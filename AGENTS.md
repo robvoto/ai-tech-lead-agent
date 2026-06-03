@@ -42,10 +42,12 @@ The first version should stay small and controlled.
 
 - Project root: `E:\Programming\ai-tech-lead`
 - WSL path: `/mnt/e/Programming/ai-tech-lead`
-- VS Code workspace mode: Windows workspace
-- Runtime commands: WSL terminal when Linux behaviour is needed
+- VS Code app: Windows
+- VS Code backend/runtime: WSL Ubuntu
+- Expected VS Code indicator: `AI-TECH-LEAD [WSL: UBUNTU]`
+- Runtime commands: WSL terminal from `/mnt/e/Programming/ai-tech-lead`
 - Python: 3.13
-- Package Manager: uv
+- Package manager: uv
 
 ## Design rules
 

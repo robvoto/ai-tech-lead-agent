@@ -1,95 +1,140 @@
-# Python Tooling
+# Python Tooling Runbook
 
-## Decision
+## Purpose
 
-Use Python 3.13 with uv.
+Define the project Python and dependency workflow.
 
-Use uv as the project environment and dependency tool.
+Use:
 
-Do not use raw pip or manual virtual environment commands as the normal project workflow.
+- Python 3.13
+- uv
+- `pyproject.toml`
+- `uv.lock`
 
-Do not add `requirements.txt` unless a specific tool or deployment path requires it.
+Do not use raw pip, manual virtual environments, or `requirements.txt` as the normal project workflow.
 
-## Current project runtime
+## Step 1: Open the WSL project terminal
 
-Project Python is managed by uv.
+Correct prompt shape:
 
-Check it with:
+```text
+robvoto@LAPOTENTE:/mnt/e/Programming/ai-tech-lead$
+```
+
+Wrong prompt shape:
+
+```text
+PS E:\Programming\ai-tech-lead>
+```
+
+PowerShell is not the project runtime terminal.
+
+## Step 2: Go to the project root
 
 ```bash
 cd /mnt/e/Programming/ai-tech-lead
+pwd
+```
+
+Expected:
+
+```text
+/mnt/e/Programming/ai-tech-lead
+```
+
+## Step 3: Check uv
+
+```bash
+uv --version
+```
+
+Expected result shape:
+
+```text
+uv 0.x.x
+```
+
+## Step 4: Check the pinned Python version
+
+```bash
+cat .python-version
+```
+
+Expected:
+
+```text
+3.13
+```
+
+If this is missing or wrong, pin it again:
+
+```bash
+uv python pin 3.13
+```
+
+## Step 5: Check the Python constraint
+
+```bash
+grep requires-python pyproject.toml
+```
+
+Expected:
+
+```text
+requires-python = ">=3.13,<3.14"
+```
+
+This prevents the project from drifting back to Python 3.14.
+
+## Step 6: Sync dependencies
+
+```bash
+uv sync --link-mode=copy
+```
+
+Use `--link-mode=copy` because the project is on `/mnt/e`, a Windows-mounted drive. This avoids uv hardlink warnings across filesystems.
+
+## Step 7: Check the project Python
+
+```bash
 uv run python --version
 ```
 
-Expected result:
+Expected:
 
 ```text
 Python 3.13.x
 ```
 
-The observed working runtime was:
+Observed working runtime:
 
 ```text
 Python 3.13.13
 ```
 
-## Important distinction
+Do not use `python3 --version` as the project runtime check. That shows Ubuntu system Python.
 
-This command:
+## Step 8: Check the uv-managed environment
 
 ```bash
-python3 --version
+uv run which python
 ```
 
-shows Ubuntu system Python. It may show:
+Expected shape:
 
 ```text
-Python 3.12.3
+/mnt/e/Programming/ai-tech-lead/.venv/bin/python
 ```
 
-That is not the project runtime.
-
-This command:
-
-```bash
-uv run python --version
-```
-
-shows the project Python managed by uv.
-
-## Expected project files
-
-- `pyproject.toml` defines the project and dependencies.
-- `.python-version` records the selected Python version.
-- `.venv/` is the local environment managed by uv.
-- `uv.lock` records exact resolved dependencies.
-
-The uv environment folder is:
+The environment folder is:
 
 ```text
 /mnt/e/Programming/ai-tech-lead/.venv
 ```
 
-Same folder from Windows:
+Do not create, activate, or repair `.venv` manually as the normal workflow.
 
-```text
-E:\Programming\ai-tech-lead\.venv
-```
-
-Do not create or repair `.venv` manually. Let uv manage it.
-
-## Standard commands
-
-From the WSL VS Code terminal:
-
-```bash
-cd /mnt/e/Programming/ai-tech-lead
-uv sync --link-mode=copy
-uv run python --version
-uv run python -m ai_tech_lead
-```
-
-## Add dependencies
+## Step 9: Add dependencies
 
 Use uv:
 
@@ -97,40 +142,72 @@ Use uv:
 uv add package-name
 ```
 
-Example already used:
+Current core dependencies:
 
-```bash
-uv add langgraph langchain-core
+```text
+langgraph
+langchain-core
 ```
 
-Do not install project dependencies with raw pip as the normal workflow.
+These are recorded in `pyproject.toml` and locked in `uv.lock`.
 
-## LangGraph validation
-
-Run:
+## Step 10: Validate LangGraph runtime import
 
 ```bash
 uv run python -c "from langgraph.graph import StateGraph, START, END; print('LangGraph OK')"
 ```
 
-Expected output:
+Expected:
 
 ```text
 LangGraph OK
 ```
 
-## uv hardlink warning
-
-If uv prints a warning about failing to hardlink files and falling back to full copy, that is not a project failure.
-
-This can happen because the project is on `/mnt/e` while uv cache/environment files may be on a different filesystem.
-
-Use this to avoid the warning:
+## Step 11: Run the project
 
 ```bash
-uv sync --link-mode=copy
+uv run python -m ai_tech_lead
 ```
 
-## Principle
+Expected result shape:
 
-Keep dependency management reproducible and explicit.
+```text
+AI Technical Lead Assistant started
+Project root detected: /mnt/e/Programming/ai-tech-lead
+SQLite ready: /mnt/e/Programming/ai-tech-lead/data/ai_tech_lead.sqlite3
+```
+
+## Troubleshooting
+
+### `uv: command not found`
+
+You are either in the wrong terminal or uv is not installed in WSL.
+
+First check the prompt. Use WSL, not PowerShell.
+
+### `python3 --version` shows Python 3.12.3
+
+That is Ubuntu system Python. It is not the project runtime.
+
+Use:
+
+```bash
+uv run python --version
+```
+
+### VS Code shows Windows Python or Python 3.14
+
+The VS Code window is not using the WSL project interpreter.
+
+Open the project from WSL with:
+
+```bash
+cd /mnt/e/Programming/ai-tech-lead
+code .
+```
+
+Then select the `.venv` interpreter from the WSL window.
+
+### LangGraph imports in terminal but VS Code shows a red underline
+
+The runtime is correct. Fix VS Code interpreter selection in the WSL window.

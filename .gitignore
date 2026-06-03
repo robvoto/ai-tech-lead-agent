@@ -1,24 +1,33 @@
-# Python Bytecode
+# Python bytecode
 __pycache__/
 *.py[cod]
 *$py.class
 
-# Virtual Environments (managed by uv)
+# Virtual environments managed by uv
 .venv/
 
-# Local Data and Databases
+# Local runtime data and databases
 data/
 *.sqlite3
+.langgraph_api/
+
+# Generated diagrams and local outputs
+graph_diagram.png
+
+# Personal local helper scripts, not project workflow
+run
+run_*.sh
+uv_run.sh
 
 # Logs
 logs/
 
-# Environment Variables and Secrets
+# Environment variables and secrets
 .env
-.python-version
 
 # Distribution / packaging
 build/
 dist/
 *.egg-info/
-*.egg 
+*.egg
+$p

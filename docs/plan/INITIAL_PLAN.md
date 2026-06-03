@@ -4,21 +4,29 @@
 
 This file is the durable planning hook for future chats:
 
-`E:\Programming\ai-tech-lead\docs\plan\INITIAL_PLAN.md`
+```text
+E:\Programming\ai-tech-lead\docs\plan\INITIAL_PLAN.md
+```
 
 Future project sessions should read this file before proposing architecture or implementation steps.
 
 Current project root:
 
-`E:\Programming\ai-tech-lead`
+```text
+E:\Programming\ai-tech-lead
+```
 
 WSL path:
 
-`/mnt/e/Programming/ai-tech-lead`
+```text
+/mnt/e/Programming/ai-tech-lead
+```
 
 Do not move the repo yet. A possible future native WSL location is:
 
-`~/projects/ai-tech-lead`
+```text
+~/projects/ai-tech-lead
+```
 
 ## Project identity
 
@@ -28,17 +36,93 @@ The assistant should supervise coding tools rather than replace them.
 
 It should help plan work, prepare execution briefs, review outputs, manage task context, and keep token/cost usage controlled.
 
-A major purpose of this project is to prevent common coding-agent failure modes: doing more than requested, making risky changes without approval, adding unapproved fallbacks, preserving useless legacy code, leaving unused code, hardcoding small sample heuristics, skipping help text, and claiming completion without evidence.
+A major purpose of this project is to prevent common coding-agent failure modes:
 
-## Current environment
+- doing more than requested
+- making risky changes without approval
+- adding unapproved fallbacks
+- preserving useless legacy code
+- leaving unused code
+- hardcoding small sample heuristics
+- skipping help text/docstrings where purpose is not obvious
+- claiming completion without evidence
 
-- VS Code app: Windows
-- VS Code workspace mode: Windows workspace
-- WSL use: terminal runtime only unless Remote WSL is explicitly confirmed
-- Project location: `E:\Programming\ai-tech-lead`
-- WSL location: `/mnt/e/Programming/ai-tech-lead`
-- Python runtime: Python 3.13
-- Environment Management: uv
+## Confirmed environment
+
+Use the Windows VS Code application opened in WSL mode.
+
+Expected VS Code indicator:
+
+```text
+AI-TECH-LEAD [WSL: UBUNTU]
+```
+
+Runtime commands must run from Ubuntu/WSL using:
+
+```bash
+cd /mnt/e/Programming/ai-tech-lead
+```
+
+Do not use PowerShell as the project runtime terminal.
+
+Python/runtime:
+
+- Python: 3.13
+- Environment/dependency manager: uv
+- Dependency files: `pyproject.toml` and `uv.lock`
+- No `requirements.txt` unless a specific future deployment/tool requires it
+
+Normal project run:
+
+```bash
+cd /mnt/e/Programming/ai-tech-lead
+uv run python -m ai_tech_lead
+```
+
+LangGraph Studio/dev server run:
+
+```bash
+cd /mnt/e/Programming/ai-tech-lead
+uv run langgraph dev
+```
+
+One-time setup for Studio CLI, if missing:
+
+```bash
+uv add --dev "langgraph-cli[inmem]"
+```
+
+## Current LangGraph Studio status
+
+LangGraph Studio is a separate visual/debug workflow from the normal project run.
+
+Studio connects to a local server at:
+
+```text
+http://127.0.0.1:2024
+```
+
+Browser URL:
+
+```text
+https://smith.langchain.com/studio/thread?baseUrl=http%3A%2F%2F127.0.0.1%3A2024&mode=graph&render=interact
+```
+
+Current graph config is in:
+
+```text
+langgraph.json
+```
+
+Current graph mapping:
+
+```json
+{
+  "graphs": {
+    "brief_graph": "./src/ai_tech_lead/brief_graph.py:graph"
+  }
+}
+```
 
 ## Primary goals
 
@@ -71,8 +155,8 @@ The assistant should:
 ## Preferred stack
 
 - Python 3.13
-- WSL2 Ubuntu terminal runtime
-- Windows VS Code workspace
+- WSL2 Ubuntu runtime
+- Windows VS Code app with WSL backend
 - Deep Agents
 - LangGraph ecosystem
 - LiteLLM

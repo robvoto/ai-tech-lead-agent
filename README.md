@@ -2,16 +2,46 @@
 
 Local AI Technical Lead Assistant project.
 
-## Durable planning hook
+## Source of truth
 
-Use this file as the source of truth for current planning:
+Read this first for planning and current project direction:
 
-`docs/plan/INITIAL_PLAN.md`
+```text
+docs/plan/INITIAL_PLAN.md
+```
 
-## Current environment
+## Environment
 
 - VS Code app: Windows
 - Runtime/backend: WSL Ubuntu
+- Windows path: `E:\Programming\ai-tech-lead`
+- WSL path: `/mnt/e/Programming/ai-tech-lead`
+- Python: 3.13
+- Package manager: uv
+
+## Normal project run
+
+Run from Ubuntu/WSL:
+
+```bash
+cd /mnt/e/Programming/ai-tech-lead
+uv run python -m ai_tech_lead
+```
+
+## LangGraph Studio run
+
+Run from Ubuntu/WSL and leave the terminal running:
+
+```bash
+cd /mnt/e/Programming/ai-tech-lead
+uv run langgraph dev
+```
+
+Then open the APAC Studio connection documented in:
+
+```text
+docs/setup/03-first-run.md
+```
 
 ## Current focus
 

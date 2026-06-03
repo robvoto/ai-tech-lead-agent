@@ -1,46 +1,80 @@
 # Environment Decision
 
-## Confirmed current state
+## Decision
 
-The project files live on the Windows drive.
+Use the Windows VS Code application with the project opened in WSL mode.
+
+Runtime commands must run from Ubuntu/WSL using the `/mnt/e/...` path.
+
+## Confirmed working setup
 
 Windows project path:
 
+```text
 E:\Programming\ai-tech-lead
+```
 
-WSL view of the same folder:
+WSL project path:
 
+```text
 /mnt/e/Programming/ai-tech-lead
+```
 
-VS Code is currently recognising the folder as a Windows workspace.
+Correct VS Code window indicator:
 
-There is no confirmed WSL Remote indicator in the VS Code bottom-left status bar.
+```text
+AI-TECH-LEAD [WSL: UBUNTU]
+```
 
-## Decision for now
+Correct runtime terminal prompt shape:
 
-Do not assume VS Code is running with a WSL backend.
+```text
+robvoto@LAPOTENTE:/mnt/e/Programming/ai-tech-lead$
+```
 
-For now, treat the current working setup as:
+Wrong runtime terminal prompt shape:
 
-- VS Code app: Windows
-- VS Code workspace mode: Windows
-- Project files: Windows drive
-- WSL: available separately through Ubuntu terminal using /mnt/e/Programming/ai-tech-lead
+```text
+PS E:\Programming\ai-tech-lead>
+```
 
-## Practical rule
+PowerShell is not the project runtime terminal.
 
-Run Linux-specific commands from the WSL terminal.
+## Runtime rule
 
-Do not rely on VS Code being in WSL Remote mode unless the UI clearly shows it.
+Use this from Ubuntu/WSL:
+
+```bash
+cd /mnt/e/Programming/ai-tech-lead
+uv run python -m ai_tech_lead
+```
+
+Do not run project runtime commands from `E:\...` PowerShell.
+
+## Python rule
+
+Use uv-managed project Python.
+
+Check project Python with:
+
+```bash
+uv run python --version
+```
+
+Expected:
+
+```text
+Python 3.13.x
+```
+
+Do not use plain `python3` as the project runtime check. That shows Ubuntu system Python.
 
 ## Future option
 
-Later we may move the repo to native WSL storage:
+Later the repo may move to native WSL storage:
 
+```text
 ~/projects/ai-tech-lead
+```
 
-Do not move it yet unless explicitly requested.
-
-## Status
-
-Accepted for now.
+Do not move it unless explicitly requested.
