@@ -38,7 +38,7 @@ def run_backlog_graph(
     backlog_item = load_backlog_item_by_id(task_id)
     backlog_input = backlog_item_to_graph_state(backlog_item)
 
-    logger.info("Loaded backlog item: %s - %s", backlog_item.item_id, backlog_item.title)
+    logger.info("Selected backlog item: %s - %s", backlog_item.item_id, backlog_item.title)
 
     thread_config: RunnableConfig = {
         "configurable": {"thread_id": f"backlog-{backlog_item.item_id}"}
@@ -51,7 +51,7 @@ def run_backlog_graph(
 
     state = app.get_state(thread_config)
     if not state.next:
-        logger.info("Backlog item completed without approval pause.")
+        logger.info("Graph completed without approval pause.")
         return
 
     logger.info("Graph paused before next node: %s", state.next)
@@ -81,4 +81,4 @@ def save_graph_diagram(app) -> None:
     with open("graph_diagram.png", "wb") as file:
         file.write(png_bytes)
 
-    logger.info("Graph diagram saved to graph_diagram.png")
+    logger.info("Graph diagram: graph_diagram.png")

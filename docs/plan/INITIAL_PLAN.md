@@ -1,16 +1,14 @@
 # AI Technical Lead Agent - Project Plan and Notes
 
-## Durable hook
+## Planning hook
 
-This file is the durable planning hook for future chats:
+This file captures the current project plan and setup context:
 
 ```text
 E:\Programming\ai-tech-lead\docs\plan\INITIAL_PLAN.md
 ```
 
 Future project sessions should read this file before proposing architecture, setup, or implementation steps.
-
-Do not move or delete this file.
 
 ## Project identity
 
@@ -114,7 +112,7 @@ Run the local admin screen from WSL:
 
 ```bash
 cd /mnt/e/Programming/ai-tech-lead
-uv run python -m ai_tech_lead --admin
+uv run python -m ai_tech_lead
 ```
 
 Current default admin URL:
@@ -134,10 +132,12 @@ The admin screen is a local HTML page served by Python:
 ```text
 src/ai_tech_lead/admin/admin.html
 src/ai_tech_lead/admin/admin.js
+src/ai_tech_lead/admin/admin_form.js
+src/ai_tech_lead/admin/admin_config.js
 src/ai_tech_lead/admin_server.py
 ```
 
-The JavaScript is intentionally separate from the HTML.
+The JavaScript is intentionally separate from the HTML and uses ES modules.
 
 The admin screen edits this JSON settings file through the API:
 
@@ -146,13 +146,13 @@ config/settings.json
 ```
 
 Python validates settings before saving them. The JSON contains adjustable
-prototype settings for values the app currently consumes: backlog path and
-runtime limit.
+prototype settings for values the app currently consumes, including runtime,
+Telegram, admin, and prompt-template settings.
 
-Agent policy and prompt management are intentionally not exposed in the admin
-screen yet. Do not add edit scope, directory allowlists, model routing, tool
-permissions, or prompt-template management to admin until the application has a
-real agent-profile layer that consumes those settings.
+Agent policy, directory allowlists, model routing, tool permissions, and prompt
+templates are now exposed in admin as validated local settings. Keep new fields
+explicit and small, and do not hide product behaviour behind undocumented local
+state.
 
 ## VS Code / WSL rule
 
@@ -478,7 +478,7 @@ Purpose:
 - Confirm `coding_agent_runner.py` uses `subprocess.run` safely.
 - Confirm `shell=False`.
 - Confirm execution is disabled by default.
-- Confirm `--execute-coding-agent` is the only normal CLI path that enables real Codex execution.
+- Confirm real Codex execution is controlled by settings/admin, not by a normal CLI flag.
 - Confirm the graph records the result in `state["coding_agent_result"]`.
 - Add a `restart_required` state flag if Codex changes files under `src/ai_tech_lead`.
 

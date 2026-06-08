@@ -11,11 +11,12 @@ Use when editing project instructions, agent rules, skills, or handoff documenta
 Keep instructions useful, small, current, and non-contradictory.
 
 ## Rules
-- Put universal rules in `AGENTS.md`.
-- Put area-specific rules in `.skills/<area>/SKILL.md`.
+- Put universal operational rules in `AGENTS.md`.
+- Put area-specific operational rules in `.skills/<area>/SKILL.md`.
+- Put human/developer explanations, rationale, examples, and learning notes in `docs/*`.
 - Do not duplicate the same rule across many files.
 - Do not copy domain-specific rules from another project unless they apply here.
-- Keep skill files concise. If examples become long, move them to a separate reference document.
+- Keep agent-facing instruction files concise. If examples or explanations become long, move them to a separate reference document.
 - Remove stale claims when proven wrong.
 - If unsure whether a rule is still true, mark it for review instead of rewriting it as fact.
 - Do not turn backlog items into operating rules.
@@ -30,4 +31,6 @@ Keep instructions useful, small, current, and non-contradictory.
 Report:
 - Instruction files changed
 - Rule added/removed/clarified
+- Why the rule belongs there
+- Evidence source if the change came from official/current guidance
 - Any follow-up review needed

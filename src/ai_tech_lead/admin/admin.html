@@ -10,90 +10,203 @@
 <main>
   <h1>AI Tech Lead Admin</h1>
   <p class="screen-note">
-    This screen edits the JSON settings file through the local API. Python still
-    validates the values before saving them.
+    This screen edits local runtime settings and Telegram secrets through the local API.
+    Python still validates the values before saving them.
   </p>
   <p class="screen-note">
-    Approval is currently controlled by each backlog item. A future LLM review
-    node will replace this temporary manual approval flag.
+    Use the examples shown under each field. Text areas usually want one item per line.
   </p>
-  <p id="status" class="status"></p>
+  <p class="screen-note">
+    Telegram uses the local secret store under <code>data/</code>. The settings file stays local too.
+  </p>
   <form id="settings-form">
     <fieldset>
       <legend>Runtime</legend>
       <label>
         Backlog path
-        <span class="field-help">Markdown backlog file to read. Relative paths resolve from the project root.</span>
-        <input name="backlog_path">
+        <span class="field-help">Relative path to the backlog file. Example: <code>docs/BACKLOG.md</code>.</span>
+        <input name="backlog_path" placeholder="docs/BACKLOG.md">
       </label>
       <label>
         Max runtime minutes
-        <span class="field-help">Time limit written into the coding-agent instruction package.</span>
-        <input name="max_runtime_minutes" type="number" min="1">
+        <span class="field-help">How long one coding-agent run may take. Example: <code>20</code>.</span>
+        <input name="max_runtime_minutes" type="number" min="1" placeholder="20">
       </label>
       <label>
         Coding agent command
-        <span class="field-help">Executable used for the separate coding-agent subprocess.</span>
-        <input name="coding_agent_command">
+        <span class="field-help">Program to launch for Codex or another agent. Example: <code>codex</code>.</span>
+        <input name="coding_agent_command" placeholder="codex">
       </label>
-      <label>
-        Coding agent args
-        <span class="field-help">One subprocess argument per line. The generated instruction is appended after these args.</span>
-        <textarea name="coding_agent_args"></textarea>
-      </label>
+      <div class="field-group">
+        <div class="field-heading">Coding agent args</div>
+        <span class="field-help">One argument per line. Example: <code>--ask-for-approval</code>, <code>never</code>, <code>exec</code>.</span>
+        <div class="list-editor" data-list-editor="coding_agent_args"></div>
+        <button type="button" class="list-add" data-list-add="coding_agent_args">+ Add agent arg</button>
+      </div>
       <label>
         <input name="execute_coding_agent" type="checkbox">
         Execute coding agent
-        <span class="field-help">Codex can modify files on disk. Restart Python to load code changes made by Codex.</span>
+        <span class="field-help">Turn this on only when you want real agent execution. Leave off for safe dry runs.</span>
+      </label>
+      <label>
+        <input name="telegram_enabled" type="checkbox">
+        Enable Telegram operator
+        <span class="field-help">Start Telegram on boot. Leave off if you only want the admin screen.</span>
+      </label>
+    </fieldset>
+    <fieldset>
+      <legend>Admin Server</legend>
+      <label>
+        Admin bind host
+        <span class="field-help">Local host for the admin screen and JSON API. Example: <code>127.0.0.1</code>.</span>
+        <input name="admin_bind_host" placeholder="127.0.0.1">
+      </label>
+      <label>
+        Admin bind port
+        <span class="field-help">Local port for the admin screen and JSON API. Example: <code>8766</code>.</span>
+        <input name="admin_bind_port" type="number" min="1" placeholder="8766">
+      </label>
+    </fieldset>
+    <fieldset>
+      <legend>Orchestrator AI</legend>
+      <label>
+        <input name="orchestrator_ai_enabled" type="checkbox">
+        Use AI to review task risk
+        <span class="field-help">When this is on, the orchestrator asks OpenAI whether a task looks safe, risky, broad, or unclear before the graph continues. If it is off, or if the key is missing, the system safely asks you for approval instead. This does not allow Codex to change files.</span>
+      </label>
+      <label>
+        Orchestrator AI model
+        <span class="field-help">Model used only for risk-review decisions. Example: <code>gpt-4.1-mini</code>.</span>
+        <input name="orchestrator_ai_model" placeholder="gpt-4.1-mini">
+      </label>
+      <label>
+        Max output tokens
+        <span class="field-help">Small limit for structured risk-review output. Example: <code>300</code>.</span>
+        <input name="orchestrator_ai_max_output_tokens" type="number" min="1" placeholder="300">
+      </label>
+      <label>
+        Timeout seconds
+        <span class="field-help">How long to wait for the risk-review call before falling back to human approval. Example: <code>20</code>.</span>
+        <input name="orchestrator_ai_timeout_seconds" type="number" min="1" placeholder="20">
+      </label>
+    </fieldset>
+    <fieldset>
+      <legend>Telegram</legend>
+      <label>
+        Telegram bot token
+        <span class="field-help">Paste the bot token from BotFather. It is saved locally under <code>data/telegram_secrets.json</code>.</span>
+        <input name="telegram_bot_token" type="password" autocomplete="off" placeholder="1234567890:AA...">
+      </label>
+      <label>
+        Telegram transport
+        <span class="field-help">Polling is the usual choice. Use webhook only if you already have a public HTTPS endpoint.</span>
+        <select name="telegram_transport">
+          <option value="polling">Polling</option>
+          <option value="webhook">Webhook</option>
+        </select>
+      </label>
+      <label>
+        Telegram API base URL
+        <span class="field-help">Usually leave this as the default Telegram API endpoint.</span>
+        <input name="telegram_api_base_url" placeholder="https://api.telegram.org">
+      </label>
+      <label>
+        Long poll timeout seconds
+        <span class="field-help">How long the bot waits for updates. Example: <code>25</code>.</span>
+        <input name="telegram_long_poll_timeout_seconds" type="number" min="1" placeholder="25">
+      </label>
+      <label>
+        Max /fix characters
+        <span class="field-help">Maximum length for a <code>/fix</code> request. Example: <code>3000</code>.</span>
+        <input name="telegram_max_fix_request_chars" type="number" min="1" placeholder="3000">
+      </label>
+      <label>
+        Max message characters
+        <span class="field-help">Maximum Telegram reply length after truncation. Example: <code>3900</code>.</span>
+        <input name="telegram_max_message_chars" type="number" min="1" placeholder="3900">
+      </label>
+      <label>
+        Allowed chat IDs
+        <span class="field-help">One numeric chat ID per line. Example: <code>8754838132</code>.</span>
+      </label>
+      <div class="list-editor" data-list-editor="telegram_allowed_chat_ids"></div>
+      <button type="button" class="list-add" data-list-add="telegram_allowed_chat_ids">+ Add allowed chat</button>
+      <label>
+        Webhook public URL
+        <span class="field-help">Required only for webhook mode. Example: <code>https://example.com/telegram/webhook</code>.</span>
+        <input name="telegram_webhook_url" placeholder="https://example.com/telegram/webhook">
+      </label>
+      <label>
+        Webhook bind host
+        <span class="field-help">Local host for webhook mode. Example: <code>127.0.0.1</code>.</span>
+        <input name="telegram_webhook_bind_host" placeholder="127.0.0.1">
+      </label>
+      <label>
+        Webhook bind port
+        <span class="field-help">Local port for webhook mode. Example: <code>8080</code>.</span>
+        <input name="telegram_webhook_bind_port" type="number" min="1" placeholder="8080">
+      </label>
+      <label>
+        Webhook secret token
+        <span class="field-help">Optional shared secret for webhook requests. Leave blank for polling.</span>
+        <input name="telegram_webhook_secret_token" placeholder="optional secret">
       </label>
     </fieldset>
     <fieldset>
       <legend>Directories</legend>
-      <label>
-        Allowed directories
-        <span class="field-help">Paths written into the bounded coding-agent instructions.</span>
-        <textarea name="allowed_directories"></textarea>
-      </label>
-      <label>
-        Watched directories
-        <span class="field-help">Paths listed as likely context in generated briefs.</span>
-        <textarea name="watched_directories"></textarea>
-      </label>
+      <div class="field-group">
+        <div class="field-heading">Allowed directories</div>
+        <span class="field-help">One project path per line. These are the directories the agent may touch.</span>
+        <div class="list-editor" data-list-editor="allowed_directories"></div>
+        <button type="button" class="list-add" data-list-add="allowed_directories">+ Add allowed directory</button>
+      </div>
+      <div class="field-group">
+        <div class="field-heading">Watched directories</div>
+        <span class="field-help">One path per line. These are suggested context directories for the brief.</span>
+        <div class="list-editor" data-list-editor="watched_directories"></div>
+        <button type="button" class="list-add" data-list-add="watched_directories">+ Add watched directory</button>
+      </div>
     </fieldset>
     <fieldset>
       <legend>Brief Content</legend>
-      <label>
-        Brief constraints
-        <span class="field-help">Constraint bullets inserted into generated briefs.</span>
-        <textarea name="brief_constraints"></textarea>
-      </label>
-      <label>
-        Acceptance criteria
-        <span class="field-help">Evidence bullets expected before work is accepted.</span>
-        <textarea name="acceptance_criteria"></textarea>
-      </label>
-      <label>
-        Risk notes
-        <span class="field-help">Notes shown in generated briefs. This is not keyword risk detection.</span>
-        <textarea name="risk_notes"></textarea>
-      </label>
+      <div class="field-group">
+        <div class="field-heading">Brief constraints</div>
+        <span class="field-help">One constraint per line. These are copied into generated briefs.</span>
+        <div class="list-editor" data-list-editor="brief_constraints"></div>
+        <button type="button" class="list-add" data-list-add="brief_constraints">+ Add constraint</button>
+      </div>
+      <div class="field-group">
+        <div class="field-heading">Acceptance criteria</div>
+        <span class="field-help">One acceptance check per line. These are copied into generated briefs.</span>
+        <div class="list-editor" data-list-editor="acceptance_criteria"></div>
+        <button type="button" class="list-add" data-list-add="acceptance_criteria">+ Add criterion</button>
+      </div>
+      <div class="field-group">
+        <div class="field-heading">Risk notes</div>
+        <span class="field-help">One note per line. These appear in the brief to remind the agent of likely risks.</span>
+        <div class="list-editor" data-list-editor="risk_notes"></div>
+        <button type="button" class="list-add" data-list-add="risk_notes">+ Add risk note</button>
+      </div>
     </fieldset>
     <fieldset>
       <legend>Prompts</legend>
       <label>
-        Execution brief template
-        <span class="field-help">Template for the generated execution brief. Required placeholders are validated on save.</span>
-        <textarea name="execution_brief_template" class="prompt"></textarea>
+        Risk review reason template
+        <span class="field-help">Template used when the workflow pauses for human approval. Required placeholder: request.</span>
+        <textarea name="risk_review_reason_template" class="prompt"></textarea>
       </label>
       <label>
-        Agent instruction template
-        <span class="field-help">Template for the bounded coding-agent instruction text.</span>
-        <textarea name="agent_instruction_template" class="prompt"></textarea>
+        Execution brief template
+        <span class="field-help">Template used to generate the human brief. Required placeholders: request, relevant_files, constraint_list, acceptance_criteria, approval_reason, risk_notes.</span>
+        <textarea name="execution_brief_template" class="prompt"></textarea>
       </label>
     </fieldset>
-    <button type="submit">Save settings</button>
   </form>
 </main>
+<div class="save-bar" aria-label="Save local settings">
+  <p id="status" class="status" role="status" aria-live="polite"></p>
+  <button id="save-settings" type="submit" form="settings-form">Save local settings</button>
+</div>
 <script type="module" src="/admin.js"></script>
 </body>
 </html>

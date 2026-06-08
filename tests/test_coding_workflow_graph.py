@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import replace
 
+from langgraph.checkpoint.memory import MemorySaver
+
 from ai_tech_lead.app_settings import parse_settings
 from ai_tech_lead.coding_workflow_graph import (
     NodeName,
@@ -46,12 +48,15 @@ def test_run_coding_agent_node_override_can_disable_execution(monkeypatch) -> No
         seen_execute_values.append(settings.execute_coding_agent)
 
         class Result:
+            message = "disabled"
+
             def summary(self) -> str:
                 return "disabled"
 
         return Result()
 
     monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.load_settings", fake_load_settings)
+    monkeypatch.setattr("ai_tech_lead.risk_reviewer.load_settings", fake_load_settings)
     monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.run_coding_agent", fake_run_coding_agent)
 
     state = run_coding_agent_node(
@@ -70,10 +75,40 @@ def test_graph_runs_to_disabled_coding_agent_result(monkeypatch) -> None:
         return settings
 
     monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.load_settings", fake_load_settings)
+    monkeypatch.setattr("ai_tech_lead.risk_reviewer.load_settings", fake_load_settings)
     app = build_graph(execute_coding_agent_override=False)
 
     result = app.invoke(graph_state())
 
     assert "Code runs successfully" in result["brief"]
-    assert "Complete this backlog task" in result["agent_instruction"]
-    assert "Coding agent execution disabled by settings." in result["coding_agent_result"]
+    assert result["needs_approval"] is True
+    assert "AI risk review is off, so I need your approval before continuing." in result["approval_reason"]
+    assert result["approved"] is False
+    assert result["agent_instruction"] == ""
+    assert result["coding_agent_result"] == ""
+
+
+def test_rejected_graph_resumes_without_coding_agent_result_index_error(monkeypatch) -> None:
+    settings = parse_settings(valid_settings_dict())
+
+    def fake_load_settings():
+        return settings
+
+    monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.load_settings", fake_load_settings)
+    monkeypatch.setattr("ai_tech_lead.risk_reviewer.load_settings", fake_load_settings)
+
+    app = build_graph(checkpointer_storage=MemorySaver(), execute_coding_agent_override=False)
+    thread_config = {"configurable": {"thread_id": "test-reject-path"}}
+
+    app.invoke(graph_state(), config=thread_config)
+    state_snapshot = app.get_state(thread_config)
+
+    assert state_snapshot.next == (NodeName.APPROVAL_REQUIRED,)
+
+    app.update_state(thread_config, {"approved": False})
+    app.invoke(None, config=thread_config)
+
+    final_state = app.get_state(thread_config)
+    assert final_state.next == ()
+    assert final_state.values["approved"] is False
+    assert final_state.values["coding_agent_result"] == ""

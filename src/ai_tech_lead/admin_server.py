@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -13,24 +14,41 @@ from ai_tech_lead.app_settings import (
     save_settings,
     settings_to_dict,
 )
-from ai_tech_lead.config import SETTINGS_PATH
+from ai_tech_lead.logging_setup import LOGGER_NAME
+from ai_tech_lead.telegram_secrets import (
+    load_telegram_secrets,
+    parse_telegram_secrets,
+    save_telegram_secrets,
+    telegram_secrets_to_dict,
+)
 
 
-DEFAULT_ADMIN_HOST = "127.0.0.1"
-DEFAULT_ADMIN_PORT = 8766
 ADMIN_ASSET_DIR = Path(__file__).resolve().parent / "admin"
 ADMIN_HTML_PATH = ADMIN_ASSET_DIR / "admin.html"
 ADMIN_CSS_PATH = ADMIN_ASSET_DIR / "admin.css"
 ADMIN_JS_PATH = ADMIN_ASSET_DIR / "admin.js"
+ADMIN_FORM_JS_PATH = ADMIN_ASSET_DIR / "admin_form.js"
+ADMIN_CONFIG_JS_PATH = ADMIN_ASSET_DIR / "admin_config.js"
+ADMIN_ROOT_ROUTE = "/"
+SETTINGS_API_ROUTE = "/api/settings"
+TELEGRAM_SECRETS_API_ROUTE = "/api/telegram-secrets"
+ADMIN_CSS_ROUTE = "/admin.css"
+ADMIN_JS_ROUTE = "/admin.js"
+ADMIN_FORM_JS_ROUTE = "/admin_form.js"
+ADMIN_CONFIG_JS_ROUTE = "/admin_config.js"
+
+logger = logging.getLogger(LOGGER_NAME)
 
 
 def run_admin_server(
-    host: str = DEFAULT_ADMIN_HOST,
-    port: int = DEFAULT_ADMIN_PORT,
-    settings_path: Path = SETTINGS_PATH,
+    host: str,
+    port: int,
+    settings_path: Path,
     admin_html_path: Path = ADMIN_HTML_PATH,
     admin_css_path: Path = ADMIN_CSS_PATH,
     admin_js_path: Path = ADMIN_JS_PATH,
+    admin_form_js_path: Path = ADMIN_FORM_JS_PATH,
+    admin_config_js_path: Path = ADMIN_CONFIG_JS_PATH,
 ) -> None:
     """Start the local settings admin screen and JSON API."""
 
@@ -39,10 +57,18 @@ def run_admin_server(
         admin_html_path=admin_html_path,
         admin_css_path=admin_css_path,
         admin_js_path=admin_js_path,
+        admin_form_js_path=admin_form_js_path,
+        admin_config_js_path=admin_config_js_path,
     )
     server = ThreadingHTTPServer((host, port), handler_class)
-    print(f"Admin screen running at http://{host}:{port}/")
-    print(f"Settings API running at http://{host}:{port}/api/settings")
+    logger.info("Admin screen running at http://%s:%s%s", host, port, ADMIN_ROOT_ROUTE)
+    logger.info("Settings API running at http://%s:%s%s", host, port, SETTINGS_API_ROUTE)
+    logger.info(
+        "Telegram secrets API running at http://%s:%s%s",
+        host,
+        port,
+        TELEGRAM_SECRETS_API_ROUTE,
+    )
     server.serve_forever()
 
 
@@ -51,52 +77,80 @@ def _build_handler(
     admin_html_path: Path,
     admin_css_path: Path,
     admin_js_path: Path,
+    admin_form_js_path: Path,
+    admin_config_js_path: Path,
 ) -> type[BaseHTTPRequestHandler]:
     class AdminRequestHandler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:
-            if self.path == "/":
+            if self.path == ADMIN_ROOT_ROUTE:
                 self._send_static_file(
                     path=admin_html_path,
                     content_type="text/html; charset=utf-8",
                 )
                 return
 
-            if self.path == "/admin.css":
+            if self.path == ADMIN_CSS_ROUTE:
                 self._send_static_file(
                     path=admin_css_path,
                     content_type="text/css; charset=utf-8",
                 )
                 return
 
-            if self.path == "/admin.js":
+            if self.path == ADMIN_JS_ROUTE:
                 self._send_static_file(
                     path=admin_js_path,
                     content_type="text/javascript; charset=utf-8",
                 )
                 return
 
-            if self.path == "/api/settings":
+            if self.path == ADMIN_FORM_JS_ROUTE:
+                self._send_static_file(
+                    path=admin_form_js_path,
+                    content_type="text/javascript; charset=utf-8",
+                )
+                return
+
+            if self.path == ADMIN_CONFIG_JS_ROUTE:
+                self._send_static_file(
+                    path=admin_config_js_path,
+                    content_type="text/javascript; charset=utf-8",
+                )
+                return
+
+            if self.path == SETTINGS_API_ROUTE:
                 self._send_settings()
+                return
+
+            if self.path == TELEGRAM_SECRETS_API_ROUTE:
+                self._send_telegram_secrets()
                 return
 
             self.send_error(404, "Not found")
 
         def do_PUT(self) -> None:
-            if self.path != "/api/settings":
-                self.send_error(404, "Not found")
+            if self.path == SETTINGS_API_ROUTE:
+                self._save_settings_from_json()
                 return
 
-            self._save_settings_from_json()
+            if self.path == TELEGRAM_SECRETS_API_ROUTE:
+                self._save_telegram_secrets_from_json()
+                return
+
+            self.send_error(404, "Not found")
 
         def do_POST(self) -> None:
-            if self.path != "/api/settings":
-                self.send_error(404, "Not found")
+            if self.path == SETTINGS_API_ROUTE:
+                self._save_settings_from_json()
                 return
 
-            self._save_settings_from_json()
+            if self.path == TELEGRAM_SECRETS_API_ROUTE:
+                self._save_telegram_secrets_from_json()
+                return
+
+            self.send_error(404, "Not found")
 
         def log_message(self, format: str, *args: object) -> None:
-            return
+            logger.debug("Admin HTTP: " + format, *args)
 
         def _send_static_file(self, path: Path, content_type: str) -> None:
             if not path.exists():
@@ -118,12 +172,28 @@ def _build_handler(
             except (FileNotFoundError, ValueError) as error:
                 self._send_json({"error": str(error)}, status=500)
 
+        def _send_telegram_secrets(self) -> None:
+            try:
+                telegram_secrets = load_telegram_secrets()
+                self._send_json(telegram_secrets_to_dict(telegram_secrets))
+            except (FileNotFoundError, ValueError) as error:
+                self._send_json({"error": str(error)}, status=500)
+
         def _save_settings_from_json(self) -> None:
             try:
                 raw_settings = self._read_json_body()
                 settings = parse_settings(raw_settings)
                 save_settings(settings, settings_path)
                 self._send_json(settings_to_dict(settings))
+            except ValueError as error:
+                self._send_json({"error": str(error)}, status=400)
+
+        def _save_telegram_secrets_from_json(self) -> None:
+            try:
+                raw_secrets = self._read_json_body()
+                telegram_secrets = parse_telegram_secrets(raw_secrets)
+                save_telegram_secrets(telegram_secrets)
+                self._send_json(telegram_secrets_to_dict(telegram_secrets))
             except ValueError as error:
                 self._send_json({"error": str(error)}, status=400)
 

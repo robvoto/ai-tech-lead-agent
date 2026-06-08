@@ -12,7 +12,7 @@ LOG_FILE = LOGS_DIR / "ai_tech_lead.log"
 LOGGER_NAME = "ai_tech_lead"
 
 
-def configure_logging() -> logging.Logger:
+def configure_logging(*, debug: bool = False) -> logging.Logger:
     """Configure project logging for console and file output."""
 
     ensure_project_dirs()
@@ -21,7 +21,8 @@ def configure_logging() -> logging.Logger:
     if logger.handlers:
         return logger
 
-    logger.setLevel(logging.INFO)
+    log_level = logging.DEBUG if debug else logging.INFO
+    logger.setLevel(log_level)
     logger.propagate = False
 
     formatter = logging.Formatter(
@@ -34,11 +35,11 @@ def configure_logging() -> logging.Logger:
         backupCount=3,
         encoding="utf-8",
     )
-    file_handler.setLevel(logging.INFO)
+    file_handler.setLevel(log_level)
     file_handler.setFormatter(formatter)
 
     console_handler = logging.StreamHandler()
-    console_handler.setLevel(logging.INFO)
+    console_handler.setLevel(log_level)
     console_handler.setFormatter(
         logging.Formatter("%(message)s")
     )

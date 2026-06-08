@@ -7,8 +7,7 @@ Purpose:
 Important design rule:
 - This module must NOT silently choose work in a hidden or magical way.
 - The caller should normally choose an item by ID, for example "JH-001".
-- Approval must be explicit in the backlog item while the real LLM risk-review
-  node is still a TODO.
+- Risk/approval is reviewed by the graph, not decided by the backlog file.
 """
 
 from __future__ import annotations
@@ -31,21 +30,12 @@ class BacklogItem:
     title:
         The short human-readable title from the markdown heading.
 
-    approval_required:
-        Explicit human-owned approval flag from the backlog item. This avoids
-        fragile keyword heuristics until a proper LLM risk-review node exists.
-
-    approval_reason:
-        Human-readable reason included in logs and the agent instruction.
-
     body:
         The markdown content under the heading until the next backlog item.
     """
 
     item_id: str
     title: str
-    approval_required: bool
-    approval_reason: str
     body: str
 
 
@@ -130,8 +120,8 @@ Title: {item.title}
     return {
         "request": request,
         "brief": "",
-        "needs_approval": item.approval_required,
-        "approval_reason": item.approval_reason,
+        "needs_approval": False,
+        "approval_reason": "Risk review has not run yet.",
         "approved": False,
         "agent_instruction": "",
         "coding_agent_result": "",
@@ -148,54 +138,12 @@ def _build_item(heading: str, body_lines: list[str]) -> BacklogItem:
         title = heading
 
     body = "\n".join(body_lines).strip()
-    approval_required = _parse_required_approval(item_id.strip(), body)
-    approval_reason = _parse_optional_field(
-        body,
-        "Approval Reason",
-        default="Approval requirement supplied by backlog item.",
-    )
 
     return BacklogItem(
         item_id=item_id.strip(),
         title=title.strip(),
-        approval_required=approval_required,
-        approval_reason=approval_reason,
         body=body,
     )
-
-
-def _parse_required_approval(item_id: str, body: str) -> bool:
-    """Read the required explicit approval flag from a backlog item body."""
-
-    raw_value = _parse_optional_field(body, "Approval Required")
-    if raw_value is None:
-        raise ValueError(
-            f"Backlog item '{item_id}' must include 'Approval Required: yes' "
-            "or 'Approval Required: no'."
-        )
-
-    normalized_value = raw_value.strip().lower()
-    if normalized_value in {"yes", "y", "true"}:
-        return True
-    if normalized_value in {"no", "n", "false"}:
-        return False
-
-    raise ValueError(
-        f"Backlog item '{item_id}' has invalid Approval Required value "
-        f"'{raw_value}'. Use yes or no."
-    )
-
-
-def _parse_optional_field(body: str, field_name: str, default: str | None = None) -> str | None:
-    """Parse one simple 'Field Name: value' line from a markdown backlog item."""
-
-    prefix = f"{field_name}:"
-    for line in body.splitlines():
-        if line.strip().lower().startswith(prefix.lower()):
-            value = line.split(":", 1)[1].strip()
-            return value or default
-
-    return default
 
 
 def _resolve_backlog_path(backlog_path: Path | None) -> Path:
@@ -204,7 +152,7 @@ def _resolve_backlog_path(backlog_path: Path | None) -> Path:
     if backlog_path is not None:
         return backlog_path
 
-    configured_path = Path(load_settings().backlog_path)
+    configured_path = Path(load_settings().backlog_path)    
     if configured_path.is_absolute():
         return configured_path
 

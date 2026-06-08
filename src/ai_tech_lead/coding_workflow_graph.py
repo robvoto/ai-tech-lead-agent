@@ -14,21 +14,25 @@ from langgraph.graph import END, START, StateGraph
 from .app_settings import load_settings
 from .coding_agent_runner import run_coding_agent
 from .config import PROJECT_ROOT
+from .instruction_assembler import build_agent_instruction
 from .logging_setup import LOGGER_NAME
+from .risk_reviewer import review_task_risk
 
 logger = logging.getLogger(LOGGER_NAME)
+
+LOG_SEPARATOR = "----------------------------------------"
 
 
 class NodeName(StrEnum):
     """Stable LangGraph node names."""
 
-    READ_REQUEST = "read_request"
-    CHECK_APPROVAL = "check_approval"
-    CREATE_BRIEF = "create_brief"
-    APPROVAL_REQUIRED = "approval_required"
-    CREATE_AGENT_INSTRUCTION = "create_agent_instruction"
-    RUN_CODING_AGENT = "run_coding_agent"
-    END_NODE = "end_node"
+    READ_REQUEST = "1_read_request"
+    REVIEW_RISK = "2_review_risk"
+    CREATE_BRIEF = "3_create_brief"
+    APPROVAL_REQUIRED = "4_approval_required"
+    CREATE_AGENT_INSTRUCTION = "5_create_agent_instruction"
+    RUN_CODING_AGENT = "6_run_coding_agent"
+    END_NODE = "7_end_node"
 
 
 class GraphState(TypedDict):
@@ -46,7 +50,7 @@ class GraphState(TypedDict):
 def read_request_node(state: GraphState) -> GraphState:
     """Validate and normalize the incoming backlog request."""
 
-    logger.info("---------Reading request---------")
+    _log_node_start("1/6", "READ_REQUEST", "Read backlog request")
 
     request = state["request"].strip()
     if not request:
@@ -57,15 +61,21 @@ def read_request_node(state: GraphState) -> GraphState:
     return state
 
 
-def check_approval_node(state: GraphState) -> GraphState:
-    """Log the explicit approval requirement supplied by the backlog item.
+def review_risk_node(state: GraphState) -> GraphState:
+    """Decide whether this task needs human approval.
 
-    This is not a risk classifier. It deliberately avoids keyword heuristics.
-    TODO: replace or augment this with an LLM risk-review node that returns a
-    structured decision with reason, confidence, and required human action.
+    The graph owns this decision now. The backlog may describe the task, but it
+    no longer decides whether approval is required.
     """
 
-    logger.info("---------Checking approval---------")
+    _log_node_start("2/6", "REVIEW_RISK", "Review task risk")
+    settings = load_settings()
+    logger.info("AI channel: OpenAI Responses API")
+    logger.info("AI model: %s", settings.orchestrator_ai_model)
+    logger.info("AI enabled: %s", settings.orchestrator_ai_enabled)
+    decision = review_task_risk(state["request"])
+    state["needs_approval"] = decision.needs_approval
+    state["approval_reason"] = decision.approval_reason
     logger.info(
         "Approval: %s (%s)",
         "required" if state["needs_approval"] else "not required",
@@ -77,7 +87,7 @@ def check_approval_node(state: GraphState) -> GraphState:
 def create_brief_node(state: GraphState) -> GraphState:
     """Create a structured execution brief for the selected backlog task."""
 
-    logger.info("---------Creating execution brief---------")
+    _log_node_start("3/6", "CREATE_BRIEF", "Create execution brief")
 
     settings = load_settings()
     state["brief"] = settings.prompts["execution_brief_template"].format(
@@ -89,39 +99,45 @@ def create_brief_node(state: GraphState) -> GraphState:
         risk_notes=_format_bullets(settings.risk_notes),
     )
 
+    logger.info("Brief purpose: convert request plus settings into the structured context used by the final Codex handoff.")
+    logger.info("Brief changed instruction: adds watched directories=%s, constraints=%s, acceptance criteria=%s", len(settings.watched_directories), len(settings.brief_constraints), len(settings.acceptance_criteria))
+    logger.info("Brief size: %s characters", len(state["brief"]))
+    logger.info("Brief preview: %s", _single_line_preview(state["brief"]))
+
     return state
 
 
 def route_after_brief(state: GraphState) -> str:
     """Choose the next LangGraph node name after the brief is created."""
 
-    logger.info("---------Routing after brief---------")
+    _log_decision_start("4/6", "ROUTE_AFTER_BRIEF", "Choose next graph path after brief")
 
     if state["needs_approval"]:
-        logger.info("Route: approval_required")
+        logger.info("Decision: needs_approval=True -> next node: approval_required")
         return NodeName.APPROVAL_REQUIRED
 
-    logger.info("Route: create_agent_instruction")
+    logger.info("Decision: needs_approval=False -> next node: create_agent_instruction")
     return NodeName.CREATE_AGENT_INSTRUCTION
 
 
 def route_after_approval(state: GraphState) -> str:
     """Choose the next LangGraph node name after human approval is received."""
 
-    logger.info("---------Routing after approval---------")
+    _log_decision_start("approval", "ROUTE_AFTER_APPROVAL", "Choose next graph path after human decision")
 
     if state["approved"]:
-        logger.info("Route: create_agent_instruction")
+        logger.info("Decision: approved=True -> next node: create_agent_instruction")
         return NodeName.CREATE_AGENT_INSTRUCTION
 
-    logger.info("Route: end_node")
+    logger.info("Decision: approved=False -> next node: end_node")
     return NodeName.END_NODE
 
 
 def approval_required_node(state: GraphState) -> GraphState:
     """Human approval gate before creating a coding-agent instruction."""
 
-    logger.info("---------Request requires approval---------")
+    _log_node_start("approval", "APPROVAL_REQUIRED", "Pause for human approval")
+    logger.info("Approval pause reached")
     logger.info("Approval reason: %s", state["approval_reason"])
     logger.info("This request should not continue without human approval.")
 
@@ -132,22 +148,38 @@ def create_agent_instruction_node(state: GraphState) -> GraphState:
     """Create the bounded instruction package for the coding-agent process."""
 
     settings = load_settings()
-    agent_instruction = settings.prompts["agent_instruction_template"].format(
+    state["agent_instruction"] = build_agent_instruction(
         request=state["request"],
         brief=state["brief"],
         needs_approval=state["needs_approval"],
         approval_reason=state["approval_reason"],
         approved=state["approved"],
-        max_runtime_minutes=settings.max_runtime_minutes,
-        allowed_directories=_format_bullets(settings.allowed_directories),
+        settings=settings,
     )
 
-    state["agent_instruction"] = agent_instruction
-
-    logger.info("---------Creating coding-agent instruction---------")
-    logger.info("Instruction created: %s characters", len(state["agent_instruction"]))
+    _log_node_start("5/6", "CREATE_AGENT_INSTRUCTION", "Create coding-agent instruction")
+    logger.info("Instruction purpose: merge task, brief, orchestrator identity, project rules, selected skills, allowed directories, stop conditions, and validation expectations.")
+    logger.info("Instruction size: %s characters", len(state["agent_instruction"]))
+    logger.info("Instruction preview: %s", _single_line_preview(state["agent_instruction"], limit=360))
 
     return state
+
+
+def _log_node_start(step: str, node_name: str, description: str) -> None:
+    logger.info(LOG_SEPARATOR)
+    logger.info("NODE [%s] %s - %s", step, node_name, description)
+
+
+def _log_decision_start(step: str, decision_name: str, description: str) -> None:
+    logger.info(LOG_SEPARATOR)
+    logger.info("DECISION [%s] %s - %s", step, decision_name, description)
+
+
+def _single_line_preview(text: str, limit: int = 240) -> str:
+    normalized_text = " ".join(text.split())
+    if len(normalized_text) <= limit:
+        return normalized_text
+    return f"{normalized_text[: limit - 3]}..."
 
 
 def _format_bullets(items: list[str]) -> str:
@@ -173,7 +205,7 @@ def run_coding_agent_node(
     on any Python code that Codex changed during the subprocess run.
     """
 
-    logger.info("---------Running coding agent---------")
+    _log_node_start("6/6", "RUN_CODING_AGENT", "Run configured coding agent")
 
     settings = load_settings()
     if execute_coding_agent_override is not None:
@@ -188,8 +220,12 @@ def run_coding_agent_node(
         settings=settings,
     )
     state["coding_agent_result"] = result.summary()
-    logger.info("Coding agent: %s", result.message or "completed")
-    logger.info("Return code: %s", result.returncode)
+    logger.info("Coding agent command: %s", settings.coding_agent_command)
+    logger.info("Coding agent execution enabled: %s", settings.execute_coding_agent)
+    logger.info("Coding agent: %s", getattr(result, "message", "") or "completed")
+    logger.info("Return code: %s", getattr(result, "returncode", None))
+    logger.info("Token usage: unavailable from current Codex CLI runner")
+    logger.info("Cost: unavailable until token usage and pricing config are captured")
 
     return state
 
@@ -197,11 +233,14 @@ def run_coding_agent_node(
 def end_node(state: GraphState) -> GraphState:
     """Log the final request and approval status for review."""
 
-    logger.info("---------Workflow complete---------")
+    _log_node_start("end", "END_NODE", "Workflow complete")
     logger.info("Task: %s", _request_title(state["request"]))
-    logger.info("Approval required: %s", state["needs_approval"])
-    logger.info("Approved: %s", state["approved"])
-    logger.info("Coding agent summary: %s", state["coding_agent_result"].splitlines()[0])
+    logger.info("Approval: required=%s approved=%s", state["needs_approval"], state["approved"])
+    coding_agent_result = state["coding_agent_result"].strip()
+    if coding_agent_result:
+        logger.info("Coding agent: %s", coding_agent_result.splitlines()[0])
+    else:
+        logger.info("Coding agent: not run")
     logger.info("---END---")
     return state
 
@@ -215,7 +254,7 @@ def build_graph(
     workflow = StateGraph(GraphState)
 
     workflow.add_node(NodeName.READ_REQUEST, read_request_node)
-    workflow.add_node(NodeName.CHECK_APPROVAL, check_approval_node)
+    workflow.add_node(NodeName.REVIEW_RISK, review_risk_node)
     workflow.add_node(NodeName.CREATE_BRIEF, create_brief_node)
     workflow.add_node(NodeName.APPROVAL_REQUIRED, approval_required_node)
     workflow.add_node(
@@ -232,8 +271,8 @@ def build_graph(
     workflow.add_node(NodeName.END_NODE, end_node)
 
     workflow.add_edge(START, NodeName.READ_REQUEST)
-    workflow.add_edge(NodeName.READ_REQUEST, NodeName.CHECK_APPROVAL)
-    workflow.add_edge(NodeName.CHECK_APPROVAL, NodeName.CREATE_BRIEF)
+    workflow.add_edge(NodeName.READ_REQUEST, NodeName.REVIEW_RISK)
+    workflow.add_edge(NodeName.REVIEW_RISK, NodeName.CREATE_BRIEF)
     workflow.add_conditional_edges(
         NodeName.CREATE_BRIEF,
         route_after_brief,

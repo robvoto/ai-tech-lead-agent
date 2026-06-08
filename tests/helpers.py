@@ -10,6 +10,13 @@ def valid_settings_dict() -> dict[str, Any]:
         "coding_agent_command": "codex",
         "coding_agent_args": ["--ask-for-approval", "never", "exec"],
         "execute_coding_agent": False,
+        "telegram_enabled": True,
+        "admin_bind_host": "127.0.0.1",
+        "admin_bind_port": 8766,
+        "orchestrator_ai_enabled": False,
+        "orchestrator_ai_model": "gpt-4.1-mini",
+        "orchestrator_ai_max_output_tokens": 300,
+        "orchestrator_ai_timeout_seconds": 20,
         "allowed_directories": ["src/ai_tech_lead", "docs", "tests"],
         "watched_directories": ["src/ai_tech_lead", "docs"],
         "brief_constraints": ["Keep the change small"],
@@ -19,7 +26,21 @@ def valid_settings_dict() -> dict[str, Any]:
             "Validation command and result are reported",
         ],
         "risk_notes": ["Approval is controlled by the selected backlog item."],
+        "telegram_transport": "polling",
+        "telegram_api_base_url": "https://api.telegram.org",
+        "telegram_long_poll_timeout_seconds": 25,
+        "telegram_max_fix_request_chars": 3000,
+        "telegram_max_message_chars": 3900,
+        "telegram_allowed_chat_ids": [],
+        "telegram_webhook_url": "",
+        "telegram_webhook_bind_host": "127.0.0.1",
+        "telegram_webhook_bind_port": 8080,
+        "telegram_webhook_secret_token": "",
         "prompts": {
+            "risk_review_reason_template": (
+                "AI risk review is off, so I need your approval before continuing.\n"
+                "Task:\n{request}"
+            ),
             "execution_brief_template": (
                 "Request:\n{request}\n\n"
                 "Relevant files:\n{relevant_files}\n\n"
@@ -27,20 +48,7 @@ def valid_settings_dict() -> dict[str, Any]:
                 "Acceptance criteria:\n{acceptance_criteria}\n\n"
                 "Approval reason:\n{approval_reason}\n\n"
                 "Risk notes:\n{risk_notes}"
-            ),
-            "agent_instruction_template": (
-                "Task:\n{request}\n\n"
-                "Brief:\n{brief}\n\n"
-                "Approval:\n"
-                "Needs approval: {needs_approval}\n"
-                "Approval reason: {approval_reason}\n"
-                "Approved: {approved}\n\n"
-                "Runtime limit:\n{max_runtime_minutes} minutes\n\n"
-                "Allowed directories:\n{allowed_directories}\n\n"
-                "Instruction:\n"
-                "Complete this backlog task inside the allowed directories. "
-                "Keep the change small, report changed files, and report the exact "
-                "validation command and result."
-            ),
+            )
         },
     }
+

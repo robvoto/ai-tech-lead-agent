@@ -12,6 +12,9 @@ from ai_tech_lead.config import SETTINGS_PATH
 
 
 REQUIRED_PROMPTS = {
+    "risk_review_reason_template": {
+        "request",
+    },
     "execution_brief_template": {
         "acceptance_criteria",
         "approval_reason",
@@ -20,16 +23,9 @@ REQUIRED_PROMPTS = {
         "request",
         "risk_notes",
     },
-    "agent_instruction_template": {
-        "allowed_directories",
-        "approval_reason",
-        "approved",
-        "brief",
-        "max_runtime_minutes",
-        "needs_approval",
-        "request",
-    },
 }
+
+ALLOWED_TELEGRAM_TRANSPORTS = {"polling", "webhook"}
 
 
 @dataclass(frozen=True)
@@ -41,12 +37,29 @@ class AppSettings:
     coding_agent_command: str
     coding_agent_args: list[str]
     execute_coding_agent: bool
+    telegram_enabled: bool
     allowed_directories: list[str]
     watched_directories: list[str]
     brief_constraints: list[str]
     acceptance_criteria: list[str]
     risk_notes: list[str]
     prompts: dict[str, str]
+    telegram_transport: str
+    telegram_api_base_url: str
+    telegram_long_poll_timeout_seconds: int
+    telegram_max_fix_request_chars: int
+    telegram_max_message_chars: int
+    telegram_allowed_chat_ids: list[str]
+    telegram_webhook_url: str
+    telegram_webhook_bind_host: str
+    telegram_webhook_bind_port: int
+    telegram_webhook_secret_token: str
+    admin_bind_host: str
+    admin_bind_port: int
+    orchestrator_ai_enabled: bool
+    orchestrator_ai_model: str
+    orchestrator_ai_max_output_tokens: int
+    orchestrator_ai_timeout_seconds: int
 
 
 def load_settings(settings_path: Path = SETTINGS_PATH) -> AppSettings:
@@ -87,14 +100,91 @@ def parse_settings(raw_settings: dict[str, Any]) -> AppSettings:
             allow_empty=True,
         ),
         execute_coding_agent=_required_bool(raw_settings, "execute_coding_agent"),
+        telegram_enabled=_optional_bool(
+            raw_settings,
+            "telegram_enabled",
+            default=False,
+        ),
         allowed_directories=_required_string_list(raw_settings, "allowed_directories"),
         watched_directories=_required_string_list(raw_settings, "watched_directories"),
         brief_constraints=_required_string_list(raw_settings, "brief_constraints"),
         acceptance_criteria=_required_string_list(raw_settings, "acceptance_criteria"),
         risk_notes=_required_string_list(raw_settings, "risk_notes"),
         prompts=_required_prompt_map(raw_settings),
+        telegram_transport=_required_telegram_transport(raw_settings),
+        telegram_api_base_url=_optional_url(
+            raw_settings,
+            "telegram_api_base_url",
+            default="https://api.telegram.org",
+        ),
+        telegram_long_poll_timeout_seconds=_optional_positive_int(
+            raw_settings,
+            "telegram_long_poll_timeout_seconds",
+            default=25,
+        ),
+        telegram_max_fix_request_chars=_optional_positive_int(
+            raw_settings,
+            "telegram_max_fix_request_chars",
+            default=3000,
+        ),
+        telegram_max_message_chars=_optional_positive_int(
+            raw_settings,
+            "telegram_max_message_chars",
+            default=3900,
+        ),
+        telegram_allowed_chat_ids=_required_string_list(
+            raw_settings,
+            "telegram_allowed_chat_ids",
+            allow_empty=True,
+        ),
+        telegram_webhook_url=_optional_string(raw_settings, "telegram_webhook_url"),
+        telegram_webhook_bind_host=_optional_string(
+            raw_settings,
+            "telegram_webhook_bind_host",
+            default="127.0.0.1",
+        ),
+        telegram_webhook_bind_port=_optional_positive_int(
+            raw_settings,
+            "telegram_webhook_bind_port",
+            default=8080,
+        ),
+        telegram_webhook_secret_token=_optional_string(
+            raw_settings,
+            "telegram_webhook_secret_token",
+        ),
+        admin_bind_host=_optional_string(
+            raw_settings,
+            "admin_bind_host",
+            default="127.0.0.1",
+        ),
+        admin_bind_port=_optional_positive_int(
+            raw_settings,
+            "admin_bind_port",
+            default=8766,
+        ),
+        orchestrator_ai_enabled=_optional_bool(
+            raw_settings,
+            "orchestrator_ai_enabled",
+            default=False,
+        ),
+        orchestrator_ai_model=_optional_string(
+            raw_settings,
+            "orchestrator_ai_model",
+            default="gpt-4.1-mini",
+        ),
+        orchestrator_ai_max_output_tokens=_optional_positive_int(
+            raw_settings,
+            "orchestrator_ai_max_output_tokens",
+            default=300,
+        ),
+        orchestrator_ai_timeout_seconds=_optional_positive_int(
+            raw_settings,
+            "orchestrator_ai_timeout_seconds",
+            default=20,
+        ),
     )
     _validate_prompt_placeholders(settings.prompts)
+    _validate_telegram_settings(settings)
     return settings
 
 
@@ -107,12 +197,29 @@ def settings_to_dict(settings: AppSettings) -> dict[str, Any]:
         "coding_agent_command": settings.coding_agent_command,
         "coding_agent_args": settings.coding_agent_args,
         "execute_coding_agent": settings.execute_coding_agent,
+        "telegram_enabled": settings.telegram_enabled,
         "allowed_directories": settings.allowed_directories,
         "watched_directories": settings.watched_directories,
         "brief_constraints": settings.brief_constraints,
         "acceptance_criteria": settings.acceptance_criteria,
         "risk_notes": settings.risk_notes,
         "prompts": settings.prompts,
+        "telegram_transport": settings.telegram_transport,
+        "telegram_api_base_url": settings.telegram_api_base_url,
+        "telegram_long_poll_timeout_seconds": settings.telegram_long_poll_timeout_seconds,
+        "telegram_max_fix_request_chars": settings.telegram_max_fix_request_chars,
+        "telegram_max_message_chars": settings.telegram_max_message_chars,
+        "telegram_allowed_chat_ids": settings.telegram_allowed_chat_ids,
+        "telegram_webhook_url": settings.telegram_webhook_url,
+        "telegram_webhook_bind_host": settings.telegram_webhook_bind_host,
+        "telegram_webhook_bind_port": settings.telegram_webhook_bind_port,
+        "telegram_webhook_secret_token": settings.telegram_webhook_secret_token,
+        "admin_bind_host": settings.admin_bind_host,
+        "admin_bind_port": settings.admin_bind_port,
+        "orchestrator_ai_enabled": settings.orchestrator_ai_enabled,
+        "orchestrator_ai_model": settings.orchestrator_ai_model,
+        "orchestrator_ai_max_output_tokens": settings.orchestrator_ai_max_output_tokens,
+        "orchestrator_ai_timeout_seconds": settings.orchestrator_ai_timeout_seconds,
     }
 
 
@@ -153,6 +260,85 @@ def _required_bool(raw_settings: dict[str, Any], key: str) -> bool:
     return value
 
 
+def _optional_bool(
+    raw_settings: dict[str, Any],
+    key: str,
+    default: bool = False,
+) -> bool:
+    value = raw_settings.get(key, default)
+    if not isinstance(value, bool):
+        raise ValueError(f"Setting '{key}' must be a boolean.")
+    return value
+
+
+def _optional_string(
+    raw_settings: dict[str, Any],
+    key: str,
+    default: str = "",
+) -> str:
+    value = raw_settings.get(key, default)
+    if value is None:
+        return default
+    if not isinstance(value, str):
+        raise ValueError(f"Setting '{key}' must be a string.")
+    cleaned_value = value.strip()
+    return cleaned_value if cleaned_value else default
+
+
+def _optional_positive_int(
+    raw_settings: dict[str, Any],
+    key: str,
+    default: int,
+) -> int:
+    value = raw_settings.get(key, default)
+    if not isinstance(value, int) or value <= 0:
+        raise ValueError(f"Setting '{key}' must be a positive integer.")
+    return value
+
+
+def _optional_url(
+    raw_settings: dict[str, Any],
+    key: str,
+    default: str,
+) -> str:
+    value = raw_settings.get(key, default)
+    if value is None:
+        return default
+    if not isinstance(value, str):
+        raise ValueError(f"Setting '{key}' must be a string.")
+
+    cleaned_value = value.strip()
+    if not cleaned_value:
+        return default
+    if not cleaned_value.startswith(("http://", "https://")):
+        raise ValueError(f"Setting '{key}' must start with http:// or https://.")
+    return cleaned_value
+
+
+def _required_telegram_transport(raw_settings: dict[str, Any]) -> str:
+    value = raw_settings.get("telegram_transport", "polling")
+    if not isinstance(value, str):
+        raise ValueError("Setting 'telegram_transport' must be a string.")
+
+    normalized_value = value.strip().lower()
+    if normalized_value not in ALLOWED_TELEGRAM_TRANSPORTS:
+        allowed = ", ".join(sorted(ALLOWED_TELEGRAM_TRANSPORTS))
+        raise ValueError(
+            f"Setting 'telegram_transport' must be one of: {allowed}."
+        )
+    return normalized_value
+
+
+def _validate_telegram_settings(settings: AppSettings) -> None:
+    if settings.telegram_transport == "webhook":
+        if not settings.telegram_webhook_url:
+            raise ValueError("Setting 'telegram_webhook_url' is required for webhook mode.")
+        if not settings.telegram_webhook_secret_token:
+            raise ValueError(
+                "Setting 'telegram_webhook_secret_token' is required for webhook mode."
+            )
+
+
 def _required_prompt_map(raw_settings: dict[str, Any]) -> dict[str, str]:
     value = raw_settings.get("prompts")
     if not isinstance(value, dict):
@@ -186,3 +372,4 @@ def _validate_prompt_placeholders(prompts: dict[str, str]) -> None:
             raise ValueError(
                 f"Prompt '{prompt_name}' has unknown placeholders: {unexpected}"
             )
+
