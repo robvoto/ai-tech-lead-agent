@@ -39,7 +39,7 @@ def route_plain_text_intent(*, text: str, settings: AppSettings) -> TelegramInte
     """Route plain Telegram text without executing risky work.
 
     This is intentionally a proposal layer. It may classify intent and explain the
-    next safe action, but it must not run Codex or mutate the backlog.
+    next safe action, but it must not run the configured coding agent or mutate the backlog.
     """
 
     normalized_text = text.strip()
@@ -52,7 +52,7 @@ def route_plain_text_intent(*, text: str, settings: AppSettings) -> TelegramInte
             summary="AI routing is disabled",
             response=(
                 "I can route normal text when orchestrator AI is enabled. "
-                "For now use /code for a coding task, /run for a backlog item, or /help."
+                "For now use /code for a coding task, /run to implement a backlog item, or /help."
             ),
         )
 
@@ -73,7 +73,7 @@ def route_plain_text_intent(*, text: str, settings: AppSettings) -> TelegramInte
             summary="Intent router failed",
             response=(
                 "I could not confidently classify that. Use /code for a coding task, "
-                "/run for a backlog item, or /help."
+                "/run to implement a backlog item, or /help."
             ),
         )
 

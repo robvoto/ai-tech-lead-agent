@@ -69,7 +69,7 @@ Do not use PowerShell as the project runtime terminal.
 - LangGraph ecosystem
 - LangGraph Studio for visual/debug runs
 - SQLite
-- Later: Telegram Bot API, LiteLLM, Deep Agents, Codex/Claude/Gemini routing
+- Later: Telegram Bot API, LiteLLM, Deep Agents, Codex/Claude/Antigravity routing
 
 ## Normal project commands
 

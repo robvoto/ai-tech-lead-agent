@@ -1,0 +1,23 @@
+ .vscode/settings.json                      |   3 [32m+[m[31m-[m
+ AGENTS.md                                  | 105 [32m+++++++++++++++++++++++++++++++++++[m[31m----------------------[m
+ docs/ARCHITECTURE.md                       |  17 [32m++++++[m[31m----[m
+ docs/BACKLOG.md                            |  84 [32m+++++++++++++++++++++++++++++++++++++++++++[m[31m---[m
+ docs/UI_ADMIN_DESIGN.md                    |   4 [32m+[m[31m--[m
+ docs/plan/INITIAL_PLAN.md                  |  72 [32m+++++++++++++++++++[m[31m--------------------[m
+ pyproject.toml                             |  15 [32m+++++++++[m
+ src/ai_tech_lead/admin/admin.html          |   4 [32m+[m[31m--[m
+ src/ai_tech_lead/backlog_loader.py         | 109 [32m+++++[m[31m------------------------------------------------------[m
+ src/ai_tech_lead/coding_agent_runner.py    |  99 [32m+++++++++++++++++++++++++++++++++++++++++++++++++[m[31m-----[m
+ src/ai_tech_lead/coding_workflow_graph.py  |  73 [32m++++++++++++++++++++++++++++++++[m[31m--------[m
+ src/ai_tech_lead/instruction_assembler.py  |  59 [32m+++++++++++++++++[m[31m---------------[m
+ src/ai_tech_lead/orchestrator_llm.py       |  82 [32m+++++++++++++++++++++++++++[m[31m------------------[m
+ src/ai_tech_lead/risk_reviewer.py          |  36 [32m++++++++[m[31m------------[m
+ src/ai_tech_lead/telegram_intent_router.py |  22 [32m++++++[m[31m------[m
+ src/ai_tech_lead/telegram_operator.py      | 178 [32m+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++[m[31m------------[m
+ tests/test_coding_agent_runner.py          | 108 [32m++++++++++++++++++++++++++++++++++++++++++++++++[m[31m-----------[m
+ tests/test_coding_workflow_graph.py        |  34 [32m+++++++++++++++++++[m
+ tests/test_instruction_assembler.py        |  36 [32m++++++++++++++[m[31m------[m
+ tests/test_telegram_intent_router.py       |   9 [32m++[m[31m---[m
+ tests/test_telegram_operator.py            | 116 [32m++++++++++++++++++++++++++++++++++++++++++++++[m[31m-----------------[m
+ uv.lock                                    | 185 [32m+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++[m
+ 22 files changed, 1056 insertions(+), 394 deletions(-)

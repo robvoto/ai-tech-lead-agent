@@ -12,6 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 import json
+from pathlib import Path
 import logging
 import re
 import uuid
@@ -27,12 +28,14 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.memory import MemorySaver
 
 from .app_settings import AppSettings, load_settings
+from .backlog_draft_builder import BacklogDraftBuildError, build_backlog_draft_from_text
 from .backlog_loader import backlog_item_to_graph_state, load_backlog_item_by_id
 from .coding_workflow_graph import GraphState, build_graph
 from .config import PROJECT_ROOT
 from .logging_setup import LOGGER_NAME
+from .backlog_repository import BacklogDraft, MarkdownBacklogRepository, render_backlog_draft
+from .telegram_agent_graph import build_telegram_agent_graph, run_telegram_agent_message
 from .telegram_secrets import load_telegram_secrets
-from .telegram_intent_router import TelegramIntentAction, route_plain_text_intent
 
 logger = logging.getLogger(LOGGER_NAME)
 ORCHESTRATOR_IDENTITY_PATH = PROJECT_ROOT / "docs" / "ORCHESTRATOR_IDENTITY.md"
@@ -70,6 +73,14 @@ class TelegramUpdate:
     chat_id: str
     text: str
     sender: str
+
+
+@dataclass
+class PendingBacklogDraft:
+    """Backlog draft waiting for explicit Telegram approval."""
+
+    chat_id: str
+    draft: BacklogDraft
 
 
 @dataclass
@@ -210,6 +221,9 @@ class TelegramOperator:
         self._shutdown_callback = shutdown_callback
         self._running = False
         self._active_tasks: dict[str, ActiveTelegramTask] = {}
+        self._pending_backlog_drafts: dict[str, PendingBacklogDraft] = {}
+        self._telegram_agent_memory = MemorySaver()
+        self._telegram_agent_app: Any | None = None
         self._session_id = uuid.uuid4().hex
         self._allowed_chat_ids = {
             chat_id.strip() for chat_id in settings.telegram_allowed_chat_ids if chat_id.strip()
@@ -340,14 +354,21 @@ class TelegramOperator:
             return
 
         if command.name == TelegramCommandName.NEW:
-            self._handle_new_session(chat_id)
+            if command.argument:
+                self._handle_backlog_proposal(chat_id, command.argument)
+            else:
+                self._handle_new_session(chat_id)
             return
 
         if command.name == TelegramCommandName.APPROVE:
+            if self._handle_backlog_draft_decision(chat_id, approved=True):
+                return
             self._handle_approval(chat_id, approved=True)
             return
 
         if command.name == TelegramCommandName.REJECT:
+            if self._handle_backlog_draft_decision(chat_id, approved=False):
+                return
             self._handle_approval(chat_id, approved=False)
             return
 
@@ -381,14 +402,78 @@ class TelegramOperator:
         )
 
     def _handle_plain_text(self, chat_id: str, text: str) -> None:
-        intent = route_plain_text_intent(text=text, settings=self._settings)
-        if intent.action == TelegramIntentAction.STATUS:
-            self._send_message(chat_id, self._status_text(chat_id))
+        if chat_id in self._active_tasks:
+            self._send_message(
+                chat_id,
+                "A coding task is active. Reply /approve or /reject before normal chat.",
+            )
             return
-        if intent.action == TelegramIntentAction.HELP:
-            self._send_message(chat_id, self._help_text())
+        if chat_id in self._pending_backlog_drafts:
+            self._send_message(
+                chat_id,
+                "A backlog draft is waiting. Reply /approve or /reject before normal chat.",
+            )
             return
-        self._send_message(chat_id, intent.response)
+        if not self._settings.orchestrator_ai_enabled:
+            self._send_message(
+                chat_id,
+                "I can route normal text when orchestrator AI is enabled. "
+                "For now use /code for a coding task, /run to implement a backlog item, or /help.",
+            )
+            return
+
+        try:
+            reply = run_telegram_agent_message(
+                app=self._get_telegram_agent_app(),
+                thread_id=self._telegram_agent_thread_id(chat_id),
+                text=text,
+            )
+        except Exception:
+            logger.exception("Telegram agent graph failed for chat %s", chat_id)
+            self._send_message(chat_id, "Error: Telegram agent graph failed. Check logs.")
+            return
+
+        self._send_message(chat_id, reply.text)
+
+    def _handle_backlog_proposal(self, chat_id: str, text: str) -> None:
+        if chat_id in self._active_tasks:
+            self._send_message(chat_id, "A coding task is active. Reply /approve or /reject before creating backlog work.")
+            return
+        if chat_id in self._pending_backlog_drafts:
+            self._send_message(chat_id, "A backlog draft is already waiting. Reply /approve or /reject first.")
+            return
+
+        repository = MarkdownBacklogRepository(Path(self._settings.backlog_path))
+        try:
+            result = build_backlog_draft_from_text(
+                text=text,
+                repository=repository,
+                settings=self._settings,
+            )
+        except BacklogDraftBuildError as error:
+            self._send_message(chat_id, f"Backlog draft failed: {error}")
+            return
+
+        self._pending_backlog_drafts[chat_id] = PendingBacklogDraft(chat_id=chat_id, draft=result.draft)
+        self._send_message(
+            chat_id,
+            _backlog_draft_prompt(result.draft, source=result.source, limit=self._settings.telegram_max_message_chars),
+        )
+
+    def _handle_backlog_draft_decision(self, chat_id: str, *, approved: bool) -> bool:
+        pending_draft = self._pending_backlog_drafts.get(chat_id)
+        if pending_draft is None:
+            return False
+
+        self._pending_backlog_drafts.pop(chat_id, None)
+        if not approved:
+            self._send_message(chat_id, f"Backlog draft rejected: {pending_draft.draft.item_id}")
+            return True
+
+        repository = MarkdownBacklogRepository(Path(self._settings.backlog_path))
+        item = repository.add_item(pending_draft.draft)
+        self._send_message(chat_id, f"Backlog item added: {item.item_id} - {item.title}")
+        return True
 
     def _run_code_task(
         self,
@@ -524,6 +609,7 @@ class TelegramOperator:
         transport_state = self._settings.telegram_transport.upper()
         active_task = self._active_tasks.get(chat_id)
         active_chat_count = len(self._active_tasks)
+        pending_backlog_count = len(self._pending_backlog_drafts)
 
         lines = [
             (
@@ -533,7 +619,8 @@ class TelegramOperator:
                 f"Coding-agent execution: {execution_state}."
             ),
             f"Orchestrator AI model: {self._settings.orchestrator_ai_model}.",
-            f"Active chats: {active_chat_count}.",
+            f"Active coding tasks: {active_chat_count}.",
+            f"Pending backlog drafts: {pending_backlog_count}.",
         ]
         if active_task is None:
             lines.append("This chat: no active task.")
@@ -545,6 +632,8 @@ class TelegramOperator:
 
     def _handle_new_session(self, chat_id: str) -> None:
         active_task = self._active_tasks.pop(chat_id, None)
+        self._pending_backlog_drafts.pop(chat_id, None)
+        self._reset_telegram_agent_memory()
         self._session_id = uuid.uuid4().hex
 
         if active_task is None:
@@ -572,7 +661,8 @@ class TelegramOperator:
                 "Commands:",
                 "/help - show this help",
                 "/new - start a fresh session",
-                "/run ATL-001 - run a backlog item by ID",
+                "/new <text> - propose a backlog item",
+                "/run ATL-001 - implement a backlog item by ID",
                 "/code <text> - explicit coding workflow",
                 "/fix <text> - old alias for /code",
                 "/status - check bot status",
@@ -583,7 +673,13 @@ class TelegramOperator:
         )
 
     def _fresh_session_text(self) -> str:
-        return "\n".join(["Fresh session ready.", *self._session_intro_lines()])
+        return "\n".join(
+            [
+                "Fresh session ready.",
+                f"Model: {self._settings.orchestrator_ai_model}.",
+                "Use /help for commands.",
+            ]
+        )
 
     def _session_intro_lines(self) -> list[str]:
         identity = _load_orchestrator_identity_summary()
@@ -591,8 +687,23 @@ class TelegramOperator:
         return [
             identity,
             f"Orchestrator AI model: {self._settings.orchestrator_ai_model} ({execution_state}).",
-            "Use normal text to ask the orchestrator, /code for explicit coding work, or /run for a backlog item.",
+            "Use normal text to ask the orchestrator, /new <text> for backlog work, /code for explicit coding work, or /run to implement an existing backlog item.",
         ]
+
+    def _get_telegram_agent_app(self) -> Any:
+        if self._telegram_agent_app is None:
+            self._telegram_agent_app = build_telegram_agent_graph(
+                settings=self._settings,
+                checkpointer=self._telegram_agent_memory,
+            )
+        return self._telegram_agent_app
+
+    def _telegram_agent_thread_id(self, chat_id: str) -> str:
+        return f"telegram-agent-{self._session_id}-{chat_id}"
+
+    def _reset_telegram_agent_memory(self) -> None:
+        self._telegram_agent_memory = MemorySaver()
+        self._telegram_agent_app = None
 
     def _send_message(self, chat_id: str, text: str) -> None:
         self._client.send_message(
@@ -725,10 +836,9 @@ def parse_telegram_command(text: str) -> TelegramCommand:
         )
 
     if command_name == TelegramCommandName.NEW:
-        if argument.strip():
-            raise ValueError("/new does not accept extra text.")
         return TelegramCommand(
             name=TelegramCommandName.NEW,
+            argument=argument.strip(),
             raw_text=normalized_text,
         )
 
@@ -856,6 +966,24 @@ def _telegram_approval_reason(approval_reason: str) -> str:
     return _summarize_text(normalized_reason, limit=180)
 
 
+def _backlog_draft_prompt(draft: BacklogDraft, *, source: str, limit: int) -> str:
+    return _truncate_text(
+        "\n".join(
+            [
+                "Backlog draft ready",
+                f"ID: {draft.item_id}",
+                f"Title: {draft.title}",
+                f"Source: {source}",
+                "",
+                render_backlog_draft(draft),
+                "",
+                "Reply /approve to add it or /reject to discard it.",
+            ]
+        ),
+        limit,
+    )
+
+
 def _completion_message(
     task_label: str,
     state_values: dict[str, Any],
@@ -863,13 +991,21 @@ def _completion_message(
     limit: int,
 ) -> str:
     coding_agent_result = str(state_values.get("coding_agent_result", "")).strip()
-    if coding_agent_result:
-        first_line = coding_agent_result.splitlines()[0]
-        return _truncate_text(
-            f"Task complete: {task_label}\n{first_line}",
-            limit,
-        )
-    return _truncate_text(f"Task complete: {task_label}", limit)
+    if not coding_agent_result:
+        return _truncate_text(f"Task complete: {task_label}", limit)
+
+    # Completion summary rules live in docs/prompts/completion_summary_prompt.md.
+    # summary() format: friendly message, duration, changed files, token notice, then
+    # Command:/Return code:/Timed out:/Stdout:/Stderr: (verbose, not shown on Telegram).
+    _VERBOSE_PREFIXES = ("Command:", "Return code:", "Timed out:", "Stdout:", "Stderr:")
+    summary_lines: list[str] = []
+    for line in coding_agent_result.splitlines():
+        if line.startswith(_VERBOSE_PREFIXES):
+            break
+        summary_lines.append(line)
+
+    body = "\n".join(summary_lines).strip() or coding_agent_result.splitlines()[0]
+    return _truncate_text(f"Task complete: {task_label}\n{body}", limit)
 
 
 def _load_orchestrator_identity_summary() -> str:

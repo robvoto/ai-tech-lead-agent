@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find /mnt/e/Programming -maxdepth 2 -name \"pages.py\" 2>/dev/null | grep -i job)",
+      "Read(//mnt/e/Programming/**)"
+    ]
+  }
+}

@@ -16,6 +16,7 @@ def test_plain_text_router_falls_back_when_ai_disabled() -> None:
 
     assert intent.action == TelegramIntentAction.UNCLEAR
     assert "/code" in intent.response
+    assert "implement a backlog item" in intent.response
 
 
 def test_plain_text_router_uses_ai_when_enabled(monkeypatch) -> None:

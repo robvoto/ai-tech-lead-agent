@@ -7,6 +7,7 @@ from pathlib import Path
 
 from ai_tech_lead.app_settings import AppSettings
 from ai_tech_lead.config import PROJECT_ROOT
+from ai_tech_lead.prompt_loader import load_prompt
 
 AGENTS_PATH = PROJECT_ROOT / "AGENTS.md"
 IDENTITY_PATH = PROJECT_ROOT / "docs" / "ORCHESTRATOR_IDENTITY.md"
@@ -32,6 +33,8 @@ def build_agent_instruction(
     skills = select_skills(request)
     selected_skills = "\n\n".join(_render_skill(skill) for skill in skills)
     project_rules = _extract_project_rules()
+    backlog_ownership_rules = load_prompt("backlog_ownership_rules.md")
+    coding_agent_handoff_rules = load_prompt("coding_agent_handoff_rules.md")
     stop_conditions = _format_bullets(
         [
             "Stop if files outside the allowed directories are needed.",
@@ -60,6 +63,8 @@ def build_agent_instruction(
             _section("Allowed directories", _format_bullets(settings.allowed_directories)),
             _section("Runtime limit", f"{settings.max_runtime_minutes} minutes"),
             _section("Acceptance criteria", _format_bullets(settings.acceptance_criteria)),
+            _section("Backlog ownership rules", backlog_ownership_rules),
+            _section("Coding-agent handoff rules", coding_agent_handoff_rules),
             _section("Stop conditions", stop_conditions),
             _section("Final instruction", final_instruction),
         ]
@@ -84,7 +89,7 @@ def _extract_project_rules() -> str:
     content = AGENTS_PATH.read_text(encoding="utf-8")
     return "\n\n".join(
         _extract_section(content, heading)
-        for heading in ["Startup protocol", "Source hierarchy", "Non-negotiables", "Testing rule", "Definition of Done"]
+        for heading in ["Startup protocol", "Source hierarchy", "Non-negotiables", "Validation commands", "Definition of Done"]
     )
 
 

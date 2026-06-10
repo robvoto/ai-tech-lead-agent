@@ -9,6 +9,7 @@ from typing import Any
 
 from .app_settings import AppSettings, load_settings
 from .logging_setup import LOGGER_NAME
+from .prompt_loader import load_prompt
 from .orchestrator_llm import (
     OrchestratorLlmConfig,
     OrchestratorLlmError,
@@ -16,6 +17,7 @@ from .orchestrator_llm import (
 )
 
 logger = logging.getLogger(LOGGER_NAME)
+RISK_REVIEW_PROMPT = load_prompt("risk_review_prompt.md")
 
 
 @dataclass(frozen=True)
@@ -106,14 +108,4 @@ def _safe_default_decision(
 
 
 def _risk_review_prompt(request: str) -> str:
-    return (
-        "You are the AI Technical Lead Orchestrator risk reviewer. "
-        "Return only valid JSON. Do not include Markdown. "
-        "Decide whether this task requires human approval before a coding agent continues. "
-        "Use this schema exactly: "
-        "{\"needs_approval\": boolean, \"risk_level\": \"low|medium|high\", "
-        "\"reason\": string, \"confidence\": number, \"recommended_action\": string}. "
-        "Approval is required for destructive, broad, ambiguous, expensive, security-sensitive, "
-        "architecture-changing, or externally connected work.\n\n"
-        f"Task request:\n{request}"
-    )
+    return RISK_REVIEW_PROMPT.replace("{request}", request)

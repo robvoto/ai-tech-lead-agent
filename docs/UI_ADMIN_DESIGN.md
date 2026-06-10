@@ -6,7 +6,7 @@ The admin UI is the local control panel for the AI Technical Lead Orchestrator. 
 
 ## Design Goal
 
-Make the page clear enough that the human can safely control Telegram, Codex execution, settings, and prompts without reading code.
+Make the page clear enough that the human can safely control Telegram, coding-agent execution, settings, and prompts without reading code.
 
 ## Layout
 
@@ -17,7 +17,7 @@ Use a simple two-zone layout:
 
 ## Safety UX
 
-The `Execute coding agent` toggle is dangerous because it allows Codex to modify files. It must be visually distinct and clearly labelled as a real execution switch.
+The `Execute coding agent` toggle is dangerous because it allows the configured coding agent to modify files. It must be visually distinct and clearly labelled as a real execution switch.
 
 The `Enable Telegram operator` toggle should explain that changes apply on restart until hot reload exists.
 

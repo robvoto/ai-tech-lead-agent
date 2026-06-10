@@ -5,7 +5,9 @@ from dataclasses import replace
 import pytest
 
 from ai_tech_lead.app_settings import parse_settings
-from ai_tech_lead.telegram_intent_router import TelegramIntent, TelegramIntentAction
+from ai_tech_lead.backlog_draft_builder import BacklogDraftBuildResult
+from ai_tech_lead.backlog_repository import BacklogDraft
+from ai_tech_lead.telegram_agent_graph import TelegramAgentReply
 from ai_tech_lead.telegram_operator import (
     ActiveTelegramTask,
     TelegramCommand,
@@ -145,6 +147,7 @@ def test_help_text_shows_identity_and_model() -> None:
     assert "Orchestrator AI model: gpt-4.1-mini" in help_text
     assert "/help - show this help" in help_text
     assert "/code <text> - explicit coding workflow" in help_text
+    assert "/run ATL-001 - implement a backlog item by ID" in help_text
     assert "/fix <text> - old alias for /code" in help_text
     assert "/start - show this help" not in help_text
 
@@ -272,55 +275,106 @@ class _RecordingClient:
 
 
 
-def test_plain_text_routes_through_intent_router(monkeypatch: pytest.MonkeyPatch) -> None:
-    settings = parse_settings(valid_settings_dict())
+def test_plain_text_goes_to_telegram_agent_when_ai_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    raw_settings = valid_settings_dict()
+    raw_settings["orchestrator_ai_enabled"] = True
+    settings = parse_settings(raw_settings)
     client = _RecordingClient()
     operator = TelegramOperator("dummy", settings, client=client)
+    agent_called_with: list[str] = []
 
-    def fake_route_plain_text_intent(*, text, settings):
-        assert text == "make the admin easier to use"
-        return TelegramIntent(
-            action=TelegramIntentAction.CODE_TASK,
-            summary="Admin UI improvement",
-            response="This looks like a coding task. Use /code to start the coding workflow.",
-        )
+    def fake_run_telegram_agent_message(*, app, thread_id, text):
+        agent_called_with.append(text)
+        return TelegramAgentReply(text="There are 3 backlog items.")
 
-    monkeypatch.setattr("ai_tech_lead.telegram_operator.route_plain_text_intent", fake_route_plain_text_intent)
+    monkeypatch.setattr(
+        "ai_tech_lead.telegram_operator.run_telegram_agent_message",
+        fake_run_telegram_agent_message,
+    )
+    monkeypatch.setattr(
+        "ai_tech_lead.telegram_operator.build_telegram_agent_graph",
+        lambda settings, checkpointer: object(),
+    )
 
     operator._handle_command(
         "chat-1",
         TelegramCommand(
             name=TelegramCommandName.UNKNOWN,
-            raw_text="make the admin easier to use",
+            raw_text="How many backlog items?",
         ),
         "demo-user",
     )
 
-    assert client.messages[-1] == (
-        "chat-1",
-        "This looks like a coding task. Use /code to start the coding workflow.",
-    )
+    assert agent_called_with == ["How many backlog items?"]
+    assert client.messages[-1] == ("chat-1", "There are 3 backlog items.")
+    assert not any(msg[1].startswith("Bot is alive.") for msg in client.messages)
 
 
-def test_plain_text_status_intent_returns_status(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_plain_text_returns_fallback_when_ai_disabled() -> None:
     settings = parse_settings(valid_settings_dict())
     client = _RecordingClient()
     operator = TelegramOperator("dummy", settings, client=client)
 
-    monkeypatch.setattr(
-        "ai_tech_lead.telegram_operator.route_plain_text_intent",
-        lambda text, settings: TelegramIntent(
-            action=TelegramIntentAction.STATUS,
-            summary="Status request",
-            response="",
-        ),
-    )
-
     operator._handle_command(
         "chat-1",
-        TelegramCommand(name=TelegramCommandName.UNKNOWN, raw_text="are you running?"),
+        TelegramCommand(name=TelegramCommandName.UNKNOWN, raw_text="What is the status?"),
         "demo-user",
     )
 
     assert client.messages[-1][0] == "chat-1"
-    assert client.messages[-1][1].startswith("Bot is alive.")
+    assert "orchestrator AI is enabled" in client.messages[-1][1]
+    assert not client.messages[-1][1].startswith("Bot is alive.")
+
+
+
+def test_new_with_text_proposes_and_approves_backlog_item(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    backlog_path = tmp_path / "BACKLOG.md"
+    backlog_path.write_text(
+        "# Backlog\n\n"
+        "## ATL-001 - Existing item\n\n"
+        "Goal:\nExisting\n",
+        encoding="utf-8",
+    )
+    raw_settings = valid_settings_dict()
+    raw_settings["backlog_path"] = str(backlog_path)
+    raw_settings["orchestrator_ai_enabled"] = True
+    settings = parse_settings(raw_settings)
+    client = _RecordingClient()
+    operator = TelegramOperator("token", settings, client=client)
+
+    def fake_build_backlog_draft_from_text(*, text, repository, settings):
+        assert text == "add backlog support"
+        return BacklogDraftBuildResult(
+            draft=BacklogDraft(
+                item_id="ATL-002",
+                title="Add backlog support",
+                approval_required=True,
+                approval_reason="Adds a backlog writing workflow.",
+                goal="Allow approved backlog drafts to be appended.",
+                constraints=["Require approval before writing"],
+            ),
+            source="fake-model",
+        )
+
+    monkeypatch.setattr(
+        "ai_tech_lead.telegram_operator.build_backlog_draft_from_text",
+        fake_build_backlog_draft_from_text,
+    )
+
+    operator._handle_command(
+        "chat-1",
+        TelegramCommand(name=TelegramCommandName.NEW, argument="add backlog support"),
+        "demo-user",
+    )
+
+    assert "Backlog draft ready" in client.messages[-1][1]
+    assert "ATL-002" in client.messages[-1][1]
+
+    operator._handle_command(
+        "chat-1",
+        TelegramCommand(name=TelegramCommandName.APPROVE),
+        "demo-user",
+    )
+
+    assert client.messages[-1] == ("chat-1", "Backlog item added: ATL-002 - Add backlog support")
+    assert "## ATL-002 - Add backlog support" in backlog_path.read_text(encoding="utf-8")

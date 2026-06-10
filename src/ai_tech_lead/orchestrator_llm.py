@@ -5,13 +5,18 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 import os
+import logging
+import time
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from ai_tech_lead.env_loader import load_local_env
+from ai_tech_lead.logging_setup import LOGGER_NAME
 
 OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses"
 OPENAI_API_KEY_ENV = "OPENAI_API_KEY"
+
+logger = logging.getLogger(LOGGER_NAME)
 
 
 @dataclass(frozen=True)
@@ -34,8 +39,11 @@ def call_orchestrator_llm(*, prompt: str, config: OrchestratorLlmConfig) -> Orch
     """Call OpenAI using a local project API key from the environment."""
 
     load_local_env()
+    start_time = time.perf_counter()
     api_key = os.environ.get(OPENAI_API_KEY_ENV, "").strip()
     if not api_key or api_key == "replace-with-your-project-service-account-key":
+        elapsed_ms = (time.perf_counter() - start_time) * 1000
+        logger.info("LLM call elapsed: %.0fms model=%s status=skipped", elapsed_ms, config.model)
         raise OrchestratorLlmError("OPENAI_API_KEY is not configured.")
 
     payload = {
@@ -58,14 +66,22 @@ def call_orchestrator_llm(*, prompt: str, config: OrchestratorLlmConfig) -> Orch
             body = response.read().decode("utf-8")
     except HTTPError as error:
         error_body = error.read().decode("utf-8", errors="replace")
+        elapsed_ms = (time.perf_counter() - start_time) * 1000
+        logger.info("LLM call elapsed: %.0fms model=%s status=error", elapsed_ms, config.model)
         raise OrchestratorLlmError(f"OpenAI API error: {error_body}") from error
     except URLError as error:
+        elapsed_ms = (time.perf_counter() - start_time) * 1000
+        logger.info("LLM call elapsed: %.0fms model=%s status=error", elapsed_ms, config.model)
         raise OrchestratorLlmError(f"OpenAI API request failed: {error.reason}") from error
 
     data = json.loads(body)
     text = _extract_response_text(data)
     if not text:
+        elapsed_ms = (time.perf_counter() - start_time) * 1000
+        logger.info("LLM call elapsed: %.0fms model=%s status=error", elapsed_ms, config.model)
         raise OrchestratorLlmError("OpenAI response did not contain output text.")
+    elapsed_ms = (time.perf_counter() - start_time) * 1000
+    logger.info("LLM call elapsed: %.0fms model=%s status=ok", elapsed_ms, config.model)
     return OrchestratorLlmResult(text=text)
 
 

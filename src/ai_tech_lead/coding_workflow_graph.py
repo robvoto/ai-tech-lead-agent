@@ -99,7 +99,7 @@ def create_brief_node(state: GraphState) -> GraphState:
         risk_notes=_format_bullets(settings.risk_notes),
     )
 
-    logger.info("Brief purpose: convert request plus settings into the structured context used by the final Codex handoff.")
+    logger.info("Brief purpose: convert request plus settings into the structured context used by the final agent handoff.")
     logger.info("Brief changed instruction: adds watched directories=%s, constraints=%s, acceptance criteria=%s", len(settings.watched_directories), len(settings.brief_constraints), len(settings.acceptance_criteria))
     logger.info("Brief size: %s characters", len(state["brief"]))
     logger.info("Brief preview: %s", _single_line_preview(state["brief"]))
@@ -186,6 +186,12 @@ def _format_bullets(items: list[str]) -> str:
     return "\n".join(f"- {item}" for item in items)
 
 
+def _short_reason(reason: str, limit: int = 120) -> str:
+    """Return a single-line preview of the approval reason for log readability."""
+    normalized = " ".join(reason.split())
+    return normalized[:limit] + "..." if len(normalized) > limit else normalized
+
+
 def _request_title(request: str) -> str:
     """Return a short task label for readable console logs."""
 
@@ -199,20 +205,43 @@ def run_coding_agent_node(
     state: GraphState,
     execute_coding_agent_override: bool | None = None,
 ) -> GraphState:
-    """Run the configured Codex CLI command as a separate process.
+    """Run the configured coding-agent command as a separate process.
 
-    Codex may modify files on disk. Restart this Python process before relying
-    on any Python code that Codex changed during the subprocess run.
+    The configured coding agent may modify files on disk. Restart this Python process before relying
+    on any Python code changed during the subprocess run.
     """
 
     _log_node_start("6/6", "RUN_CODING_AGENT", "Run configured coding agent")
+    logger.info("[LEARN] This is the RUN_CODING_AGENT node — the final step of the coding workflow graph.")
+    logger.info("[LEARN] It launches your configured coding agent (e.g. Codex) as a separate subprocess.")
 
     settings = load_settings()
     if execute_coding_agent_override is not None:
-        settings = replace(
-            settings,
-            execute_coding_agent=execute_coding_agent_override,
-        )
+        settings = replace(settings, execute_coding_agent=execute_coding_agent_override)
+
+    # Approval context: explains who/what authorised this run
+    needs_approval = state["needs_approval"]
+    approved = state["approved"]
+    if not needs_approval:
+        approval_source = "not_required_by_risk_review"
+    elif approved:
+        approval_source = "human_approved"
+    else:
+        approval_source = "not_applicable"
+
+    logger.info(
+        "[LEARN] Approval context: approval_required=%s approved=%s approval_source=%s",
+        needs_approval,
+        approved,
+        approval_source,
+    )
+    logger.info("[LEARN] Approval reason: %s", _short_reason(state["approval_reason"]))
+    logger.info("Coding agent command: %s", settings.coding_agent_command)
+    logger.info("Coding agent execution enabled: %s", settings.execute_coding_agent)
+    logger.info("Working directory: %s", str(PROJECT_ROOT))
+
+    if settings.execute_coding_agent:
+        logger.info("[LEARN] Starting coding agent subprocess now. This may take several minutes.")
 
     result = run_coding_agent(
         agent_instruction=state["agent_instruction"],
@@ -220,12 +249,28 @@ def run_coding_agent_node(
         settings=settings,
     )
     state["coding_agent_result"] = result.summary()
-    logger.info("Coding agent command: %s", settings.coding_agent_command)
-    logger.info("Coding agent execution enabled: %s", settings.execute_coding_agent)
-    logger.info("Coding agent: %s", getattr(result, "message", "") or "completed")
-    logger.info("Return code: %s", getattr(result, "returncode", None))
-    logger.info("Token usage: unavailable from current Codex CLI runner")
-    logger.info("Cost: unavailable until token usage and pricing config are captured")
+
+    logger.info("[LEARN] Coding agent subprocess finished.")
+    logger.info("[LEARN] %s", result.message)
+    logger.info("System exit code: %s", result.returncode)
+
+    if result.duration_seconds > 0:
+        logger.info("[LEARN] Duration: %.1f seconds", result.duration_seconds)
+
+    if result.changed_files_delta:
+        logger.info(
+            "[LEARN] Files changed by the coding agent (%s): %s",
+            len(result.changed_files_delta),
+            ", ".join(result.changed_files_delta[:10]),
+        )
+    elif result.command:
+        logger.info("[LEARN] No new file changes detected after coding agent run.")
+
+    logger.info(
+        "[LEARN] Token usage: not available from the current Codex CLI runner. "
+        "The subprocess runs as a separate process and does not expose its LLM token counts."
+    )
+    logger.info("[LEARN] Cost: not available for the same reason.")
 
     return state
 

@@ -1,0 +1,9 @@
+{
+  "_comment": "Approximate LLM pricing in USD per 1 million tokens (input, output). This is a hardcoded prototype config — no provider exposes pricing via API, so it must be maintained manually. Update when OpenAI or other provider pricing changes.",
+  "models": {
+    "gpt-4.1-mini": {"input": 0.40, "output": 1.60},
+    "gpt-4.1":      {"input": 2.00, "output": 8.00},
+    "gpt-4o-mini":  {"input": 0.15, "output": 0.60},
+    "gpt-4o":       {"input": 2.50, "output": 10.00}
+  }
+}

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import replace
 
 from langgraph.checkpoint.memory import MemorySaver
@@ -49,6 +50,10 @@ def test_run_coding_agent_node_override_can_disable_execution(monkeypatch) -> No
 
         class Result:
             message = "disabled"
+            returncode = None
+            duration_seconds = 0.0
+            changed_files_delta: tuple[str, ...] = ()
+            command: list[str] = []
 
             def summary(self) -> str:
                 return "disabled"
@@ -86,6 +91,35 @@ def test_graph_runs_to_disabled_coding_agent_result(monkeypatch) -> None:
     assert result["approved"] is False
     assert result["agent_instruction"] == ""
     assert result["coding_agent_result"] == ""
+
+
+def test_run_coding_agent_node_logs_approval_context(monkeypatch, caplog) -> None:
+    settings = replace(parse_settings(valid_settings_dict()), execute_coding_agent=False)
+
+    class _DisabledResult:
+        message = "Coding agent execution disabled by settings."
+        returncode = None
+        duration_seconds = 0.0
+        changed_files_delta: tuple[str, ...] = ()
+        command: list[str] = []
+
+        def summary(self) -> str:
+            return self.message
+
+    monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.load_settings", lambda: settings)
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.run_coding_agent", lambda **_kw: _DisabledResult()
+    )
+
+    caplog.set_level(logging.INFO)
+    run_coding_agent_node(
+        graph_state(needs_approval=True, approved=True, approval_reason="Human said yes."),
+        execute_coding_agent_override=False,
+    )
+
+    assert "approval_source=human_approved" in caplog.text
+    assert "approval_required=True" in caplog.text
+    assert "approved=True" in caplog.text
 
 
 def test_rejected_graph_resumes_without_coding_agent_result_index_error(monkeypatch) -> None:

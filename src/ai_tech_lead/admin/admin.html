@@ -34,7 +34,7 @@
       </label>
       <label>
         Coding agent command
-        <span class="field-help">Program to launch for Codex or another agent. Example: <code>codex</code>.</span>
+        <span class="field-help">Program to launch for the selected coding agent. Example: <code>codex</code>, <code>claude</code>, or another local CLI.</span>
         <input name="coding_agent_command" placeholder="codex">
       </label>
       <div class="field-group">
@@ -72,7 +72,7 @@
       <label>
         <input name="orchestrator_ai_enabled" type="checkbox">
         Use AI to review task risk
-        <span class="field-help">When this is on, the orchestrator asks OpenAI whether a task looks safe, risky, broad, or unclear before the graph continues. If it is off, or if the key is missing, the system safely asks you for approval instead. This does not allow Codex to change files.</span>
+        <span class="field-help">When this is on, the orchestrator asks OpenAI whether a task looks safe, risky, broad, or unclear before the graph continues. If it is off, or if the key is missing, the system safely asks you for approval instead. This does not allow the configured coding agent to change files.</span>
       </label>
       <label>
         Orchestrator AI model

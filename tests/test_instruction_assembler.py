@@ -55,3 +55,19 @@ def test_assembled_instruction_does_not_dump_irrelevant_skills() -> None:
 
     assert "## backlog-management" in instruction
     assert "## instruction-maintenance" not in instruction
+
+
+def test_assembled_instruction_includes_backlog_ownership_rules_from_prompt_file() -> None:
+    settings = parse_settings(valid_settings_dict())
+
+    instruction = build_agent_instruction(
+        request="Update backlog item JH-001",
+        brief="Backlog-only change.",
+        needs_approval=False,
+        approval_reason="Low risk.",
+        approved=False,
+        settings=settings,
+    )
+
+    assert "Worker coding agents must not mark backlog items complete" in instruction
+    assert "Final backlog completion is owned by the orchestrator after human acceptance." in instruction
