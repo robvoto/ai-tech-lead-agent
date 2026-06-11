@@ -20,7 +20,7 @@ def test_parse_settings_round_trips_valid_config() -> None:
     assert settings.telegram_transport == "polling"
     assert settings.telegram_api_base_url == "https://api.telegram.org"
     assert settings.telegram_long_poll_timeout_seconds == 25
-    assert settings.telegram_max_fix_request_chars == 3000
+    assert settings.telegram_max_code_request_chars == 3000
     assert settings.telegram_max_message_chars == 3900
     assert settings.telegram_allowed_chat_ids == []
     assert settings.telegram_webhook_url == ""

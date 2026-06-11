@@ -9,11 +9,23 @@ code from those files.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from collections.abc import Callable
 from pathlib import Path
 import subprocess
+import threading
 import time
+import logging
 
 from ai_tech_lead.app_settings import AppSettings
+from ai_tech_lead.logging_setup import LOGGER_NAME
+
+logger = logging.getLogger(LOGGER_NAME)
+
+# How often the poll loop wakes up to check process state and fire progress updates.
+_POLL_INTERVAL_SECONDS = 1.0
+
+# Maximum lines of recent stdout included in each progress update sent to the operator.
+_PROGRESS_PREVIEW_LINES = 5
 
 
 @dataclass(frozen=True)
@@ -52,7 +64,7 @@ class CodingAgentResult:
             else:
                 parts.append("Changed files: none detected")
             parts.append(
-                "Token usage: not available from the current Codex CLI runner."
+                "Token usage: not available from the current configured coding-agent backend."
             )
 
         parts += [
@@ -71,6 +83,7 @@ def run_coding_agent(
     agent_instruction: str,
     project_root: Path,
     settings: AppSettings,
+    progress_callback: Callable[[str], None] | None = None,
 ) -> CodingAgentResult:
     """Run the configured CLI agent for real when settings explicitly allow execution."""
 
@@ -93,32 +106,85 @@ def run_coding_agent(
         instruction,
     ]
     timeout_seconds = settings.max_runtime_minutes * 60
+    progress_interval = settings.coding_agent_progress_interval_seconds
 
     changed_files_before = _get_git_changed_files(project_root)
     started_at = time.time()
 
     try:
-        completed_process = subprocess.run(
+        process = subprocess.Popen(
             command,
             cwd=project_root,
-            timeout=timeout_seconds,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
             shell=False,
-            check=False,
+            bufsize=1,  # line-buffered so output arrives as produced
         )
     except FileNotFoundError as error:
         raise RuntimeError(
             f"Coding agent command not found: {settings.coding_agent_command}"
         ) from error
-    except subprocess.TimeoutExpired as error:
-        ended_at = time.time()
-        changed_files_after = _get_git_changed_files(project_root)
+
+    # Read both streams concurrently to prevent pipe-buffer deadlock.
+    stdout_lines: list[str] = []
+    stderr_lines: list[str] = []
+
+    def _collect(stream: object, target: list[str]) -> None:
+        for raw_line in stream:  # type: ignore[union-attr]
+            line = raw_line.rstrip("\n")
+            if line:
+                target.append(line)
+
+    stdout_thread = threading.Thread(target=_collect, args=(process.stdout, stdout_lines), daemon=True)
+    stderr_thread = threading.Thread(target=_collect, args=(process.stderr, stderr_lines), daemon=True)
+    stdout_thread.start()
+    stderr_thread.start()
+
+    timed_out = False
+    last_update_at = started_at
+    last_reported_count = 0
+
+    try:
+        while process.poll() is None:
+            elapsed = time.time() - started_at
+
+            if elapsed >= timeout_seconds:
+                timed_out = True
+                process.kill()
+                break
+
+            if time.time() - last_update_at >= progress_interval:
+                new_lines = stdout_lines[last_reported_count:]
+                last_reported_count = len(stdout_lines)
+                _emit_progress_update(progress_callback, new_lines=new_lines, elapsed_seconds=elapsed)
+                last_update_at = time.time()
+
+            time.sleep(_POLL_INTERVAL_SECONDS)
+
+    except (KeyboardInterrupt, SystemExit):
+        process.kill()
+        stdout_thread.join(timeout=5)
+        stderr_thread.join(timeout=5)
+        raise
+
+    stdout_thread.join(timeout=10)
+    stderr_thread.join(timeout=10)
+
+    if not timed_out:
+        process.wait()
+
+    ended_at = time.time()
+    stdout = "\n".join(stdout_lines)
+    stderr = "\n".join(stderr_lines)
+    changed_files_after = _get_git_changed_files(project_root)
+
+    if timed_out:
         return CodingAgentResult(
             command=command,
             returncode=None,
-            stdout=_clean_timeout_output(error.stdout),
-            stderr=_clean_timeout_output(error.stderr),
+            stdout=stdout,
+            stderr=stderr,
             timed_out=True,
             message=f"The coding agent timed out after {timeout_seconds} seconds.",
             started_at=started_at,
@@ -129,23 +195,21 @@ def run_coding_agent(
             changed_files_delta=_files_delta(changed_files_before, changed_files_after),
         )
 
-    ended_at = time.time()
-    changed_files_after = _get_git_changed_files(project_root)
-    success = completed_process.returncode == 0
-
-    if success:
-        message = f"The coding agent finished successfully. System exit code: {completed_process.returncode}."
-    else:
-        message = (
-            f"The coding agent reported a failure. System exit code: {completed_process.returncode}. "
+    success = process.returncode == 0
+    message = (
+        f"The coding agent finished successfully. System exit code: {process.returncode}."
+        if success
+        else (
+            f"The coding agent reported a failure. System exit code: {process.returncode}. "
             "It exited with a non-zero return code."
         )
+    )
 
     return CodingAgentResult(
         command=command,
-        returncode=completed_process.returncode,
-        stdout=completed_process.stdout,
-        stderr=completed_process.stderr,
+        returncode=process.returncode,
+        stdout=stdout,
+        stderr=stderr,
         message=message,
         started_at=started_at,
         ended_at=ended_at,
@@ -188,17 +252,40 @@ def _files_delta(
     return tuple(sorted(set(after) - set(before)))
 
 
-def _clean_timeout_output(output: str | bytes | None) -> str:
-    if output is None:
-        return ""
-    if isinstance(output, bytes):
-        return output.decode("utf-8", errors="replace")
-    return output
-
-
 def _display_command(command: list[str]) -> str:
     if not command:
         return "<not run>"
     if len(command) == 1:
         return command[0]
     return " ".join([*command[:-1], "<agent_instruction>"])
+
+
+def _emit_progress_update(
+    progress_callback: Callable[[str], None] | None,
+    *,
+    new_lines: list[str],
+    elapsed_seconds: float,
+) -> None:
+    elapsed_text = _format_elapsed_seconds(elapsed_seconds)
+    if new_lines:
+        preview = "\n".join(new_lines[-_PROGRESS_PREVIEW_LINES:])
+        message = f"[{elapsed_text}]\n{preview}"
+    else:
+        message = f"[{elapsed_text}] Still running, no new output."
+
+    logger.info(message)
+    if progress_callback is None:
+        return
+
+    try:
+        progress_callback(message)
+    except Exception:
+        logger.exception("Coding agent progress callback failed.")
+
+
+def _format_elapsed_seconds(elapsed_seconds: float) -> str:
+    total_seconds = max(0, int(elapsed_seconds))
+    minutes, seconds = divmod(total_seconds, 60)
+    if minutes == 0:
+        return f"{seconds}s"
+    return f"{minutes}m {seconds}s"

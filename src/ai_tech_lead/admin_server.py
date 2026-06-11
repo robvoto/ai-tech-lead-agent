@@ -15,13 +15,6 @@ from ai_tech_lead.app_settings import (
     settings_to_dict,
 )
 from ai_tech_lead.logging_setup import LOGGER_NAME
-from ai_tech_lead.telegram_secrets import (
-    load_telegram_secrets,
-    parse_telegram_secrets,
-    save_telegram_secrets,
-    telegram_secrets_to_dict,
-)
-
 
 ADMIN_ASSET_DIR = Path(__file__).resolve().parent / "admin"
 ADMIN_HTML_PATH = ADMIN_ASSET_DIR / "admin.html"
@@ -31,7 +24,6 @@ ADMIN_FORM_JS_PATH = ADMIN_ASSET_DIR / "admin_form.js"
 ADMIN_CONFIG_JS_PATH = ADMIN_ASSET_DIR / "admin_config.js"
 ADMIN_ROOT_ROUTE = "/"
 SETTINGS_API_ROUTE = "/api/settings"
-TELEGRAM_SECRETS_API_ROUTE = "/api/telegram-secrets"
 ADMIN_CSS_ROUTE = "/admin.css"
 ADMIN_JS_ROUTE = "/admin.js"
 ADMIN_FORM_JS_ROUTE = "/admin_form.js"
@@ -63,12 +55,6 @@ def run_admin_server(
     server = ThreadingHTTPServer((host, port), handler_class)
     logger.info("Admin screen running at http://%s:%s%s", host, port, ADMIN_ROOT_ROUTE)
     logger.info("Settings API running at http://%s:%s%s", host, port, SETTINGS_API_ROUTE)
-    logger.info(
-        "Telegram secrets API running at http://%s:%s%s",
-        host,
-        port,
-        TELEGRAM_SECRETS_API_ROUTE,
-    )
     server.serve_forever()
 
 
@@ -121,10 +107,6 @@ def _build_handler(
                 self._send_settings()
                 return
 
-            if self.path == TELEGRAM_SECRETS_API_ROUTE:
-                self._send_telegram_secrets()
-                return
-
             self.send_error(404, "Not found")
 
         def do_PUT(self) -> None:
@@ -132,19 +114,11 @@ def _build_handler(
                 self._save_settings_from_json()
                 return
 
-            if self.path == TELEGRAM_SECRETS_API_ROUTE:
-                self._save_telegram_secrets_from_json()
-                return
-
             self.send_error(404, "Not found")
 
         def do_POST(self) -> None:
             if self.path == SETTINGS_API_ROUTE:
                 self._save_settings_from_json()
-                return
-
-            if self.path == TELEGRAM_SECRETS_API_ROUTE:
-                self._save_telegram_secrets_from_json()
                 return
 
             self.send_error(404, "Not found")
@@ -172,28 +146,12 @@ def _build_handler(
             except (FileNotFoundError, ValueError) as error:
                 self._send_json({"error": str(error)}, status=500)
 
-        def _send_telegram_secrets(self) -> None:
-            try:
-                telegram_secrets = load_telegram_secrets()
-                self._send_json(telegram_secrets_to_dict(telegram_secrets))
-            except (FileNotFoundError, ValueError) as error:
-                self._send_json({"error": str(error)}, status=500)
-
         def _save_settings_from_json(self) -> None:
             try:
                 raw_settings = self._read_json_body()
                 settings = parse_settings(raw_settings)
                 save_settings(settings, settings_path)
                 self._send_json(settings_to_dict(settings))
-            except ValueError as error:
-                self._send_json({"error": str(error)}, status=400)
-
-        def _save_telegram_secrets_from_json(self) -> None:
-            try:
-                raw_secrets = self._read_json_body()
-                telegram_secrets = parse_telegram_secrets(raw_secrets)
-                save_telegram_secrets(telegram_secrets)
-                self._send_json(telegram_secrets_to_dict(telegram_secrets))
             except ValueError as error:
                 self._send_json({"error": str(error)}, status=400)
 

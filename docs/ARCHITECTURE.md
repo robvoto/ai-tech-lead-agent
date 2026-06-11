@@ -31,7 +31,7 @@ flowchart TD
     Human --> Admin
 
     Telegram -->|/run JH-###| Backlog
-    Telegram -->|/fix text| Graph
+    Telegram -->| Graph
     CLI -->|explicit task id| Backlog
     Backlog --> Graph
 
@@ -55,6 +55,24 @@ flowchart TD
     Graph --> SQLite
 ```
 
+## Implemented Graphs
+
+The codebase currently implements two LangGraph workflows:
+
+1. `src/ai_tech_lead/coding_workflow_graph.py`
+   - Exported Studio graph: `graph = build_graph()`
+   - Purpose: turn an explicit human request into a bounded coding-agent execution.
+   - Main responsibilities: research gating, risk review, clarification handling, planning, approval routing, agent-instruction creation, and controlled coding-agent execution.
+   - Studio registration: this is the only graph currently listed in `langgraph.json`.
+
+2. `src/ai_tech_lead/telegram_agent_graph.py`
+   - Exported entrypoint: `build_telegram_agent_graph(...)`
+   - Purpose: provide a read-only Telegram agent for backlog Q&A and safe tool use.
+   - Main responsibilities: chat-thread message handling, tool binding, backlog read-only tools, and reply generation.
+   - Studio registration: not exported in `langgraph.json`; it is used by the Telegram operator at runtime.
+
+Supporting modules such as `src/ai_tech_lead/backlog_graph_runner.py` call the coding workflow graph builder, but they are runners/adapters rather than separate graph implementations.
+
 ## Boundaries
 
 - Input adapters turn external messages into explicit local tasks.
@@ -65,7 +83,15 @@ flowchart TD
 - Backlog loading parses local task data and converts one selected item into
   graph state. It must not silently choose work.
 - The coding workflow graph owns orchestration state, approval routing, brief
-  creation, agent-instruction creation, and the coding-agent execution node.
+  creation, agent-instruction creation, orchestrator-input request state, and the
+  coding-agent execution node.
+- The graph may carry conditional orchestrator-input metadata so later nodes can ask
+  Rob for clarification only when needed. That state should stay separate from
+  the normal low-risk path and should not imply automatic interruption before
+  interrupts/checkpoints are intentionally added.
+- The current coding-agent backend is Codex CLI, but the architecture must stay
+  backend-neutral. Future backends may include Claude Code, OpenAI tools, local
+  agents, or other compatible execution backends.
 - Settings own configurable values, limits, paths, model names, and prices.
   Human-readable prompt and rule text lives in `docs/prompts/` and is loaded by
   graph nodes or instruction builders when they need it. Admin viewing/editing
@@ -103,7 +129,7 @@ surface becomes important enough to protect.
 
 Telegram is the primary operator channel for the prototype. It should be the normal way to communicate with the app when the human is away from the PC.
 
-Normal text goes through a Telegram intent router first. The router may classify the message as a question, backlog proposal, code task, status/help request, or unclear intent, but it must not execute the configured coding agent or mutate the backlog by itself. Explicit `/code` starts the bounded coding workflow; `/fix` remains only as an old alias for `/code`.
+Normal text goes through a Telegram intent router first. The router may classify the message as a question, backlog proposal, code task, status/help request, or unclear intent, but it must not execute the configured coding agent or mutate the backlog by itself. Explicit `/code` starts the bounded coding workflow.
 
 Current Telegram constraints:
 

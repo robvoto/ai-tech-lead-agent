@@ -50,7 +50,6 @@ export const FIELD_PLACEHOLDERS = {
   telegram_long_poll_timeout_seconds: "25",
   telegram_max_fix_request_chars: "3000",
   telegram_max_message_chars: "3900",
-  telegram_bot_token: "1234567890:AA...",
   telegram_webhook_url: "https://example.com/telegram/webhook",
   telegram_webhook_bind_host: "127.0.0.1",
   telegram_webhook_bind_port: "8080",

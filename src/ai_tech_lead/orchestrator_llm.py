@@ -29,6 +29,9 @@ class OrchestratorLlmConfig:
 @dataclass(frozen=True)
 class OrchestratorLlmResult:
     text: str
+    tokens_in: int = 0
+    tokens_out: int = 0
+    cost_usd: float = 0.0
 
 
 class OrchestratorLlmError(RuntimeError):
@@ -80,9 +83,37 @@ def call_orchestrator_llm(*, prompt: str, config: OrchestratorLlmConfig) -> Orch
         elapsed_ms = (time.perf_counter() - start_time) * 1000
         logger.info("LLM call elapsed: %.0fms model=%s status=error", elapsed_ms, config.model)
         raise OrchestratorLlmError("OpenAI response did not contain output text.")
+
     elapsed_ms = (time.perf_counter() - start_time) * 1000
-    logger.info("LLM call elapsed: %.0fms model=%s status=ok", elapsed_ms, config.model)
-    return OrchestratorLlmResult(text=text)
+    usage = data.get("usage", {})
+    tokens_in = int(usage.get("input_tokens", 0))
+    tokens_out = int(usage.get("output_tokens", 0))
+    cost_usd = _estimate_cost(config.model, tokens_in, tokens_out)
+    logger.info(
+        "LLM call elapsed: %.0fms model=%s status=ok in=%d out=%d cost=$%.5f",
+        elapsed_ms,
+        config.model,
+        tokens_in,
+        tokens_out,
+        cost_usd,
+    )
+    return OrchestratorLlmResult(text=text, tokens_in=tokens_in, tokens_out=tokens_out, cost_usd=cost_usd)
+
+
+# Approximate USD per 1K tokens. Update when pricing changes.
+_COST_PER_1K: dict[str, dict[str, float]] = {
+    "gpt-4.1-mini": {"input": 0.0004, "output": 0.0016},
+    "gpt-4.1":      {"input": 0.002,  "output": 0.008},
+    "gpt-4o-mini":  {"input": 0.00015, "output": 0.0006},
+    "gpt-4o":       {"input": 0.0025,  "output": 0.01},
+}
+
+
+def _estimate_cost(model: str, tokens_in: int, tokens_out: int) -> float:
+    prices = _COST_PER_1K.get(model)
+    if prices is None:
+        return 0.0
+    return (tokens_in / 1000) * prices["input"] + (tokens_out / 1000) * prices["output"]
 
 
 def _extract_response_text(data: dict) -> str:

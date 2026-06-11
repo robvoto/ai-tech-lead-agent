@@ -1,0 +1,40 @@
+# Documentation Index
+
+Use this file for progressive disclosure. Start here, then open only the document needed for the current task.
+
+## Core project documents
+
+- `ARCHITECTURE.md` - system architecture, module boundaries, adapter strategy, persistence, and growth rules.
+- `GRAPH_WORKFLOW.md` - implemented LangGraph workflow, nodes, routes, interrupts, and execution boundary.
+- `RUNTIME_RUNBOOK.md` - local run, test, Studio, admin, and troubleshooting commands.
+- `CONTEXT_MANAGEMENT.md` - context allowed in graph state, prompts, Telegram messages, logs, and coding-agent handoffs.
+- `BACKLOG.md` - current local prototype backlog items.
+- `UI_ADMIN_DESIGN.md` - admin UI design notes and browser-side ownership rules.
+
+## Entry points
+
+- Root `README.md` - short human entry point and quick start.
+- Root `AGENTS.md` - minimal always-loaded routing file for all AI agents.
+- `.skills/INDEX.md` - skill catalogue and selection guidance.
+
+## Orchestrator product documents
+
+- `ORCHESTRATOR_IDENTITY.md` - runtime-loaded product identity and operating role.
+- `ORCHESTRATOR_AI.md` - AI risk-review behaviour, settings, safety fallback, and logging rules.
+
+## Sub-indexes
+
+- `plan/INDEX.md` - durable planning hook and roadmap references.
+- `prompts/INDEX.md` - prompt and rule text loaded by graph nodes or instruction builders.
+- `research/INDEX.md` - research notes and implementation pattern cache.
+
+## Tool-specific files
+
+- Root `CLAUDE.md` - compatibility file for tools that read it.
+
+## Maintenance rules
+
+- Keep this index factual and short.
+- Add new durable docs here.
+- Do not paste long explanations into this index.
+- If a document overlaps heavily with another, merge it or clearly mark one as historical.

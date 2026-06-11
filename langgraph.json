@@ -1,7 +1,7 @@
 {
   "dockerfile_lines": [],
   "graphs": {
-    "coding_workflow_graph": "./src/ai_tech_lead/coding_workflow_graph.py:graph"
+    "coding_workflow_graph": "ai_tech_lead.coding_workflow_graph:graph"
   },
   "env": "./.env",
   "python_version": "3.13",

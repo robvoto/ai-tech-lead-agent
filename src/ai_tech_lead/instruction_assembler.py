@@ -25,10 +25,13 @@ def build_agent_instruction(
     *,
     request: str,
     brief: str,
+    formulated_task: str,
+    task_feedback: list[str],
     needs_approval: bool,
     approval_reason: str,
     approved: bool,
     settings: AppSettings,
+    research_sources: list[str] | None = None,
 ) -> str:
     skills = select_skills(request)
     selected_skills = "\n\n".join(_render_skill(skill) for skill in skills)
@@ -48,11 +51,27 @@ def build_agent_instruction(
         "command and result."
     )
 
-    return "\n\n".join(
+    sections = [
+        "# Coding-Agent Handoff",
+        _section("Task", formulated_task or request),
+        _section("Execution brief", brief),
+    ]
+    if research_sources:
+        sections.append(
+            _section(
+                "Evidence Sources",
+                "Local research notes consulted for this task:\n" + _format_bullets(research_sources),
+            )
+        )
+    if task_feedback:
+        sections.append(
+            _section(
+                "Task feedback",
+                "Apply this only to the current task.\n" + _format_bullets(task_feedback),
+            )
+        )
+    sections.extend(
         [
-            "# Coding-Agent Handoff",
-            _section("Task", request),
-            _section("Execution brief", brief),
             _section(
                 "Approval state",
                 f"Needs approval: {needs_approval}\nApproval reason: {approval_reason}\nApproved: {approved}",
@@ -69,6 +88,7 @@ def build_agent_instruction(
             _section("Final instruction", final_instruction),
         ]
     )
+    return "\n\n".join(sections)
 
 
 def select_skills(request: str) -> list[SkillSelection]:
@@ -89,7 +109,7 @@ def _extract_project_rules() -> str:
     content = AGENTS_PATH.read_text(encoding="utf-8")
     return "\n\n".join(
         _extract_section(content, heading)
-        for heading in ["Startup protocol", "Source hierarchy", "Non-negotiables", "Validation commands", "Definition of Done"]
+        for heading in ["Default workflow", "Navigation", "Universal rules", "Finish report"]
     )
 
 

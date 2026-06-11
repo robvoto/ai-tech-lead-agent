@@ -4,10 +4,18 @@ Local AI Technical Lead Assistant project.
 
 ## Source of truth
 
-Read these first for current project direction and structure:
+Start with the documentation index:
+
+```text
+docs/INDEX.md
+```
+
+For current project direction and structure, read:
 
 ```text
 docs/ARCHITECTURE.md
+docs/GRAPH_WORKFLOW.md
+docs/RUNTIME_RUNBOOK.md
 docs/plan/INITIAL_PLAN.md
 ```
 
@@ -53,14 +61,44 @@ Run from Ubuntu/WSL:
 uv run python -m ai_tech_lead --admin
 ```
 
+Telegram bot credentials are read from the local `TELEGRAM_BOT_TOKEN` environment variable. You can place it in the project `.env` file for local development.
+
 ## LangGraph Studio run
 
 Run from Ubuntu/WSL and leave the terminal running:
 
 ```bash
 cd /mnt/e/Programming/ai-tech-lead
-uv run langgraph dev
+./run_langsmith.sh
 ```
+
+## Dev tools
+
+Install dev tools:
+
+```bash
+uv sync --group dev
+```
+
+Check formatting and linting:
+
+```bash
+uv run ruff check .
+```
+
+Format changed Python files only:
+
+```bash
+uv run ruff format <file-or-folder>
+```
+
+Fix safe lint issues:
+
+```bash
+uv run ruff check . --fix
+```
+
+Use dev commands on changed files where possible. Do not reformat the whole repository unless a separate cleanup task asks for it.
 
 ## Current focus
 

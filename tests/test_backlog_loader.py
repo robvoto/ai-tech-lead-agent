@@ -73,6 +73,12 @@ Approval Reason: Safe local work.
     state = backlog_item_to_graph_state(item)
 
     assert "Backlog item: JH-001" in state["request"]
+    assert state["orchestrator_input_required"] is False
+    assert state["orchestrator_input_kind"] == ""
+    assert state["orchestrator_input_reason"] == ""
+    assert state["orchestrator_input_question"] == ""
+    assert state["orchestrator_input_source_node"] == ""
+    assert state["task_feedback"] == []
     assert state["needs_approval"] is False
     assert state["approval_reason"] == "Risk review has not run yet."
     assert state["approved"] is False

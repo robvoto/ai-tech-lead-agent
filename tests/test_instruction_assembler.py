@@ -22,6 +22,8 @@ def test_assembled_instruction_includes_project_rules_and_selected_skill() -> No
     instruction = build_agent_instruction(
         request="Fix Telegram graph runtime test",
         brief="Small runtime fix only.",
+        formulated_task="",
+        task_feedback=[],
         needs_approval=False,
         approval_reason="Low risk.",
         approved=False,
@@ -32,7 +34,7 @@ def test_assembled_instruction_includes_project_rules_and_selected_skill() -> No
     assert "## Orchestrator identity" in instruction
     assert "AI Technical Lead Orchestrator" in instruction
     assert "## Project rules" in instruction
-    assert "## Non-negotiables" in instruction
+    assert "## Universal rules" in instruction
     assert "## Selected skills" in instruction
     assert "## code-change" in instruction
     assert "backlog-management" not in instruction
@@ -47,6 +49,8 @@ def test_assembled_instruction_does_not_dump_irrelevant_skills() -> None:
     instruction = build_agent_instruction(
         request="Update backlog item JH-001",
         brief="Backlog-only change.",
+        formulated_task="",
+        task_feedback=[],
         needs_approval=False,
         approval_reason="Low risk.",
         approved=False,
@@ -63,6 +67,8 @@ def test_assembled_instruction_includes_backlog_ownership_rules_from_prompt_file
     instruction = build_agent_instruction(
         request="Update backlog item JH-001",
         brief="Backlog-only change.",
+        formulated_task="",
+        task_feedback=[],
         needs_approval=False,
         approval_reason="Low risk.",
         approved=False,
@@ -71,3 +77,67 @@ def test_assembled_instruction_includes_backlog_ownership_rules_from_prompt_file
 
     assert "Worker coding agents must not mark backlog items complete" in instruction
     assert "Final backlog completion is owned by the orchestrator after human acceptance." in instruction
+
+
+def test_assembled_instruction_includes_current_task_feedback_only() -> None:
+    settings = parse_settings(valid_settings_dict())
+
+    instruction = build_agent_instruction(
+        request="Update Telegram clarification flow",
+        brief="Pause and collect a task-local clarification.",
+        formulated_task="",
+        task_feedback=[
+            "Keep the change task-local.",
+            "Do not update global prompts or rules.",
+        ],
+        needs_approval=False,
+        approval_reason="Low risk.",
+        approved=False,
+        settings=settings,
+    )
+
+    assert "## Task feedback" in instruction
+    assert "Apply this only to the current task." in instruction
+    assert "Keep the change task-local." in instruction
+    assert "Do not update global prompts or rules." in instruction
+
+
+def test_assembled_instruction_includes_evidence_sources_when_provided() -> None:
+    settings = parse_settings(valid_settings_dict())
+
+    instruction = build_agent_instruction(
+        request="Fix Telegram graph runtime test",
+        brief="Small runtime fix only.",
+        formulated_task="",
+        task_feedback=[],
+        needs_approval=False,
+        approval_reason="Low risk.",
+        approved=False,
+        settings=settings,
+        research_sources=[
+            "LangGraph hard rules for approval gates",
+            "Backlog refinement implementation patterns",
+        ],
+    )
+
+    assert "## Evidence Sources" in instruction
+    assert "LangGraph hard rules for approval gates" in instruction
+    assert "Backlog refinement implementation patterns" in instruction
+    assert "Local research notes consulted for this task:" in instruction
+
+
+def test_assembled_instruction_omits_evidence_sources_when_not_provided() -> None:
+    settings = parse_settings(valid_settings_dict())
+
+    instruction = build_agent_instruction(
+        request="Fix Telegram graph runtime test",
+        brief="Small runtime fix only.",
+        formulated_task="",
+        task_feedback=[],
+        needs_approval=False,
+        approval_reason="Low risk.",
+        approved=False,
+        settings=settings,
+    )
+
+    assert "## Evidence Sources" not in instruction

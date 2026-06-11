@@ -40,7 +40,7 @@
   "telegram_transport": "polling",
   "telegram_api_base_url": "https://api.telegram.org",
   "telegram_long_poll_timeout_seconds": 25,
-  "telegram_max_fix_request_chars": 3000,
+  "telegram_max_code_request_chars": 3000,
   "telegram_max_message_chars": 3900,
   "telegram_allowed_chat_ids": [
     "8290927833"

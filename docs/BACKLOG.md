@@ -68,10 +68,10 @@ Constraints:
 - The router may classify messages as ask/question, backlog proposal, code task, status/help, or unclear.
 - Risky or code-changing work must still ask for approval.
 - Keep explicit `/status`, `/help`, `/approve`, and `/reject` commands.
-- Add an explicit `/code` command, or keep `/fix` only as an alias, for unequivocal coding-task intent.
+- Add an explicit `/code` command, for unequivocal coding-task intent.
 - Do not let natural-language routing silently run the configured coding agent.
 - Keep coding-agent execution controlled by settings/admin.
-- Add tests for plain text routing, `/code`, `/fix` alias behaviour, and unclear intent.
+- Add tests for plain text routing, `/code`, and unclear intent.
 
 ## ATL-004 - Add backlog management capability to the orchestrator
 
@@ -217,7 +217,7 @@ Approval Required: yes
 Approval Reason: This changes the coding workflow lifecycle and adds a second human decision point after the coding agent runs.
 
 Goal:
-Add a final review step after the configured coding agent finishes. The orchestrator should summarize what happened, list changed files, explain whether the coding agent finished successfully in plain English, and then wait for the human to mark the work as accepted or needing more work.
+Add a final review step after the configured coding agent finishes. The orchestrator should summarize what happened, list changed files, explain whether the coding agent finished successfully in plain English, and then wait for the human to mark the work as accepted or needing more work. When the orchestrator accepts backlog-backed work, update the backlog item status to Done.
 
 Constraints:
 - Keep pre-run approval separate from final acceptance.
@@ -226,5 +226,156 @@ Constraints:
 - Include who approved execution, who performed the work, and who accepted the result.
 - Worker coding agents must not mark backlog items as complete unless the task is explicitly about backlog or documentation maintenance.
 - Final backlog completion is owned by the orchestrator after human acceptance.
+- Backlog-backed tasks should be marked Done only after the orchestrator accepts the result.
 - Do not expose raw diffs in Telegram; show a concise file summary and keep detailed review in git diff/logs.
 - Add tests for accepted, needs-work, and no-final-review-yet states.
+
+## ATL-014 - Add worker coding-agent instruction pack and skills
+
+Status: Backlog
+
+Approval Guidance:
+Human review recommended because this changes what worker coding agents such as Codex, Claude Code, and Gemini receive before they act.
+
+Goal:
+Create a clear instruction structure for the worker coding agents themselves. The orchestrator should not rely only on one generated prompt blob; it should have a small, visible, reusable worker-agent instruction pack and skills that define how coding agents plan, ask for clarification, respect backlog ownership, validate work, and report results.
+
+ISsue to solve: I realise that claude (and probably all) seem to use the same The project-level one at /mnt/e/Programming/ai-tech-lead/AGENTS.md, which is pulled in via @AGENTS.md in CLAUDE.md.
+
+So maybe we dont need this or need to be aware of this
+
+Constraints:
+- Keep this separate from the orchestrator's own rules and graph logic.
+- Do not create a giant uncontrolled AGENTS.md.
+- Keep worker-agent instructions small, versioned, and visible in the repo.
+- Support multiple worker agents, not only Codex.
+- Include rules for planning, uncertainty, validation, changed-file reporting, token/cost discipline, and backlog ownership.
+- Worker agents must not mark backlog items complete unless the task is explicitly backlog/documentation maintenance.
+- The orchestrator remains responsible for deciding what context is sent to the worker agent.
+- Add tests or checks proving the worker-agent instruction pack is included in generated handoffs.
+
+## ATL-015 - Auto-create backlog item before running ad hoc /code tasks
+
+Status: Backlog
+
+Approval Required: yes
+Approval Reason: Changes the /code command flow and adds a new human decision point.
+
+Goal:
+When the user sends /code <text> <text>, create a backlog draft first (same draft-then-approve flow as /new <idea>), then on approval implement it and mark it as In Progress. This ensures all coding work is tracked in the backlog with no silent ad hoc runs.
+
+Constraints:
+- Keep the existing /code entry points; just insert the draft step before execution.
+- Reuse the existing backlog draft builder and approval gate.
+- Do not break the current /run <backlog-id> flow, for example /run ATL-001.
+- The backlog item must be saved before the coding agent starts.
+- Low priority — implement after more critical backlog and workflow items are stable.
+
+## ATL-016 - Resolve /new command ambiguity
+
+Status: Backlog
+
+Approval Required: yes
+Approval Reason: Changes a user-facing Telegram command and its routing.
+
+Goal:
+/new currently does two unrelated things depending on whether an argument is supplied: no argument resets the session, with argument proposes a backlog item. Split into two distinct commands so the intent is always unambiguous.
+
+Constraints:
+- Keep /new as the session reset (existing behaviour, no regression).
+- Choose a new command name for backlog item proposals (e.g. /item or /propose).
+- Update help text, parser, and all call sites.
+- Update tests.
+
+## ATL-017 - Install Bubblewrap dependency and resolve Codex CLI path execution errors in WSL
+
+Status: Backlog
+
+Creator: Human
+Epic: AI Tech Lead Infrastructure
+Type: Chore
+Priority: High
+Size: S
+
+Approval Required: yes
+Approval Reason: This changes the WSL/runtime setup used by controlled coding-agent execution and updates implementation documentation.
+
+Problem:
+When running the Codex CLI tool within the WSL development environment at `/mnt/e/Programming/ai-tech-lead`, the process can hang or warn that sandboxing prerequisites are missing.
+
+During the last execution, Codex warned that Bubblewrap was missing from `PATH`, and the process had to be manually interrupted with `Ctrl+C`.
+
+This makes controlled coding-agent execution unreliable.
+
+Outcome:
+Codex CLI runs reliably in WSL with the required Bubblewrap sandbox dependency installed.
+
+The AI Tech Lead setup/implementation documentation also explains:
+- Bubblewrap is required for Codex sandbox execution in WSL.
+- How to verify the dependency is installed.
+- What to do if `/mnt/e` Windows-mount latency causes Codex execution delays.
+- When to consider running the repo from native Linux home, such as `~/ai-tech-lead`.
+
+## ATL-018 - Add real coding-agent cancellation from Telegram
+
+Status: Backlog
+
+Approval Guidance:
+Human review required because this changes process control for the worker coding-agent subprocess.
+
+Problem:
+Rob needs a Telegram command, such as `/cancel-code`, that stops the currently running coding-agent subprocess when it is doing the wrong thing or taking too long. `/new` already starts a fresh Telegram session and clears waiting state, but it cannot reliably stop a coding-agent subprocess that is already running if the Telegram polling loop is blocked by that subprocess.
+
+Outcome:
+The Telegram operator can request cancellation of the active coding-agent subprocess safely and clearly. The command must mean “stop the coding agent”, not “reject approval”, not “start a new session”, and not “stop the Telegram bot”.
+
+Scope:
+- Add an explicit command such as `/cancel-code`.
+- Track the active coding-agent subprocess in a safe process-control boundary.
+- Allow cancellation while the coding agent is running.
+- Report whether cancellation succeeded, failed, or no coding agent was running.
+- Keep `/approve` and `/reject` for approval decisions.
+- Keep `/new` for fresh-session reset.
+
+Out of Scope:
+- Do not reintroduce `/stop` as a user-facing command.
+- Do not use `/cancel` ambiguously for both approval rejection and subprocess cancellation.
+- Do not kill unrelated processes.
+
+Acceptance Criteria:
+- `/approve` approves a waiting decision.
+- `/reject` rejects a waiting decision.
+- `/new` clears the current Telegram session state.
+- `/cancel-code` attempts to stop only the active coding-agent subprocess.
+- If no coding agent subprocess is running, `/cancel-code` says so clearly.
+- Tests cover successful cancellation, no-active-process behaviour, and no regression to `/approve`, `/reject`, and `/new`.
+
+Acceptance Criteria:
+1. Bubblewrap is installed globally in the WSL instance.
+
+   ```bash
+   sudo apt update
+   sudo apt install bubblewrap -y
+   ```
+
+2. The setup documentation explains why Bubblewrap is required for Codex sandbox execution in WSL.
+
+3. The setup documentation includes a verification command, such as:
+
+   ```bash
+   which bwrap
+   bwrap --version
+   ```
+
+4. Documentation includes a troubleshooting note for Codex hangs or slow execution from `/mnt/e`, including Windows-mounted filesystem latency as a possible cause.
+
+5. Documentation states when to consider moving or cloning the repo to native WSL Linux storage, for example `~/ai-tech-lead`, while keeping the current canonical Windows project path clear.
+
+6. A controlled Codex CLI execution is retested after Bubblewrap is installed.
+
+Constraints:
+- Do not remove the existing Windows project location from documentation.
+- Do not assume `/mnt/e` must be abandoned; document it as a possible latency factor only.
+- Do not bypass sandboxing to hide the Bubblewrap warning.
+- Keep this as an infrastructure/setup chore, not a feature change.
+

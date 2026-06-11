@@ -47,7 +47,7 @@ class AppSettings:
     telegram_transport: str
     telegram_api_base_url: str
     telegram_long_poll_timeout_seconds: int
-    telegram_max_fix_request_chars: int
+    telegram_max_code_request_chars: int
     telegram_max_message_chars: int
     telegram_allowed_chat_ids: list[str]
     telegram_webhook_url: str
@@ -60,6 +60,7 @@ class AppSettings:
     orchestrator_ai_model: str
     orchestrator_ai_max_output_tokens: int
     orchestrator_ai_timeout_seconds: int
+    coding_agent_progress_interval_seconds: int
 
 
 def load_settings(settings_path: Path = SETTINGS_PATH) -> AppSettings:
@@ -122,9 +123,9 @@ def parse_settings(raw_settings: dict[str, Any]) -> AppSettings:
             "telegram_long_poll_timeout_seconds",
             default=25,
         ),
-        telegram_max_fix_request_chars=_optional_positive_int(
+        telegram_max_code_request_chars=_optional_positive_int(
             raw_settings,
-            "telegram_max_fix_request_chars",
+            "telegram_max_code_request_chars",
             default=3000,
         ),
         telegram_max_message_chars=_optional_positive_int(
@@ -182,6 +183,11 @@ def parse_settings(raw_settings: dict[str, Any]) -> AppSettings:
             "orchestrator_ai_timeout_seconds",
             default=20,
         ),
+        coding_agent_progress_interval_seconds=_optional_positive_int(
+            raw_settings,
+            "coding_agent_progress_interval_seconds",
+            default=10,
+        ),
     )
     _validate_prompt_placeholders(settings.prompts)
     _validate_telegram_settings(settings)
@@ -207,7 +213,7 @@ def settings_to_dict(settings: AppSettings) -> dict[str, Any]:
         "telegram_transport": settings.telegram_transport,
         "telegram_api_base_url": settings.telegram_api_base_url,
         "telegram_long_poll_timeout_seconds": settings.telegram_long_poll_timeout_seconds,
-        "telegram_max_fix_request_chars": settings.telegram_max_fix_request_chars,
+        "telegram_max_code_request_chars": settings.telegram_max_code_request_chars,
         "telegram_max_message_chars": settings.telegram_max_message_chars,
         "telegram_allowed_chat_ids": settings.telegram_allowed_chat_ids,
         "telegram_webhook_url": settings.telegram_webhook_url,
@@ -220,6 +226,7 @@ def settings_to_dict(settings: AppSettings) -> dict[str, Any]:
         "orchestrator_ai_model": settings.orchestrator_ai_model,
         "orchestrator_ai_max_output_tokens": settings.orchestrator_ai_max_output_tokens,
         "orchestrator_ai_timeout_seconds": settings.orchestrator_ai_timeout_seconds,
+        "coding_agent_progress_interval_seconds": settings.coding_agent_progress_interval_seconds,
     }
 
 

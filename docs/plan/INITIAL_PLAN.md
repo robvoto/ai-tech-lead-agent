@@ -69,7 +69,7 @@ Do not use PowerShell as the project runtime terminal.
 - LangGraph ecosystem
 - LangGraph Studio for visual/debug runs
 - SQLite
-- Later: Telegram Bot API, LiteLLM, Deep Agents, Codex/Claude/Antigravity routing
+- Later: Telegram Bot API, LiteLLM, Deep Agents, and provider-neutral coding-agent routing
 
 ## Normal project commands
 
@@ -139,10 +139,10 @@ src/ai_tech_lead/admin_server.py
 
 The JavaScript is intentionally separate from the HTML and uses ES modules.
 
-The admin screen edits this JSON settings file through the API:
+The admin screen edits validated local settings through the API. The current coding-agent settings file is:
 
 ```text
-config/settings.json
+data/coding_agent_settings.json
 ```
 
 Python validates settings before saving them. The JSON contains adjustable
@@ -201,7 +201,7 @@ Run local server:
 
 ```bash
 cd /mnt/e/Programming/ai-tech-lead
-uv run langgraph dev
+./run_langsmith.sh
 ```
 
 Expected local API:
@@ -215,7 +215,7 @@ Current `langgraph.json` mapping:
 ```json
 {
   "graphs": {
-    "coding_workflow_graph": "./src/ai_tech_lead/coding_workflow_graph.py:graph"
+    "coding_workflow_graph": "ai_tech_lead.coding_workflow_graph:graph"
   }
 }
 ```
@@ -295,7 +295,7 @@ Current behaviour:
 - Pauses before `approval_required` when the backlog item requires approval.
 - Stores the generated coding-agent instruction in `state["agent_instruction"]`.
 - Runs `run_coding_agent` node after instruction creation.
-- Codex execution is controlled by settings and CLI override, and is currently safe when disabled.
+- Coding-agent execution is controlled by settings and CLI override, and is currently safe when disabled.
 - Stores the coding-agent subprocess summary in `state["coding_agent_result"]`.
 
 ## Backlog rule
@@ -444,15 +444,13 @@ Academy material is useful for learning concepts, but it is not the production a
 
 ## Skills
 
-Current project skills:
+Current project skills are indexed in:
 
 ```text
-.skills/code-change/SKILL.md
-.skills/backlog-management/SKILL.md
-.skills/instruction-maintenance/SKILL.md
+.skills/INDEX.md
 ```
 
-Use only the one relevant skill before acting.
+Use the index to choose one relevant skill before acting.
 
 Do not copy Job Hunter-specific skills into this project unless they are truly project-agnostic.
 
@@ -471,19 +469,19 @@ Record the validation command/result before calling work done.
 Next important implementation step:
 
 ```text
-Inspect and harden the real coding-agent execution path before enabling Codex.
+Inspect and harden the real coding-agent execution path before enabling real coding-agent execution.
 ```
 
 Purpose:
 - Confirm `coding_agent_runner.py` uses `subprocess.run` safely.
 - Confirm `shell=False`.
 - Confirm execution is disabled by default.
-- Confirm real Codex execution is controlled by settings/admin, not by a normal CLI flag.
+- Confirm real coding-agent execution is controlled by settings/admin, not by a normal CLI flag.
 - Confirm the graph records the result in `state["coding_agent_result"]`.
-- Add a `restart_required` state flag if Codex changes files under `src/ai_tech_lead`.
+- Add a `restart_required` state flag if the coding agent changes files under `src/ai_tech_lead`.
 
 After that:
 
 ```text
-Run one small real Codex task from a safe backlog item and inspect the graph state/result.
+Run one small real coding-agent task from a safe backlog item and inspect the graph state/result.
 ```

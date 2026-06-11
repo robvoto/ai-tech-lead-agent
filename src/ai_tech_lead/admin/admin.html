@@ -10,15 +10,13 @@
 <main>
   <h1>AI Tech Lead Admin</h1>
   <p class="screen-note">
-    This screen edits local runtime settings and Telegram secrets through the local API.
+    This screen edits local runtime settings through the local API.
     Python still validates the values before saving them.
   </p>
   <p class="screen-note">
     Use the examples shown under each field. Text areas usually want one item per line.
   </p>
-  <p class="screen-note">
-    Telegram uses the local secret store under <code>data/</code>. The settings file stays local too.
-  </p>
+  <p class="screen-note">Telegram bot credentials are loaded from the local environment variable <code>TELEGRAM_BOT_TOKEN</code>.</p>
   <form id="settings-form">
     <fieldset>
       <legend>Runtime</legend>
@@ -92,11 +90,6 @@
     </fieldset>
     <fieldset>
       <legend>Telegram</legend>
-      <label>
-        Telegram bot token
-        <span class="field-help">Paste the bot token from BotFather. It is saved locally under <code>data/telegram_secrets.json</code>.</span>
-        <input name="telegram_bot_token" type="password" autocomplete="off" placeholder="1234567890:AA...">
-      </label>
       <label>
         Telegram transport
         <span class="field-help">Polling is the usual choice. Use webhook only if you already have a public HTTPS endpoint.</span>

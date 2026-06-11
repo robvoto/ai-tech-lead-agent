@@ -14,11 +14,27 @@ Graph state should store structured/raw facts:
 - selected backlog item ID
 - risk-review result
 - approval status
+- conditional orchestrator-input request state
 - selected route
 - coding-agent handoff summary
 - execution result metadata
 
 Graph state should not store large preformatted prompts, unbounded logs, secrets, tokens, or duplicated message bodies.
+
+## Conditional orchestrator input
+
+The workflow may track a pending orchestrator-input request in state when a node needs clarification, risk review, or confirmation later in the flow.
+
+That state should remain bounded and explicit, for example:
+
+- whether orchestrator input is required
+- the kind of input needed
+- the reason for the request
+- the exact question to ask
+- which node requested it
+- any short task feedback already captured
+
+This is state for future interrupt/resume handling, not a signal to pause every task by default. Low-risk work should continue without interruption until the graph logic decides otherwise.
 
 ## Prompt assembly
 

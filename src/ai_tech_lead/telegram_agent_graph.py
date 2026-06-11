@@ -157,7 +157,23 @@ def _build_backlog_tools(settings: AppSettings):
         body = _truncate_text(item.body, 1600)
         return f"{item.item_id} - {item.title}\n\n{body}"
 
-    return [count_backlog_items, list_backlog_items, read_backlog_item]
+    @tool
+    def set_backlog_item_status(item_id: str, new_status: str) -> str:
+        """Set the Status field of a backlog item. Only call after the user has confirmed the change.
+        Common values: Backlog, In Progress, Done, Blocked, Cancelled."""
+
+        logger.info(
+            "[LEARN] Backlog tool is updating status of %s to '%s'.",
+            item_id,
+            new_status,
+        )
+        try:
+            item = repository.update_item_status(item_id, new_status)
+            return f"Updated {item.item_id} - {item.title}: Status is now '{new_status}'."
+        except (ValueError, FileNotFoundError) as error:
+            return f"Failed to update status: {error}"
+
+    return [count_backlog_items, list_backlog_items, read_backlog_item, set_backlog_item_status]
 
 
 def _latest_ai_message(messages: list[Any]) -> AIMessage | None:

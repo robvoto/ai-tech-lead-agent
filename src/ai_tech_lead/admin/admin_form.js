@@ -122,10 +122,6 @@ export function bootstrapAdminForm() {
     setField("execution_brief_template", settings.prompts.execution_brief_template);
   }
 
-  function fillTelegramSecrets(secrets) {
-    setField("telegram_bot_token", secrets.bot_token || "");
-  }
-
   function readForm() {
     const settings = {
       backlog_path: form.elements.backlog_path.value.trim(),
@@ -162,34 +158,19 @@ export function bootstrapAdminForm() {
     return settings;
   }
 
-  function readTelegramSecrets() {
-    return {
-      bot_token: form.elements.telegram_bot_token.value.trim(),
-    };
-  }
-
   async function loadSettings() {
     setStatusState("info");
     setStatus("Loading local settings...");
 
     try {
-      const [settingsResponse, secretsResponse] = await Promise.all([
-        fetch("/api/settings"),
-        fetch("/api/telegram-secrets"),
-      ]);
+      const settingsResponse = await fetch("/api/settings");
       const settingsData = await settingsResponse.json();
-      const secretsData = await secretsResponse.json();
 
       if (!settingsResponse.ok) {
         throw new Error(settingsData.error || "Unable to load settings.");
       }
 
-      if (!secretsResponse.ok) {
-        throw new Error(secretsData.error || "Unable to load Telegram secrets.");
-      }
-
       fillForm(settingsData);
-      fillTelegramSecrets(secretsData);
       setStatusState("success");
       setStatus("Local settings loaded.");
     } catch (error) {
@@ -205,35 +186,20 @@ export function bootstrapAdminForm() {
     setStatus("Saving local settings...");
 
     try {
-      const [settingsResponse, secretsResponse] = await Promise.all([
-        fetch("/api/settings", {
-          method: "PUT",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify(readForm()),
-        }),
-        fetch("/api/telegram-secrets", {
-          method: "PUT",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify(readTelegramSecrets()),
-        }),
-      ]);
+      const settingsResponse = await fetch("/api/settings", {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(readForm()),
+      });
       const settingsData = await settingsResponse.json();
-      const secretsData = await secretsResponse.json();
 
       if (!settingsResponse.ok) {
         throw new Error(settingsData.error || "Unable to save settings.");
       }
 
-      if (!secretsResponse.ok) {
-        throw new Error(secretsData.error || "Unable to save Telegram secrets.");
-      }
-
       fillForm(settingsData);
-      fillTelegramSecrets(secretsData);
       setStatusState("success");
       setStatus("Settings saved.");
     } catch (error) {
