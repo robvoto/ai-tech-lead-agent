@@ -11,6 +11,12 @@ from pathlib import Path
 import re
 
 from ai_tech_lead.config import PROJECT_ROOT
+from ai_tech_lead.backlog_status import (
+    BacklogStatus,
+    backlog_status_choices,
+    normalize_backlog_status,
+    open_backlog_statuses,
+)
 
 
 BACKLOG_ITEM_HEADING_PATTERN = re.compile(r"^## (?P<item_id>[A-Z]+-\d{3}) - (?P<title>.+)$")
@@ -24,6 +30,7 @@ class BacklogItem:
     title: str
     body: str
     interrupt_before_implementation: bool = False
+    status: BacklogStatus = BacklogStatus.BACKLOG
 
 
 @dataclass(frozen=True)
@@ -45,7 +52,11 @@ class BacklogRefinementDraft:
 
     item_id: str
     title: str
+    creator: str
+    item_type: str
+    epic: str
     priority: str
+    size: str
     approval_required: bool
     approval_reason: str
     problem: str
@@ -113,6 +124,11 @@ class MarkdownBacklogRepository:
 
         return items
 
+    def list_open_items(self) -> list[BacklogItem]:
+        """Return only items that are still eligible for work."""
+
+        return [item for item in self.list_items() if item.status in open_backlog_statuses()]
+
     def get_item(self, item_id: str) -> BacklogItem:
         requested_id = item_id.strip().lower()
         items = self.list_items()
@@ -124,6 +140,16 @@ class MarkdownBacklogRepository:
         raise ValueError(
             f"Backlog item '{item_id}' was not found. Available IDs: {available_ids}"
         )
+
+    def get_item_for_execution(self, item_id: str) -> BacklogItem:
+        """Return an item only if it is still actionable."""
+
+        item = self.get_item(item_id)
+        if item.status == BacklogStatus.DONE:
+            raise ValueError(
+                f"Backlog item '{item.item_id}' is Done and cannot be selected for execution."
+            )
+        return item
 
     def next_item_id(self, prefix: str = "ATL") -> str:
         normalized_prefix = prefix.strip().upper()
@@ -153,9 +179,11 @@ class MarkdownBacklogRepository:
         normalized_id = item_id.strip().upper()
         self.get_item(normalized_id)  # raises ValueError if not found
 
-        new_status = new_status.strip()
-        if not new_status:
+        if not new_status.strip():
             raise ValueError("Status cannot be empty.")
+        status_value = normalize_backlog_status(new_status)
+        if status_value is None:
+            raise ValueError(f"Status must be one of: {backlog_status_choices()}.")
 
         text = self._backlog_path.read_text(encoding="utf-8", errors="replace")
         lines = text.splitlines(keepends=True)
@@ -185,10 +213,10 @@ class MarkdownBacklogRepository:
             item_end = len(lines)
 
         if status_line_index is not None:
-            lines[status_line_index] = f"Status: {new_status}\n"
+            lines[status_line_index] = f"Status: {status_value.value}\n"
         else:
             # Insert status line immediately after the heading
-            lines.insert(item_start + 1, f"Status: {new_status}\n")
+            lines.insert(item_start + 1, f"Status: {status_value.value}\n")
 
         self._backlog_path.write_text("".join(lines), encoding="utf-8")
         return self.get_item(normalized_id)
@@ -241,6 +269,7 @@ def render_backlog_draft(draft: BacklogDraft) -> str:
         [
             f"## {draft.item_id} - {draft.title.strip()}",
             "",
+            f"Status: {BacklogStatus.BACKLOG.value}",
             f"Priority: {priority_text}",
             f"Approval Required: {approval_required_text}",
             f"Approval Reason: {draft.approval_reason.strip()}",
@@ -269,8 +298,16 @@ def validate_backlog_refinement_draft(
         raise BacklogValidationError("Backlog title is required.")
     if len(draft.title.strip()) > 120:
         raise BacklogValidationError("Backlog title must be 120 characters or less.")
+    if not draft.creator.strip():
+        raise BacklogValidationError("Creator is required.")
+    if _normalize_item_type(draft.item_type) is None:
+        raise BacklogValidationError("Item type must be Story, Task, Chore, or Bug.")
+    if not draft.epic.strip():
+        raise BacklogValidationError("Epic is required.")
     if _normalize_priority(draft.priority) is None:
         raise BacklogValidationError("Backlog priority must be High, Medium, or Low.")
+    if _normalize_size(draft.size) is None:
+        raise BacklogValidationError("Size must be XS, S, M, L, or XL.")
     if not draft.approval_reason.strip():
         raise BacklogValidationError("Approval reason is required.")
     if not draft.problem.strip():
@@ -286,7 +323,8 @@ def validate_backlog_refinement_draft(
         raise BacklogValidationError("Stale check result is required.")
     if not draft.already_done_check_result.strip():
         raise BacklogValidationError("Already-done check result is required.")
-    _require_non_empty_items(draft.research_cache_used, "Research cache used")
+    if draft.research_required and not draft.research_cache_used:
+        raise BacklogValidationError("Research cache used must be provided when research is required.")
     if not draft.recommended_implementation_pattern.strip():
         raise BacklogValidationError("Recommended implementation pattern is required.")
     _require_non_empty_items(draft.patterns_explicitly_rejected, "Patterns explicitly rejected")
@@ -299,7 +337,9 @@ def validate_backlog_refinement_draft(
 def render_backlog_refinement_draft(draft: BacklogRefinementDraft) -> str:
     validate_backlog_refinement_draft(draft)
     approval_required_text = "yes" if draft.approval_required else "no"
+    item_type_text = _normalize_item_type(draft.item_type)
     priority_text = _normalize_priority(draft.priority)
+    size_text = _normalize_size(draft.size)
     research_required_text = "yes" if draft.research_required else "no"
     external_research_needed_text = "yes" if draft.external_research_needed else "no"
     approval_risk_flags = _format_list_section(
@@ -307,7 +347,10 @@ def render_backlog_refinement_draft(draft: BacklogRefinementDraft) -> str:
         none_text="None",
     )
     patterns_rejected = _format_list_section(draft.patterns_explicitly_rejected)
-    research_cache_used = _format_list_section(draft.research_cache_used)
+    research_cache_used = _format_list_section(
+        draft.research_cache_used,
+        none_text="None",
+    )
     scope = _format_list_section(draft.scope)
     out_of_scope = _format_list_section(draft.out_of_scope)
     acceptance_criteria = _format_list_section(draft.acceptance_criteria)
@@ -315,8 +358,12 @@ def render_backlog_refinement_draft(draft: BacklogRefinementDraft) -> str:
         [
             f"## {draft.item_id} - {draft.title.strip()}",
             "",
-            "Status: Backlog",
+            f"Status: {BacklogStatus.BACKLOG.value}",
+            f"Creator: {draft.creator.strip()}",
+            f"Type: {item_type_text}",
+            f"Epic: {draft.epic.strip()}",
             f"Priority: {priority_text}",
+            f"Size: {size_text}",
             f"Approval Required: {approval_required_text}",
             f"Approval Reason: {draft.approval_reason.strip()}",
             "",
@@ -374,11 +421,13 @@ def _build_item(heading: str, body_lines: list[str]) -> BacklogItem:
     interrupt_before_implementation = _parse_yes_no_field(
         body_lines, "Interrupt Before Implementation"
     )
+    status = _parse_status_field(body_lines)
     return BacklogItem(
         item_id=item_id.strip(),
         title=title.strip(),
         body=body,
         interrupt_before_implementation=interrupt_before_implementation,
+        status=status,
     )
 
 
@@ -390,6 +439,21 @@ def _parse_yes_no_field(body_lines: list[str], field_name: str) -> bool:
             value = stripped[len(prefix):].strip().lower()
             return value == "yes"
     return False
+
+
+def _parse_status_field(body_lines: list[str]) -> BacklogStatus:
+    prefix = "Status:"
+    for line in body_lines:
+        stripped = line.strip()
+        if stripped.lower().startswith(prefix.lower()):
+            raw_value = stripped[len(prefix):].strip()
+            status = normalize_backlog_status(raw_value)
+            if status is None:
+                raise BacklogValidationError(
+                    f"Unknown backlog status '{raw_value}'. Allowed statuses: {backlog_status_choices()}."
+                )
+            return status
+    return BacklogStatus.BACKLOG
 
 
 def _require_non_empty_items(items: list[str], label: str) -> None:
@@ -408,6 +472,20 @@ def _normalize_priority(priority: str) -> str | None:
     if normalized not in {"high", "medium", "low"}:
         return None
     return normalized.capitalize()
+
+
+def _normalize_item_type(item_type: str) -> str | None:
+    normalized = " ".join(item_type.split()).lower()
+    if normalized not in {"story", "task", "chore", "bug"}:
+        return None
+    return normalized.capitalize()
+
+
+def _normalize_size(size: str) -> str | None:
+    normalized = " ".join(size.split()).upper()
+    if normalized not in {"XS", "S", "M", "L", "XL"}:
+        return None
+    return normalized
 
 
 def _resolve_project_path(path: Path) -> Path:

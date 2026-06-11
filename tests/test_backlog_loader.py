@@ -7,6 +7,7 @@ from ai_tech_lead.backlog_loader import (
     load_backlog_item_by_id,
     load_backlog_items,
 )
+from ai_tech_lead.backlog_status import BacklogStatus
 
 
 def test_load_backlog_items_parses_explicit_approval(tmp_path: Path) -> None:
@@ -17,6 +18,7 @@ def test_load_backlog_items_parses_explicit_approval(tmp_path: Path) -> None:
 
 ## JH-001 - Local placeholder
 
+Status: Backlog
 Approval Required: no
 Approval Reason: Safe local work.
 
@@ -25,6 +27,7 @@ Create a placeholder.
 
 ## ATL-002 - Approval task
 
+Status: Done
 Approval Required: yes
 Approval Reason: Changes approval behavior.
 """.strip(),
@@ -35,8 +38,10 @@ Approval Reason: Changes approval behavior.
 
     assert [item.item_id for item in items] == ["JH-001", "ATL-002"]
     assert items[0].title == "Local placeholder"
+    assert items[0].status == BacklogStatus.BACKLOG
     assert "Create a placeholder." in items[0].body
     assert items[1].title == "Approval task"
+    assert items[1].status == BacklogStatus.DONE
     assert "Approval Reason: Changes approval behavior." in items[1].body
 
 
@@ -46,6 +51,7 @@ def test_load_backlog_item_by_id_is_case_insensitive(tmp_path: Path) -> None:
         """
 ## JH-001 - Local placeholder
 
+Status: Backlog
 Approval Required: no
 Approval Reason: Safe local work.
 """.strip(),
@@ -63,6 +69,7 @@ def test_backlog_item_to_graph_state_sets_required_initial_fields(tmp_path: Path
         """
 ## JH-001 - Local placeholder
 
+Status: Backlog
 Approval Required: no
 Approval Reason: Safe local work.
 """.strip(),
@@ -84,3 +91,24 @@ Approval Reason: Safe local work.
     assert state["approved"] is False
     assert state["agent_instruction"] == ""
     assert state["coding_agent_result"] == ""
+
+
+def test_load_backlog_item_by_id_rejects_done_items(tmp_path: Path) -> None:
+    backlog_path = tmp_path / "BACKLOG.md"
+    backlog_path.write_text(
+        """
+## ATL-001 - Finished item
+
+Status: Done
+Approval Required: no
+Approval Reason: Safe local work.
+""".strip(),
+        encoding="utf-8",
+    )
+
+    try:
+        load_backlog_item_by_id("ATL-001", backlog_path)
+    except ValueError as error:
+        assert "Done and cannot be selected" in str(error)
+    else:
+        raise AssertionError("done item should not be selected for execution")

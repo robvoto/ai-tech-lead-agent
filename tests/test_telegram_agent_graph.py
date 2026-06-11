@@ -152,6 +152,7 @@ def test_count_backlog_items_logs_learner_message(caplog, tmp_path: Path) -> Non
     backlog_path.write_text(
         "# Backlog\n\n"
         "## ATL-001 - First item\n\n"
+        "Status: Backlog\n\n"
         "Goal:\nDo the first thing.\n",
         encoding="utf-8",
     )
@@ -164,8 +165,31 @@ def test_count_backlog_items_logs_learner_message(caplog, tmp_path: Path) -> Non
     caplog.set_level(logging.INFO)
     result = count_tool.invoke({})
 
-    assert result == "Backlog has 1 items."
+    assert result == "Backlog has 1 open item."
     assert "[LEARN] Backlog tool is counting backlog items." in caplog.text
+
+
+def test_list_backlog_items_skips_done_items(tmp_path: Path) -> None:
+    backlog_path = tmp_path / "BACKLOG.md"
+    backlog_path.write_text(
+        "# Backlog\n\n"
+        "## ATL-001 - Active item\n\n"
+        "Status: In Progress\n\n"
+        "Goal:\nDo the thing.\n\n"
+        "## ATL-002 - Done item\n\n"
+        "Status: Done\n\n"
+        "Goal:\nFinished.\n",
+        encoding="utf-8",
+    )
+    raw_settings = valid_settings_dict()
+    raw_settings["backlog_path"] = str(backlog_path)
+    settings = parse_settings(raw_settings)
+    tools = _build_backlog_tools(settings)
+    list_tool = next(tool for tool in tools if tool.name == "list_backlog_items")
+
+    result = list_tool.invoke({"limit": 10})
+
+    assert result == "ATL-001 - Active item"
 
 
 class _Reply:

@@ -135,8 +135,11 @@ def _build_backlog_tools(settings: AppSettings):
         """Return the number of backlog items."""
 
         logger.info("[LEARN] Backlog tool is counting backlog items.")
-        items = repository.list_items()
-        return f"Backlog has {len(items)} items."
+        items = repository.list_open_items()
+        if not items:
+            return "No open backlog items."
+        item_word = "item" if len(items) == 1 else "items"
+        return f"Backlog has {len(items)} open {item_word}."
 
     @tool
     def list_backlog_items(limit: int = 10) -> str:
@@ -144,7 +147,9 @@ def _build_backlog_tools(settings: AppSettings):
 
         logger.info("[LEARN] Backlog tool is listing backlog items.")
         safe_limit = min(max(limit, 1), 20)
-        items = repository.list_items()[:safe_limit]
+        items = repository.list_open_items()[:safe_limit]
+        if not items:
+            return "No open backlog items."
         lines = [f"{item.item_id} - {item.title}" for item in items]
         return "\n".join(lines)
 
@@ -154,8 +159,11 @@ def _build_backlog_tools(settings: AppSettings):
 
         logger.info("[LEARN] Backlog tool is reading one backlog item.")
         item = repository.get_item(item_id)
-        body = _truncate_text(item.body, 1600)
-        return f"{item.item_id} - {item.title}\n\n{body}"
+        body = _truncate_text(_backlog_body_without_status(item.body), 1600)
+        lines = [f"{item.item_id} - {item.title}", f"Status: {item.status.value}"]
+        if body:
+            lines.extend(["", body])
+        return "\n".join(lines)
 
     @tool
     def set_backlog_item_status(item_id: str, new_status: str) -> str:
@@ -169,11 +177,18 @@ def _build_backlog_tools(settings: AppSettings):
         )
         try:
             item = repository.update_item_status(item_id, new_status)
-            return f"Updated {item.item_id} - {item.title}: Status is now '{new_status}'."
+            return f"Updated {item.item_id} - {item.title}: Status is now '{item.status.value}'."
         except (ValueError, FileNotFoundError) as error:
             return f"Failed to update status: {error}"
 
     return [count_backlog_items, list_backlog_items, read_backlog_item, set_backlog_item_status]
+
+
+def _backlog_body_without_status(body: str) -> str:
+    lines = body.splitlines()
+    if lines and lines[0].strip().lower().startswith("status:"):
+        return "\n".join(lines[1:]).strip()
+    return body.strip()
 
 
 def _latest_ai_message(messages: list[Any]) -> AIMessage | None:

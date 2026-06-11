@@ -43,8 +43,10 @@ def valid_settings_dict() -> dict[str, Any]:
                 "Task:\n{request}"
             ),
             "execution_brief_template": (
+                "Request:\n{request}\n\n"
                 "Relevant files:\n{relevant_files}\n\n"
                 "Constraints:\n{constraint_list}\n\n"
+                "Acceptance criteria:\n{acceptance_criteria}\n\n"
                 "Approval reason:\n{approval_reason}\n\n"
                 "Risk notes:\n{risk_notes}"
             )

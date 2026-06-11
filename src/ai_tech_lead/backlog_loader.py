@@ -25,6 +25,12 @@ def load_backlog_items(backlog_path: Path | None = None) -> list[BacklogItem]:
     return _repository(backlog_path).list_items()
 
 
+def load_open_backlog_items(backlog_path: Path | None = None) -> list[BacklogItem]:
+    """Parse only backlog items that are still eligible for work."""
+
+    return _repository(backlog_path).list_open_items()
+
+
 def load_backlog_item_by_id(item_id: str, backlog_path: Path | None = None) -> BacklogItem:
     """Load one backlog item by explicit ID.
 
@@ -32,13 +38,16 @@ def load_backlog_item_by_id(item_id: str, backlog_path: Path | None = None) -> B
     It avoids silently picking the wrong backlog item.
     """
 
-    return _repository(backlog_path).get_item(item_id)
+    return _repository(backlog_path).get_item_for_execution(item_id)
 
 
 def load_first_backlog_item_for_demo(backlog_path: Path | None = None) -> BacklogItem:
     """Load the first backlog item for demo use only."""
 
-    return load_backlog_items(backlog_path)[0]
+    items = load_open_backlog_items(backlog_path)
+    if not items:
+        raise ValueError("No open backlog items found for demo selection.")
+    return items[0]
 
 
 def backlog_item_to_graph_state(item: BacklogItem) -> GraphState:

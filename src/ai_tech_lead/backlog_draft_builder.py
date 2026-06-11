@@ -102,7 +102,10 @@ def _parse_backlog_refinement_payload(
     item_id: str,
 ) -> BacklogRefinementDraft:
     title = str(payload["title"]).strip()
+    item_type = str(payload["item_type"]).strip()
+    epic = str(payload["epic"]).strip()
     priority = str(payload["priority"]).strip()
+    size = str(payload["size"]).strip()
     approval_required = payload["approval_required"]
     approval_reason = str(payload["approval_reason"]).strip()
     problem = str(payload["problem"]).strip()
@@ -120,6 +123,7 @@ def _parse_backlog_refinement_payload(
     research_cache_used = _parse_string_list(
         payload["research_cache_used"],
         field_name="research_cache_used",
+        allow_empty=True,
     )
     external_research_needed = payload["external_research_needed"]
     recommended_implementation_pattern = str(payload["recommended_implementation_pattern"]).strip()
@@ -147,7 +151,11 @@ def _parse_backlog_refinement_payload(
     return BacklogRefinementDraft(
         item_id=item_id,
         title=title,
+        creator="Human",
+        item_type=item_type,
+        epic=epic,
         priority=priority,
+        size=size,
         approval_required=approval_required,
         approval_reason=approval_reason,
         problem=problem,
@@ -211,7 +219,8 @@ def _backlog_refinement_prompt(
         "Return only valid JSON. Do not include Markdown. "
         "Turn the user's rough idea into one structured backlog item. "
         "Use this exact schema: "
-        "{\"title\": string, \"priority\": string, \"approval_required\": boolean, \"approval_reason\": string, "
+        "{\"title\": string, \"item_type\": string, \"epic\": string, \"priority\": string, \"size\": string, "
+        "\"approval_required\": boolean, \"approval_reason\": string, "
         "\"problem\": string, \"desired_outcome\": string, \"scope\": string[], "
         "\"out_of_scope\": string[], \"acceptance_criteria\": string[], "
         "\"duplicate_check_result\": string, \"stale_check_result\": string, "
@@ -221,7 +230,11 @@ def _backlog_refinement_prompt(
         "\"patterns_explicitly_rejected\": string[], \"freshness_risk\": string, "
         "\"implementation_guidance\": string, \"approval_risk_flags\": string[]}. "
         "The item must be small, specific, and implementation-ready. "
-        "Use one of these priority values: High, Medium, or Low. "
+        "item_type must be one of: Story, Task, Chore, Bug. "
+        "epic is a short area name such as 'AI Tech Lead Infrastructure' or 'Backlog Management'. "
+        "priority must be one of: High, Medium, Low. "
+        "size must be one of: XS, S, M, L, XL (effort estimate — XS=hours, S=1day, M=2-3days, L=week, XL=multi-week). "
+        "research_cache_used may be empty if no cache entries were relevant. "
         "Check docs/research/INDEX.md first and reuse the cached research notes below where possible. "
         "If the cache is missing, stale, or insufficient, set external_research_needed=true and explain the freshness risk. "
         "Do not invent implementation details beyond the user's request and the cached research. "

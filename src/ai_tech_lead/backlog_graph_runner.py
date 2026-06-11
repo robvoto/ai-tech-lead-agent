@@ -36,7 +36,11 @@ def run_backlog_graph(
     )
     save_graph_diagram(app)
 
-    backlog_item = load_backlog_item_by_id(task_id)
+    try:
+        backlog_item = load_backlog_item_by_id(task_id)
+    except ValueError as error:
+        logger.error("%s", error)
+        return
     backlog_input = backlog_item_to_graph_state(backlog_item)
 
     logger.info("Selected backlog item: %s - %s", backlog_item.item_id, backlog_item.title)

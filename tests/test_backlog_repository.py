@@ -14,6 +14,7 @@ from ai_tech_lead.backlog_repository import (
     validate_backlog_draft,
     validate_backlog_refinement_draft,
 )
+from ai_tech_lead.backlog_status import BacklogStatus
 
 
 def test_repository_lists_gets_and_adds_markdown_items(tmp_path: Path) -> None:
@@ -42,8 +43,29 @@ def test_repository_lists_gets_and_adds_markdown_items(tmp_path: Path) -> None:
 
     assert added_item.item_id == "ATL-002"
     assert added_item.title == "Improve backlog management"
+    assert added_item.status == BacklogStatus.BACKLOG
     assert repository.get_item("ATL-002").body
     assert "Approval Required: yes" in backlog_path.read_text(encoding="utf-8")
+
+
+def test_list_open_items_excludes_done_items(tmp_path: Path) -> None:
+    backlog_path = tmp_path / "BACKLOG.md"
+    backlog_path.write_text(
+        "# Backlog\n\n"
+        "## ATL-001 - Active item\n\n"
+        "Status: Backlog\n\n"
+        "Goal:\nDo the thing.\n\n"
+        "## ATL-002 - Finished item\n\n"
+        "Status: Done\n\n"
+        "Goal:\nDo the finished thing.\n",
+        encoding="utf-8",
+    )
+    repository = MarkdownBacklogRepository(backlog_path)
+
+    open_items = repository.list_open_items()
+
+    assert [item.item_id for item in open_items] == ["ATL-001"]
+    assert open_items[0].status == BacklogStatus.BACKLOG
 
 
 def test_validate_backlog_draft_rejects_missing_constraints() -> None:
@@ -80,7 +102,11 @@ def test_validate_backlog_refinement_draft_rejects_missing_priority() -> None:
     draft = BacklogRefinementDraft(
         item_id="ATL-010",
         title="Refine backlog item creation",
+        creator="Human",
+        item_type="Story",
+        epic="Backlog Management",
         priority="Urgent",
+        size="M",
         approval_required=True,
         approval_reason="Touches backlog storage and research flow.",
         problem="Rob needs structured backlog refinement before coding starts.",
@@ -116,9 +142,10 @@ def test_update_item_status_sets_new_status(tmp_path: Path) -> None:
     )
     repository = MarkdownBacklogRepository(backlog_path)
 
-    item = repository.update_item_status("ATL-001", "Done")
+    item = repository.update_item_status("ATL-001", " done ")
 
     assert item.item_id == "ATL-001"
+    assert item.status == BacklogStatus.DONE
     text = backlog_path.read_text(encoding="utf-8")
     assert "Status: Done" in text
     assert "Status: Backlog" not in text
@@ -138,6 +165,20 @@ def test_update_item_status_inserts_when_missing(tmp_path: Path) -> None:
 
     text = backlog_path.read_text(encoding="utf-8")
     assert "Status: In Progress" in text
+
+
+def test_update_item_status_rejects_unknown_status(tmp_path: Path) -> None:
+    backlog_path = tmp_path / "BACKLOG.md"
+    backlog_path.write_text(
+        "# Backlog\n\n"
+        "## ATL-001 - Some item\n\n"
+        "Goal:\nDo the thing.\n",
+        encoding="utf-8",
+    )
+    repository = MarkdownBacklogRepository(backlog_path)
+
+    with pytest.raises(ValueError, match="Backlog, In Progress, Done"):
+        repository.update_item_status("ATL-001", "Almost Done")
 
 
 def test_update_item_status_raises_for_unknown_id(tmp_path: Path) -> None:
@@ -166,6 +207,7 @@ def test_render_backlog_draft_is_markdown_backlog_format() -> None:
     rendered = render_backlog_draft(draft)
 
     assert rendered.startswith("## ATL-010 - Add Telegram backlog proposals")
+    assert "Status: Backlog" in rendered
     assert "Priority: Medium" in rendered
     assert "Approval Required: yes" in rendered
     assert "- Do not write without approval" in rendered
@@ -175,7 +217,11 @@ def test_render_backlog_refinement_draft_includes_research_context() -> None:
     draft = BacklogRefinementDraft(
         item_id="ATL-010",
         title="Refine backlog item creation",
+        creator="Human",
+        item_type="Story",
+        epic="Backlog Management",
         priority="High",
+        size="M",
         approval_required=True,
         approval_reason="Touches backlog storage and research flow.",
         problem="Rob needs structured backlog refinement before coding starts.",
@@ -200,7 +246,11 @@ def test_render_backlog_refinement_draft_includes_research_context() -> None:
     rendered = render_backlog_refinement_draft(draft)
 
     assert rendered.startswith("## ATL-010 - Refine backlog item creation")
+    assert "Creator: Human" in rendered
+    assert "Type: Story" in rendered
+    assert "Epic: Backlog Management" in rendered
     assert "Priority: High" in rendered
+    assert "Size: M" in rendered
     assert "Research Required: yes" in rendered
     assert "Research Cache Used:" in rendered
     assert "- docs/research/backlog-refinement-implementation-patterns.md" in rendered
@@ -222,7 +272,11 @@ def test_add_refined_item_appends_rendered_backlog_item(tmp_path: Path) -> None:
     draft = BacklogRefinementDraft(
         item_id="ATL-002",
         title="Refine backlog item creation",
+        creator="Human",
+        item_type="Story",
+        epic="Backlog Management",
         priority="High",
+        size="M",
         approval_required=True,
         approval_reason="Touches backlog storage and research flow.",
         problem="Rob needs structured backlog refinement before coding starts.",

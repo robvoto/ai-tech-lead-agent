@@ -43,6 +43,7 @@ from .backlog_repository import (
     BacklogRefinementDraft,
     MarkdownBacklogRepository,
 )
+from .backlog_status import backlog_status_choices, normalize_backlog_status
 from .telegram_agent_graph import build_telegram_agent_graph, run_telegram_agent_message
 from .telegram_secrets import get_telegram_bot_token
 
@@ -77,10 +78,10 @@ CANONICAL_BOT_COMMANDS: tuple[_BotCommand, ...] = (
     _BotCommand("status", "", "check bot status"),
     _BotCommand("approve", "", "approve the waiting task/decision"),
     _BotCommand("reject", "", "reject the waiting task/decision"),
-    _BotCommand("list", "[limit]", "list backlog items"),
+    _BotCommand("list", "[limit]", "list non-done backlog items"),
     _BotCommand("count", "", "count backlog items"),
     _BotCommand("read", "<backlog-id>", "read backlog item details"),
-    _BotCommand("set-status", "<backlog-id> <status>", "propose backlog status update"),
+    _BotCommand("set-status", "<backlog-id> <status>", "propose backlog status update (Backlog/In Progress/Done)"),
 )
 
 
@@ -509,7 +510,12 @@ class TelegramOperator:
         self._send_message(chat_id, self._help_text())
 
     def _run_backlog_task(self, chat_id: str, task_id: str) -> None:
-        backlog_item = load_backlog_item_by_id(task_id)
+        try:
+            backlog_item = load_backlog_item_by_id(task_id)
+        except ValueError as error:
+            logger.info("Telegram run: backlog item selection failed for chat %s: %s", chat_id, error)
+            self._send_message(chat_id, str(error))
+            return
         graph_state = backlog_item_to_graph_state(backlog_item)
         task_label = f"{backlog_item.item_id} - {backlog_item.title}"
         request_summary = _summarize_text(backlog_item.body or backlog_item.title)
@@ -1446,9 +1452,12 @@ def parse_telegram_command(text: str) -> TelegramCommand:
         item_id = parts[0].upper()
         if not re.fullmatch(r"[A-Z]+-\d{3}", item_id):
             raise ValueError("/set-status requires a valid backlog ID like ATL-001.")
+        status = normalize_backlog_status(parts[1])
+        if status is None:
+            raise ValueError(f"/set-status requires one of: {backlog_status_choices()}.")
         return TelegramCommand(
             name=TelegramCommandName.SET_STATUS,
-            argument=f"{item_id} {parts[1].strip()}",
+            argument=f"{item_id} {status.value}",
             raw_text=normalized_text,
         )
 
@@ -1584,16 +1593,22 @@ def _backlog_refinement_prompt(
     pattern = _summarize_text(draft.recommended_implementation_pattern, limit=220)
     guidance = _summarize_text(draft.implementation_guidance, limit=220)
     approval_reason = _summarize_text(draft.approval_reason, limit=180)
+    problem_summary = _summarize_text(draft.problem, limit=200)
+    outcome_summary = _summarize_text(draft.desired_outcome, limit=180)
+    risk_flags = "; ".join(draft.approval_risk_flags) if draft.approval_risk_flags else "None"
     return _truncate_text(
         "\n".join(
             [
                 "Backlog refinement ready",
                 f"ID: {draft.item_id}",
                 f"Title: {draft.title}",
-                f"Source: {source}",
-                f"Priority: {priority}",
+                f"Type: {draft.item_type}  Epic: {draft.epic}  Size: {draft.size}",
+                f"Source: {source}  Priority: {priority}",
+                f"Problem: {problem_summary}",
+                f"Outcome: {outcome_summary}",
                 f"Approval required: {approval_required}",
                 f"Approval reason: {approval_reason}",
+                f"Risk flags: {risk_flags}",
                 f"Research required: {research_required}",
                 f"Research cache used: {cache_used}",
                 f"External research needed: {external_research_needed}",

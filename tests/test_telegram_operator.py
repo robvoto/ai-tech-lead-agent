@@ -114,6 +114,18 @@ def test_rejects_invalid_run_command() -> None:
         parse_telegram_command("/run not-an-id")
 
 
+def test_parse_set_status_command_normalizes_allowed_statuses() -> None:
+    command = parse_telegram_command("/set-status ATL-002 in progress")
+
+    assert command.name == TelegramCommandName.SET_STATUS
+    assert command.argument == "ATL-002 In Progress"
+
+
+def test_rejects_invalid_set_status_command() -> None:
+    with pytest.raises(ValueError, match="Backlog, In Progress, Done"):
+        parse_telegram_command("/set-status ATL-001 Almost Done")
+
+
 def test_parse_update_extracts_chat_and_sender() -> None:
     update = parse_telegram_update(
         {
@@ -266,7 +278,11 @@ def test_new_command_logs_discarded_cleanup_details(caplog: pytest.LogCaptureFix
         draft=BacklogRefinementDraft(
             item_id="ATL-002",
             title="Add backlog support",
+            creator="Human",
+            item_type="Story",
+            epic="Backlog Management",
             priority="High",
+            size="M",
             approval_required=True,
             approval_reason="Adds a backlog writing workflow.",
             problem="Rob needs a structured backlog workflow.",
@@ -739,7 +755,11 @@ def test_propose_command_creates_and_approves_backlog_item(monkeypatch: pytest.M
             draft=BacklogRefinementDraft(
                 item_id="ATL-002",
                 title="Add backlog support",
+                creator="Human",
+                item_type="Story",
+                epic="Backlog Management",
                 priority="High",
+                size="M",
                 approval_required=True,
                 approval_reason="Adds a backlog writing workflow.",
                 problem="Rob needs a structured backlog workflow.",
@@ -911,6 +931,23 @@ def test_backlog_commands_return_fallback_when_ai_disabled() -> None:
             "demo-user",
         )
         assert "orchestrator AI" in client.messages[-1][1].lower() or "enabled" in client.messages[-1][1].lower()
+
+
+def test_run_backlog_task_reports_done_items_to_the_user(monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = parse_settings(valid_settings_dict())
+    client = _RecordingClient()
+    operator = TelegramOperator("token", settings, client=client)
+
+    monkeypatch.setattr(
+        "ai_tech_lead.telegram_operator.load_backlog_item_by_id",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            ValueError("Backlog item 'ATL-001' is Done and cannot be selected for execution.")
+        ),
+    )
+
+    operator._run_backlog_task("chat-1", "ATL-001")
+
+    assert client.messages[-1][1] == "Backlog item 'ATL-001' is Done and cannot be selected for execution."
 
 
 def test_register_commands_payload_contains_only_canonical_commands() -> None:

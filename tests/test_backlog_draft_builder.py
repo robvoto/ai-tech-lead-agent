@@ -41,7 +41,10 @@ def test_build_backlog_refinement_from_text_uses_cache_and_ai(monkeypatch, tmp_p
         text = (
             "{"
             '"title": "Improve admin UI", '
+            '"item_type": "Story", '
+            '"epic": "Admin UI", '
             '"priority": "High", '
+            '"size": "S", '
             '"approval_required": true, '
             '"approval_reason": "Changes local UI behaviour.", '
             '"problem": "The admin UI is hard to scan.", '
@@ -78,11 +81,19 @@ def test_build_backlog_refinement_from_text_uses_cache_and_ai(monkeypatch, tmp_p
     assert cache_calls == [True]
     assert prompts and "Cached research notes:" in prompts[0]
     assert "\"priority\": string" in prompts[0]
-    assert "High, Medium, or Low" in prompts[0]
+    assert "High, Medium, Low" in prompts[0]
+    assert "\"item_type\": string" in prompts[0]
+    assert "Story, Task, Chore, Bug" in prompts[0]
+    assert "\"size\": string" in prompts[0]
+    assert "XS, S, M, L, XL" in prompts[0]
     assert "Existing" in prompts[0]
     assert result.draft.item_id == "ATL-002"
     assert result.draft.title == "Improve admin UI"
+    assert result.draft.creator == "Human"
+    assert result.draft.item_type == "Story"
+    assert result.draft.epic == "Admin UI"
     assert result.draft.priority == "High"
+    assert result.draft.size == "S"
     assert result.draft.approval_required is True
     assert result.draft.research_required is True
     assert result.draft.external_research_needed is False

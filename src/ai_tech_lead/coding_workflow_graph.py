@@ -200,14 +200,16 @@ def create_brief_node(state: GraphState) -> GraphState:
 
     settings = load_settings()
     state["brief"] = settings.prompts["execution_brief_template"].format(
+        request=state["request"],
         relevant_files=_format_bullets(settings.watched_directories),
         constraint_list=_format_bullets(settings.brief_constraints),
+        acceptance_criteria=_format_bullets(settings.acceptance_criteria),
         approval_reason=state["approval_reason"],
         risk_notes=_format_bullets(settings.risk_notes),
     )
 
-    logger.info("Brief purpose: supplementary context for agent handoff — relevant files, constraints, approval reason, risk notes.")
-    logger.info("Brief adds: watched_directories=%s, constraints=%s", len(settings.watched_directories), len(settings.brief_constraints))
+    logger.info("Brief purpose: supplementary context for agent handoff — relevant files, constraints, acceptance criteria, approval reason, risk notes.")
+    logger.info("Brief adds: watched_directories=%s, constraints=%s, acceptance_criteria=%s", len(settings.watched_directories), len(settings.brief_constraints), len(settings.acceptance_criteria))
     logger.info("Brief size: %s characters", len(state["brief"]))
     logger.info("Brief preview: %s", _single_line_preview(state["brief"]))
 
