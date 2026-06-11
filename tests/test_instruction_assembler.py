@@ -25,14 +25,12 @@ def test_assembled_instruction_includes_project_rules_and_selected_skill() -> No
         formulated_task="",
         task_feedback=[],
         needs_approval=False,
-        approval_reason="Low risk.",
         approved=False,
         settings=settings,
     )
 
     assert "# Coding-Agent Handoff" in instruction
-    assert "## Orchestrator identity" in instruction
-    assert "AI Technical Lead Orchestrator" in instruction
+    assert "## Orchestrator identity" not in instruction
     assert "## Project rules" in instruction
     assert "## Universal rules" in instruction
     assert "## Selected skills" in instruction
@@ -52,7 +50,6 @@ def test_assembled_instruction_does_not_dump_irrelevant_skills() -> None:
         formulated_task="",
         task_feedback=[],
         needs_approval=False,
-        approval_reason="Low risk.",
         approved=False,
         settings=settings,
     )
@@ -70,7 +67,6 @@ def test_assembled_instruction_includes_backlog_ownership_rules_from_prompt_file
         formulated_task="",
         task_feedback=[],
         needs_approval=False,
-        approval_reason="Low risk.",
         approved=False,
         settings=settings,
     )
@@ -91,7 +87,6 @@ def test_assembled_instruction_includes_current_task_feedback_only() -> None:
             "Do not update global prompts or rules.",
         ],
         needs_approval=False,
-        approval_reason="Low risk.",
         approved=False,
         settings=settings,
     )
@@ -111,7 +106,6 @@ def test_assembled_instruction_includes_evidence_sources_when_provided() -> None
         formulated_task="",
         task_feedback=[],
         needs_approval=False,
-        approval_reason="Low risk.",
         approved=False,
         settings=settings,
         research_sources=[
@@ -135,9 +129,43 @@ def test_assembled_instruction_omits_evidence_sources_when_not_provided() -> Non
         formulated_task="",
         task_feedback=[],
         needs_approval=False,
-        approval_reason="Low risk.",
         approved=False,
         settings=settings,
     )
 
     assert "## Evidence Sources" not in instruction
+
+
+def test_assembled_instruction_has_no_duplicate_request_in_brief() -> None:
+    settings = parse_settings(valid_settings_dict())
+
+    instruction = build_agent_instruction(
+        request="Fix the Telegram polling loop",
+        brief="Relevant files:\n- src/ai_tech_lead",
+        formulated_task="",
+        task_feedback=[],
+        needs_approval=False,
+        approved=False,
+        settings=settings,
+    )
+
+    assert instruction.count("Fix the Telegram polling loop") == 1
+
+
+def test_assembled_instruction_approval_state_has_no_approval_reason() -> None:
+    settings = parse_settings(valid_settings_dict())
+
+    instruction = build_agent_instruction(
+        request="Small refactor",
+        brief="Context here.",
+        formulated_task="",
+        task_feedback=[],
+        needs_approval=True,
+        approved=False,
+        settings=settings,
+    )
+
+    approval_section = instruction.split("## Approval state")[1].split("##")[0]
+    assert "Needs approval: True" in approval_section
+    assert "Approved: False" in approval_section
+    assert "Approval reason" not in approval_section

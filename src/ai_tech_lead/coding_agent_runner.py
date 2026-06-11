@@ -28,6 +28,33 @@ _POLL_INTERVAL_SECONDS = 1.0
 _PROGRESS_PREVIEW_LINES = 5
 
 
+class CodingAgentCancellationToken:
+    """Thread-safe cancellation handle for one coding-agent subprocess."""
+
+    def __init__(self) -> None:
+        self._event = threading.Event()
+        self._lock = threading.Lock()
+        self._process: subprocess.Popen[str] | None = None
+
+    def attach_process(self, process: subprocess.Popen[str]) -> None:
+        with self._lock:
+            self._process = process
+            if self._event.is_set() and process.poll() is None:
+                process.terminate()
+
+    def cancel(self) -> bool:
+        self._event.set()
+        with self._lock:
+            process = self._process
+            if process is None or process.poll() is not None:
+                return False
+            process.terminate()
+            return True
+
+    def is_cancel_requested(self) -> bool:
+        return self._event.is_set()
+
+
 @dataclass(frozen=True)
 class CodingAgentResult:
     """Captured result from a coding-agent subprocess run."""
@@ -37,6 +64,7 @@ class CodingAgentResult:
     stdout: str
     stderr: str
     timed_out: bool = False
+    cancelled: bool = False
     message: str = ""
     started_at: float = 0.0
     ended_at: float = 0.0
@@ -84,6 +112,7 @@ def run_coding_agent(
     project_root: Path,
     settings: AppSettings,
     progress_callback: Callable[[str], None] | None = None,
+    cancellation_token: CodingAgentCancellationToken | None = None,
 ) -> CodingAgentResult:
     """Run the configured CLI agent for real when settings explicitly allow execution."""
 
@@ -126,6 +155,9 @@ def run_coding_agent(
             f"Coding agent command not found: {settings.coding_agent_command}"
         ) from error
 
+    if cancellation_token is not None:
+        cancellation_token.attach_process(process)
+
     # Read both streams concurrently to prevent pipe-buffer deadlock.
     stdout_lines: list[str] = []
     stderr_lines: list[str] = []
@@ -142,12 +174,23 @@ def run_coding_agent(
     stderr_thread.start()
 
     timed_out = False
+    cancelled = False
     last_update_at = started_at
     last_reported_count = 0
 
     try:
         while process.poll() is None:
             elapsed = time.time() - started_at
+
+            if cancellation_token is not None and cancellation_token.is_cancel_requested():
+                cancelled = True
+                if process.poll() is None:
+                    process.terminate()
+                    try:
+                        process.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                break
 
             if elapsed >= timeout_seconds:
                 timed_out = True
@@ -178,6 +221,22 @@ def run_coding_agent(
     stdout = "\n".join(stdout_lines)
     stderr = "\n".join(stderr_lines)
     changed_files_after = _get_git_changed_files(project_root)
+
+    if cancelled:
+        return CodingAgentResult(
+            command=command,
+            returncode=process.returncode,
+            stdout=stdout,
+            stderr=stderr,
+            cancelled=True,
+            message="The coding agent was cancelled by the operator.",
+            started_at=started_at,
+            ended_at=ended_at,
+            duration_seconds=ended_at - started_at,
+            changed_files_before=changed_files_before,
+            changed_files_after=changed_files_after,
+            changed_files_delta=_files_delta(changed_files_before, changed_files_after),
+        )
 
     if timed_out:
         return CodingAgentResult(

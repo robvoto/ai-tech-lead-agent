@@ -13,6 +13,7 @@ from ai_tech_lead.coding_workflow_graph import (
     route_after_check_research,
     route_after_formulate_task,
     route_after_review_plan,
+    request_plan_node,
     run_coding_agent_node,
 )
 
@@ -204,6 +205,48 @@ def test_run_coding_agent_node_forwards_progress_updates(monkeypatch) -> None:
     assert state["coding_agent_result"] == "done"
 
 
+def test_request_plan_node_uses_generated_instruction_and_stores_stdout(monkeypatch) -> None:
+    settings = replace(parse_settings(valid_settings_dict()), execute_coding_agent=False)
+    captured: dict[str, object] = {}
+
+    def fake_load_settings():
+        return settings
+
+    def fake_load_prompt(filename: str) -> str:
+        assert filename == "plan_request_instruction.md"
+        return "Plan for {formulated_task}\n{correction_feedback}"
+
+    def fake_run_coding_agent(*, agent_instruction, project_root, settings):
+        captured["agent_instruction"] = agent_instruction
+        captured["project_root"] = project_root
+        captured["settings"] = settings
+
+        class Result:
+            stdout = "1. Do the thing\n2. Validate it"
+            returncode = 0
+            changed_files_delta: tuple[str, ...] = ()
+
+        return Result()
+
+    monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.load_settings", fake_load_settings)
+    monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.load_prompt", fake_load_prompt)
+    monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.run_coding_agent", fake_run_coding_agent)
+
+    state = graph_state(
+        formulated_task="Build the plan",
+        plan_correction="Keep it small.",
+    )
+
+    result = request_plan_node(state)
+
+    assert captured["agent_instruction"] == "Plan for Build the plan\n\nPrevious plan was rejected. Correction needed:\nKeep it small."
+    assert captured["project_root"] is not None
+    assert captured["settings"].execute_coding_agent is False
+    assert result["plan_text"] == "1. Do the thing\n2. Validate it"
+    assert result["plan_approved"] is False
+    assert result["plan_correction"] == ""
+
+
 def test_graph_runs_to_disabled_coding_agent_result(monkeypatch) -> None:
     settings = parse_settings(valid_settings_dict())
 
@@ -218,7 +261,7 @@ def test_graph_runs_to_disabled_coding_agent_result(monkeypatch) -> None:
 
     result = app.invoke(graph_state())
 
-    assert "Code runs successfully" in result["brief"]
+    assert "Relevant files:" in result["brief"]
     assert result["needs_approval"] is True
     assert "AI risk review is off, so I need your approval before continuing." in result["approval_reason"]
     assert result["approved"] is False

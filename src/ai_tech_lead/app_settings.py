@@ -16,11 +16,9 @@ REQUIRED_PROMPTS = {
         "request",
     },
     "execution_brief_template": {
-        "acceptance_criteria",
         "approval_reason",
         "constraint_list",
         "relevant_files",
-        "request",
         "risk_notes",
     },
 }

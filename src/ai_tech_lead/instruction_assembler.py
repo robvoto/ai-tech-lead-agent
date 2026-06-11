@@ -10,7 +10,6 @@ from ai_tech_lead.config import PROJECT_ROOT
 from ai_tech_lead.prompt_loader import load_prompt
 
 AGENTS_PATH = PROJECT_ROOT / "AGENTS.md"
-IDENTITY_PATH = PROJECT_ROOT / "docs" / "ORCHESTRATOR_IDENTITY.md"
 SKILLS_DIR = PROJECT_ROOT / ".skills"
 
 
@@ -28,7 +27,6 @@ def build_agent_instruction(
     formulated_task: str,
     task_feedback: list[str],
     needs_approval: bool,
-    approval_reason: str,
     approved: bool,
     settings: AppSettings,
     research_sources: list[str] | None = None,
@@ -37,7 +35,6 @@ def build_agent_instruction(
     selected_skills = "\n\n".join(_render_skill(skill) for skill in skills)
     project_rules = _extract_project_rules()
     backlog_ownership_rules = load_prompt("backlog_ownership_rules.md")
-    coding_agent_handoff_rules = load_prompt("coding_agent_handoff_rules.md")
     stop_conditions = _format_bullets(
         [
             "Stop if files outside the allowed directories are needed.",
@@ -74,16 +71,13 @@ def build_agent_instruction(
         [
             _section(
                 "Approval state",
-                f"Needs approval: {needs_approval}\nApproval reason: {approval_reason}\nApproved: {approved}",
+                f"Needs approval: {needs_approval}\nApproved: {approved}",
             ),
-            _section("Orchestrator identity", _load_orchestrator_identity()),
             _section("Project rules", project_rules),
             _section("Selected skills", selected_skills),
             _section("Allowed directories", _format_bullets(settings.allowed_directories)),
             _section("Runtime limit", f"{settings.max_runtime_minutes} minutes"),
-            _section("Acceptance criteria", _format_bullets(settings.acceptance_criteria)),
             _section("Backlog ownership rules", backlog_ownership_rules),
-            _section("Coding-agent handoff rules", coding_agent_handoff_rules),
             _section("Stop conditions", stop_conditions),
             _section("Final instruction", final_instruction),
         ]
@@ -111,12 +105,6 @@ def _extract_project_rules() -> str:
         _extract_section(content, heading)
         for heading in ["Default workflow", "Navigation", "Universal rules", "Finish report"]
     )
-
-
-def _load_orchestrator_identity() -> str:
-    if not IDENTITY_PATH.exists():
-        raise FileNotFoundError(f"Orchestrator identity file not found: {IDENTITY_PATH}")
-    return IDENTITY_PATH.read_text(encoding="utf-8").strip()
 
 
 def _extract_section(content: str, heading: str) -> str:

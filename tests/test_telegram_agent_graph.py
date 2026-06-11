@@ -101,8 +101,8 @@ def test_run_telegram_agent_message_logs_token_usage(caplog) -> None:
     run_telegram_agent_message(app=_FakeApp(), thread_id="thread-1", text="test")
 
     assert "[LLM] telegram-chat" in caplog.text
-    assert "100 in + 20 out tokens" in caplog.text
-    assert "~$" in caplog.text
+    assert "tokens_total=120" in caplog.text
+    assert "cost_total=~$0.0001" in caplog.text
 
 
 def test_run_telegram_agent_message_falls_back_to_response_metadata_tokens(caplog) -> None:
@@ -125,7 +125,8 @@ def test_run_telegram_agent_message_falls_back_to_response_metadata_tokens(caplo
     run_telegram_agent_message(app=_FakeApp(), thread_id="thread-1", text="test")
 
     assert "[LLM] telegram-chat" in caplog.text
-    assert "80 in + 15 out tokens" in caplog.text
+    assert "tokens_total=95" in caplog.text
+    assert "cost_total=~$" in caplog.text
 
 
 def test_run_telegram_agent_message_skips_usage_log_when_no_usage(caplog) -> None:

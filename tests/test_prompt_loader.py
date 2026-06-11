@@ -12,7 +12,6 @@ from ai_tech_lead.prompt_loader import PROMPTS_DIR, load_prompt
     [
         "telegram_agent_system.md",
         "risk_review_prompt.md",
-        "coding_agent_handoff_rules.md",
         "backlog_ownership_rules.md",
         "completion_summary_prompt.md",
     ],

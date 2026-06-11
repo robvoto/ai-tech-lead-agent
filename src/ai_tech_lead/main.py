@@ -10,6 +10,7 @@ from typing import Callable
 from ai_tech_lead.admin_server import run_admin_server
 from ai_tech_lead.app_settings import AppSettings, load_settings
 from ai_tech_lead.config import PROJECT_ROOT, SETTINGS_PATH
+from ai_tech_lead.graph_diagrams import export_graph_diagrams
 from ai_tech_lead.logging_setup import LOGGER_NAME, configure_logging
 from ai_tech_lead.telegram_operator import run_telegram_operator
 from ai_tech_lead.storage import initialize_database
@@ -29,6 +30,8 @@ def main() -> None:
     logger.info("SQLite ready: %s", db_path)
 
     settings = _load_settings_for_startup()
+    if args.debug and settings is not None:
+        export_graph_diagrams(settings=settings)
     admin_host, admin_port = _admin_bind_address(settings)
     service_threads = [
         _start_service_thread(

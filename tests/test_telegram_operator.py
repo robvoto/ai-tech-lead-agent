@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import replace
 from pathlib import Path
 
@@ -11,10 +12,12 @@ from ai_tech_lead.backlog_repository import BacklogRefinementDraft
 from ai_tech_lead.telegram_agent_graph import TelegramAgentReply
 from ai_tech_lead.telegram_operator import (
     ActiveTelegramTask,
+    CANONICAL_BOT_COMMANDS,
     TelegramCommand,
     TelegramCommandName,
     TelegramOperator,
     TelegramTaskStage,
+    PendingBacklogDraft,
     _approval_prompt,
     _telegram_approval_reason,
     parse_telegram_command,
@@ -149,13 +152,70 @@ def test_help_text_shows_identity_and_model() -> None:
     assert "Purpose:" not in help_text
     assert "Role:" not in help_text
     assert "Orchestrator AI model: gpt-4.1-mini" in help_text
-    assert "/help - show this help" in help_text
+    assert "/help - show command list" in help_text
+    assert "/commands - alias for /help" in help_text
+    assert "/propose <text>" in help_text
+    assert "/new <text>" not in help_text
     assert "/code <text> - explicit coding workflow" in help_text
     assert "/run <backlog-id> - run backlog item, e.g. /run ATL-001" in help_text
+    assert "/cancel-code - stop the running coding-agent subprocess" in help_text
+    assert "/list [limit]" in help_text
+    assert "/count - count backlog items" in help_text
+    assert "/read <backlog-id>" in help_text
+    assert "/set-status <backlog-id> <status>" in help_text
     assert "/fix" not in help_text
     assert "/stop" not in help_text
-    assert "/reject - reject the active waiting task" in help_text
     assert "/start - show this help" not in help_text
+
+
+def test_command_handling_logs_action_details(caplog: pytest.LogCaptureFixture) -> None:
+    settings = parse_settings(valid_settings_dict())
+    client = _RecordingClient()
+    operator = TelegramOperator("token", settings, client=client)
+
+    caplog.set_level(logging.INFO)
+    operator._handle_command("chat-1", TelegramCommand(name=TelegramCommandName.STATUS), "demo-user")
+    operator._handle_command("chat-1", TelegramCommand(name=TelegramCommandName.HELP), "demo-user")
+    operator._handle_command("chat-1", TelegramCommand(name=TelegramCommandName.NEW), "demo-user")
+
+    assert "----------------------------------------" in caplog.text
+    assert "Telegram action: showing status for chat chat-1." in caplog.text
+    assert "Telegram action: showing help for chat chat-1." in caplog.text
+    assert "Telegram action: resetting session in chat chat-1." in caplog.text
+    assert "Telegram action: fresh session started for chat chat-1." in caplog.text
+
+
+def test_cancel_code_command_logs_cleanup_state(caplog: pytest.LogCaptureFixture) -> None:
+    settings = parse_settings(valid_settings_dict())
+    client = _RecordingClient()
+    operator = TelegramOperator("token", settings, client=client)
+
+    class _FakeCancellationToken:
+        def __init__(self, result: bool) -> None:
+            self.result = result
+            self.calls = 0
+
+        def cancel(self) -> bool:
+            self.calls += 1
+            return self.result
+
+    operator._active_tasks["chat-1"] = ActiveTelegramTask(
+        chat_id="chat-1",
+        task_label="JH-001 - Local placeholder",
+        request_summary="Local placeholder",
+        app=object(),
+        thread_config={"configurable": {"thread_id": "telegram-chat-1-demo"}},
+        stage=TelegramTaskStage.RUNNING,
+        cancellation_token=_FakeCancellationToken(True),
+    )
+
+    caplog.set_level(logging.INFO)
+    operator._handle_command("chat-1", TelegramCommand(name=TelegramCommandName.CANCEL_CODE), "demo-user")
+
+    assert "Telegram action: cancel-code requested in chat chat-1." in caplog.text
+    assert "Telegram action: evaluating running coding-agent cleanup for chat chat-1." in caplog.text
+    assert "Telegram action: cancellation requested for chat chat-1; active task JH-001 - Local placeholder remains until the worker exits." in caplog.text
+    assert client.messages[-1][1] == "Cancellation requested for the running coding-agent subprocess."
 
 
 def test_new_command_discards_active_task_and_resets_session() -> None:
@@ -178,7 +238,64 @@ def test_new_command_discards_active_task_and_resets_session() -> None:
     assert operator._session_id != old_session_id
     assert client.messages[-1][0] == "chat-1"
     assert client.messages[-1][1].startswith("Fresh session ready.")
-    assert "AI Technical Lead Orchestrator" in client.messages[-1][1]
+    assert "AI Technical Lead Orchestrator" not in client.messages[-1][1]
+    assert "Purpose:" not in client.messages[-1][1]
+    assert "Role:" not in client.messages[-1][1]
+
+
+def test_new_command_logs_discarded_cleanup_details(caplog: pytest.LogCaptureFixture) -> None:
+    settings = parse_settings(valid_settings_dict())
+    client = _RecordingClient()
+    operator = TelegramOperator("token", settings, client=client)
+
+    class _FakeCancellationToken:
+        def cancel(self) -> bool:
+            return True
+
+    operator._active_tasks["chat-1"] = ActiveTelegramTask(
+        chat_id="chat-1",
+        task_label="JH-001 - Local placeholder",
+        request_summary="Local placeholder",
+        app=object(),
+        thread_config={"configurable": {"thread_id": "telegram-chat-1-demo"}},
+        stage=TelegramTaskStage.RUNNING,
+        cancellation_token=_FakeCancellationToken(),
+    )
+    operator._pending_backlog_drafts["chat-1"] = PendingBacklogDraft(
+        chat_id="chat-1",
+        draft=BacklogRefinementDraft(
+            item_id="ATL-002",
+            title="Add backlog support",
+            priority="High",
+            approval_required=True,
+            approval_reason="Adds a backlog writing workflow.",
+            problem="Rob needs a structured backlog workflow.",
+            desired_outcome="Allow approved backlog drafts to be appended.",
+            scope=["Collect rough ideas"],
+            out_of_scope=["Build a full planning system"],
+            acceptance_criteria=["The item captures research cache usage"],
+            duplicate_check_result="No duplicate found.",
+            stale_check_result="No stale item found.",
+            already_done_check_result="Not already done.",
+            research_required=True,
+            research_cache_used=["docs/research/backlog-refinement-implementation-patterns.md"],
+            external_research_needed=False,
+            recommended_implementation_pattern="Use schema-validated structured output.",
+            patterns_explicitly_rejected=["Freeform prose"],
+            freshness_risk="Low.",
+            implementation_guidance="Check the cache first and keep the item structured.",
+            approval_risk_flags=["Touches backlog storage"],
+        ),
+    )
+
+    caplog.set_level(logging.INFO)
+    operator._handle_command("chat-1", TelegramCommand(name=TelegramCommandName.NEW), "demo-user")
+
+    assert "Telegram action: fresh session started for chat chat-1 after discarding active task JH-001 - Local placeholder, pending backlog draft ATL-002." in caplog.text
+    assert "Reset Telegram agent memory and session id" in caplog.text
+    assert "Discarded active task: JH-001 - Local placeholder." in client.messages[-1][1]
+    assert "Discarded pending backlog draft: ATL-002." in client.messages[-1][1]
+    assert "Cancellation requested for the running coding-agent subprocess." in client.messages[-1][1]
 
 
 def test_run_returns_immediately_when_telegram_is_disabled() -> None:
@@ -191,7 +308,10 @@ def test_run_returns_immediately_when_telegram_is_disabled() -> None:
     operator.run()
 
 
-def test_run_graph_task_uses_requested_execution_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_run_graph_task_uses_requested_execution_mode(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     settings = parse_settings(valid_settings_dict())
     captured: dict[str, object] = {}
 
@@ -219,17 +339,29 @@ def test_run_graph_task_uses_requested_execution_mode(monkeypatch: pytest.Monkey
 
     client = FakeClient()
 
+    class _ImmediateThread:
+        def __init__(self, target, args, daemon):
+            self._target = target
+            self._args = args
+            self.daemon = daemon
+
+        def start(self) -> None:
+            self._target(*self._args)
+
     def fake_build_graph(
         *,
         checkpointer_storage,
         execute_coding_agent_override,
         coding_agent_progress_callback=None,
+        coding_agent_cancellation_token=None,
     ):
         captured["execute_coding_agent_override"] = execute_coding_agent_override
         captured["coding_agent_progress_callback"] = coding_agent_progress_callback
+        captured["coding_agent_cancellation_token"] = coding_agent_cancellation_token
         return FakeApp()
 
     monkeypatch.setattr("ai_tech_lead.telegram_operator.build_graph", fake_build_graph)
+    monkeypatch.setattr("ai_tech_lead.telegram_operator.threading.Thread", _ImmediateThread)
 
     operator = TelegramOperator(
         "token",
@@ -238,6 +370,7 @@ def test_run_graph_task_uses_requested_execution_mode(monkeypatch: pytest.Monkey
         execute_coding_agent_override=True,
     )
 
+    caplog.set_level(logging.INFO)
     operator._run_graph_task(
         chat_id="chat-1",
         task_label="JH-001 - Local placeholder",
@@ -255,6 +388,16 @@ def test_run_graph_task_uses_requested_execution_mode(monkeypatch: pytest.Monkey
 
     assert captured["execute_coding_agent_override"] is True
     assert callable(captured["coding_agent_progress_callback"])
+    assert "----------------------------------------" in caplog.text
+    assert "Telegram run: preparing graph task for chat chat-1." in caplog.text
+    assert "Telegram run: task label: JH-001 - Local placeholder" in caplog.text
+    assert "Telegram run: request summary: Local placeholder" in caplog.text
+    assert "Telegram run: coding-agent execution override: True" in caplog.text
+    assert "Telegram run: graph compiled and checkpointer attached." in caplog.text
+    assert "Telegram run: starting background graph worker for chat chat-1." in caplog.text
+    assert "Telegram run: background graph invocation started for chat chat-1." in caplog.text
+    assert "Telegram run: background graph invocation finished for chat chat-1." in caplog.text
+    assert "Telegram run: graph completed for chat chat-1; clearing active task." in caplog.text
     captured["coding_agent_progress_callback"]("Coding agent still running (about 1m 0s elapsed).")
     assert client.messages[-1] == (
         "chat-1",
@@ -354,10 +497,12 @@ def test_plain_text_during_clarification_pause_loops_when_new_question(
     assert "Which branch should I target?" in client.messages[-1][1]
 
 
-def test_plain_text_side_question_is_answered_without_resuming(
+def test_plain_text_while_clarification_pending_appends_feedback_and_resumes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    settings = parse_settings(valid_settings_dict())
+    # All plain text in ORCHESTRATOR_INPUT stage is treated as clarification input.
+    # No heuristic classifies questions vs answers — the clarification checker decides.
+    settings = parse_settings(valid_settings_dict())  # AI disabled
     client = _RecordingClient()
     app = _PausedTaskApp(
         {
@@ -365,8 +510,7 @@ def test_plain_text_side_question_is_answered_without_resuming(
             "approval_reason": "Need one clarification.",
             "orchestrator_input_required": True,
             "orchestrator_input_question": "Please confirm the API path.",
-            "orchestrator_input_reason": "The task needs a specific path before it can continue.",
-            "task_feedback": ["Keep the current structure"],
+            "task_feedback": [],
         }
     )
     operator = TelegramOperator("token", settings, client=client)
@@ -379,22 +523,16 @@ def test_plain_text_side_question_is_answered_without_resuming(
         stage=TelegramTaskStage.ORCHESTRATOR_INPUT,
     )
 
-    monkeypatch.setattr(
-        "ai_tech_lead.telegram_operator.run_telegram_agent_message",
-        lambda **_kw: (_ for _ in ()).throw(AssertionError("telegram agent should not run while waiting")),
-    )
-
     operator._handle_command(
         "chat-1",
         TelegramCommand(name=TelegramCommandName.UNKNOWN, raw_text="Why do you need this?"),
         "demo-user",
     )
 
-    assert app.update_calls == []
-    assert app.invoke_calls == []
-    assert "Task waiting for your input:" in client.messages[-1][1]
-    assert "Current question:" in client.messages[-1][1]
-    assert "Still expected" in client.messages[-1][1]
+    assert len(app.update_calls) == 1
+    assert "Why do you need this?" in app.update_calls[0]["task_feedback"]
+    assert len(app.invoke_calls) == 1
+    assert "Got it." in client.messages[0][1]
 
 
 def test_approve_and_reject_still_work_for_waiting_task() -> None:
@@ -481,6 +619,12 @@ class _FakeClient:
     def delete_webhook(self, *, drop_pending_updates: bool = False) -> None:
         return None
 
+    def delete_my_commands(self) -> None:
+        return None
+
+    def set_my_commands(self, commands: list[dict[str, str]]) -> None:
+        return None
+
 
 class _RecordingClient:
     def __init__(self) -> None:
@@ -490,6 +634,12 @@ class _RecordingClient:
         self.messages.append((chat_id, text))
 
     def delete_webhook(self, *, drop_pending_updates: bool = False) -> None:
+        return None
+
+    def delete_my_commands(self) -> None:
+        return None
+
+    def set_my_commands(self, commands: list[dict[str, str]]) -> None:
         return None
 
 
@@ -568,7 +718,7 @@ def test_plain_text_returns_fallback_when_ai_disabled() -> None:
     assert not client.messages[-1][1].startswith("Bot is alive.")
 
 
-def test_new_with_text_proposes_and_approves_backlog_item(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+def test_propose_command_creates_and_approves_backlog_item(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     backlog_path = tmp_path / "BACKLOG.md"
     backlog_path.write_text(
         "# Backlog\n\n"
@@ -619,7 +769,7 @@ def test_new_with_text_proposes_and_approves_backlog_item(monkeypatch: pytest.Mo
 
     operator._handle_command(
         "chat-1",
-        TelegramCommand(name=TelegramCommandName.NEW, argument="add backlog support"),
+        TelegramCommand(name=TelegramCommandName.PROPOSE, argument="add backlog support"),
         "demo-user",
     )
 
@@ -639,5 +789,181 @@ def test_new_with_text_proposes_and_approves_backlog_item(monkeypatch: pytest.Mo
     text = backlog_path.read_text(encoding="utf-8")
     assert "Problem:" in text
     assert "Research Required: yes" in text
+
+
+def test_parse_commands_alias_to_help() -> None:
+    command = parse_telegram_command("/commands")
+
+    assert command.name == TelegramCommandName.HELP
+    assert command.argument == ""
+
+
+def test_parse_new_with_extra_text_raises() -> None:
+    with pytest.raises(ValueError, match="/propose"):
+        parse_telegram_command("/new some idea")
+
+
+def test_parse_propose_command() -> None:
+    command = parse_telegram_command("/propose add search feature")
+
+    assert command.name == TelegramCommandName.PROPOSE
+    assert command.argument == "add search feature"
+
+
+def test_parse_propose_without_text_raises() -> None:
+    with pytest.raises(ValueError, match="/propose requires"):
+        parse_telegram_command("/propose")
+
+
+def test_parse_list_command_no_limit() -> None:
+    command = parse_telegram_command("/list")
+
+    assert command.name == TelegramCommandName.LIST
+    assert command.argument == ""
+
+
+def test_parse_list_command_with_limit() -> None:
+    command = parse_telegram_command("/list 5")
+
+    assert command.name == TelegramCommandName.LIST
+    assert command.argument == "5"
+
+
+def test_parse_list_command_invalid_limit_raises() -> None:
+    with pytest.raises(ValueError, match="positive integer"):
+        parse_telegram_command("/list abc")
+
+
+def test_parse_count_command() -> None:
+    command = parse_telegram_command("/count")
+
+    assert command.name == TelegramCommandName.COUNT
+    assert command.argument == ""
+
+
+def test_parse_count_with_extra_text_raises() -> None:
+    with pytest.raises(ValueError, match="does not accept"):
+        parse_telegram_command("/count extra")
+
+
+def test_parse_read_command() -> None:
+    command = parse_telegram_command("/read ATL-001")
+
+    assert command.name == TelegramCommandName.READ
+    assert command.argument == "ATL-001"
+
+
+def test_parse_read_without_id_raises() -> None:
+    with pytest.raises(ValueError, match="backlog item ID"):
+        parse_telegram_command("/read")
+
+
+def test_parse_set_status_command() -> None:
+    command = parse_telegram_command("/set-status ATL-001 Done")
+
+    assert command.name == TelegramCommandName.SET_STATUS
+    assert command.argument == "ATL-001 Done"
+
+
+def test_parse_set_status_with_multi_word_status() -> None:
+    command = parse_telegram_command("/set-status ATL-002 In Progress")
+
+    assert command.name == TelegramCommandName.SET_STATUS
+    assert command.argument == "ATL-002 In Progress"
+
+
+def test_parse_set_status_missing_status_raises() -> None:
+    with pytest.raises(ValueError, match="backlog ID and a status"):
+        parse_telegram_command("/set-status ATL-001")
+
+
+def test_commands_and_help_show_same_text() -> None:
+    settings = parse_settings(valid_settings_dict())
+    operator = TelegramOperator("token", settings, client=_FakeClient())
+    client = _RecordingClient()
+    recording_operator = TelegramOperator("token", settings, client=client)
+
+    recording_operator._handle_command(
+        "chat-1", TelegramCommand(name=TelegramCommandName.HELP), "demo-user"
+    )
+    help_message = client.messages[-1][1]
+
+    recording_operator._handle_command(
+        "chat-1",
+        parse_telegram_command("/commands"),
+        "demo-user",
+    )
+    commands_message = client.messages[-1][1]
+
+    assert help_message == commands_message
+
+
+def test_backlog_commands_return_fallback_when_ai_disabled() -> None:
+    settings = parse_settings(valid_settings_dict())
+    client = _RecordingClient()
+    operator = TelegramOperator("dummy", settings, client=client)
+
+    for cmd in ["/list", "/count", "/read ATL-001", "/set-status ATL-001 Done"]:
+        client.messages.clear()
+        operator._handle_command(
+            "chat-1",
+            parse_telegram_command(cmd),
+            "demo-user",
+        )
+        assert "orchestrator AI" in client.messages[-1][1].lower() or "enabled" in client.messages[-1][1].lower()
+
+
+def test_register_commands_payload_contains_only_canonical_commands() -> None:
+    settings = parse_settings(valid_settings_dict())
+    delete_calls: list[bool] = []
+    set_calls: list[list[dict[str, str]]] = []
+
+    class _CapturingClient:
+        def send_message(self, chat_id: str, text: str) -> None:
+            pass
+
+        def delete_webhook(self, *, drop_pending_updates: bool = False) -> None:
+            pass
+
+        def delete_my_commands(self) -> None:
+            delete_calls.append(True)
+
+        def set_my_commands(self, commands: list[dict[str, str]]) -> None:
+            set_calls.append(commands)
+
+    operator = TelegramOperator("token", settings, client=_CapturingClient())
+    operator._register_commands()
+
+    assert delete_calls, "deleteMyCommands must be called before setMyCommands"
+    assert len(set_calls) == 1
+    registered = {c["command"] for c in set_calls[0]}
+    expected = {cmd.name for cmd in CANONICAL_BOT_COMMANDS}
+    assert registered == expected
+
+
+def test_stale_openclaw_commands_are_not_registered() -> None:
+    settings = parse_settings(valid_settings_dict())
+    set_calls: list[list[dict[str, str]]] = []
+
+    class _CapturingClient:
+        def send_message(self, chat_id: str, text: str) -> None:
+            pass
+
+        def delete_webhook(self, *, drop_pending_updates: bool = False) -> None:
+            pass
+
+        def delete_my_commands(self) -> None:
+            pass
+
+        def set_my_commands(self, commands: list[dict[str, str]]) -> None:
+            set_calls.append(commands)
+
+    operator = TelegramOperator("token", settings, client=_CapturingClient())
+    operator._register_commands()
+
+    registered = {c["command"] for c in set_calls[0]}
+    stale = {"fix", "stop", "restart", "reset", "reasoning"}
+    assert not registered & stale, f"Stale commands found in payload: {registered & stale}"
+
 
 

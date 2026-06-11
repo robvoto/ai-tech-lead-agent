@@ -284,9 +284,17 @@ def _log_usage(messages: list[Any], *, purpose: str) -> None:
         output_tokens += tok_out
     if input_tokens == 0 and output_tokens == 0:
         return
+    total_tokens = input_tokens + output_tokens
     cost = _estimate_cost(model or "", input_tokens, output_tokens)
     cost_str = f"~${cost:.4f}" if cost is not None else "unknown"
-    logger.info("[LLM] %s  %s  (%s in + %s out tokens)", purpose, cost_str, input_tokens, output_tokens)
+    logger.info(
+        "[LLM] %s  tokens_total=%s cost_total=%s  (%s in + %s out tokens)",
+        purpose,
+        total_tokens,
+        cost_str,
+        input_tokens,
+        output_tokens,
+    )
 
 
 def _truncate_text(text: str, limit: int) -> str:

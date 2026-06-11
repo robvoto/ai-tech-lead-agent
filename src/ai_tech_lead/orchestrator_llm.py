@@ -46,7 +46,11 @@ def call_orchestrator_llm(*, prompt: str, config: OrchestratorLlmConfig) -> Orch
     api_key = os.environ.get(OPENAI_API_KEY_ENV, "").strip()
     if not api_key or api_key == "replace-with-your-project-service-account-key":
         elapsed_ms = (time.perf_counter() - start_time) * 1000
-        logger.info("LLM call elapsed: %.0fms model=%s status=skipped", elapsed_ms, config.model)
+        logger.info(
+            "LLM call elapsed: %.0fms model=%s status=skipped in=0 out=0 total=0 cost_total=$0.00000",
+            elapsed_ms,
+            config.model,
+        )
         raise OrchestratorLlmError("OPENAI_API_KEY is not configured.")
 
     payload = {
@@ -70,31 +74,45 @@ def call_orchestrator_llm(*, prompt: str, config: OrchestratorLlmConfig) -> Orch
     except HTTPError as error:
         error_body = error.read().decode("utf-8", errors="replace")
         elapsed_ms = (time.perf_counter() - start_time) * 1000
-        logger.info("LLM call elapsed: %.0fms model=%s status=error", elapsed_ms, config.model)
+        logger.info(
+            "LLM call elapsed: %.0fms model=%s status=error in=0 out=0 total=0 cost_total=$0.00000",
+            elapsed_ms,
+            config.model,
+        )
         raise OrchestratorLlmError(f"OpenAI API error: {error_body}") from error
     except URLError as error:
         elapsed_ms = (time.perf_counter() - start_time) * 1000
-        logger.info("LLM call elapsed: %.0fms model=%s status=error", elapsed_ms, config.model)
+        logger.info(
+            "LLM call elapsed: %.0fms model=%s status=error in=0 out=0 total=0 cost_total=$0.00000",
+            elapsed_ms,
+            config.model,
+        )
         raise OrchestratorLlmError(f"OpenAI API request failed: {error.reason}") from error
 
     data = json.loads(body)
     text = _extract_response_text(data)
     if not text:
         elapsed_ms = (time.perf_counter() - start_time) * 1000
-        logger.info("LLM call elapsed: %.0fms model=%s status=error", elapsed_ms, config.model)
+        logger.info(
+            "LLM call elapsed: %.0fms model=%s status=error in=0 out=0 total=0 cost_total=$0.00000",
+            elapsed_ms,
+            config.model,
+        )
         raise OrchestratorLlmError("OpenAI response did not contain output text.")
 
     elapsed_ms = (time.perf_counter() - start_time) * 1000
     usage = data.get("usage", {})
     tokens_in = int(usage.get("input_tokens", 0))
     tokens_out = int(usage.get("output_tokens", 0))
+    tokens_total = tokens_in + tokens_out
     cost_usd = _estimate_cost(config.model, tokens_in, tokens_out)
     logger.info(
-        "LLM call elapsed: %.0fms model=%s status=ok in=%d out=%d cost=$%.5f",
+        "LLM call elapsed: %.0fms model=%s status=ok in=%d out=%d total=%d cost_total=$%.5f",
         elapsed_ms,
         config.model,
         tokens_in,
         tokens_out,
+        tokens_total,
         cost_usd,
     )
     return OrchestratorLlmResult(text=text, tokens_in=tokens_in, tokens_out=tokens_out, cost_usd=cost_usd)

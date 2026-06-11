@@ -6,7 +6,6 @@ Use this folder for prompt and rule text loaded by graph nodes, instruction buil
 
 - `backlog_ownership_rules.md` - backlog ownership rules for coding-agent handoffs.
 - `clarification_check_prompt.md` - prompt for deciding whether a request needs clarification.
-- `coding_agent_handoff_rules.md` - bounded handoff rules for worker coding agents.
 - `completion_summary_prompt.md` - prompt rules for concise completion summaries.
 - `plan_request_instruction.md` - prompt text for requesting an implementation plan.
 - `plan_review_prompt.md` - prompt for reviewing a proposed implementation plan.

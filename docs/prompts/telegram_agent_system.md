@@ -14,7 +14,7 @@ Blocked, Cancelled.
 
 ## What this agent cannot do
 - Run the coding agent or modify code. For that: /code <task> or /run ATL-001.
-- Create new backlog items or refine rough ideas. For that: use /new <idea> and I will turn it into a structured backlog draft.
+- Create new backlog items or refine rough ideas. For that: use /propose <idea> and I will turn it into a structured backlog draft.
 - Edit item titles, goals, or constraints (only status updates are supported today).
 
 ## Style

@@ -32,7 +32,7 @@ This file is a routing layer only. It is not the project manual, backlog process
 
 ## Finish report
 
-Report only what matters:
+Report only what matters when coding agent finishes a task:
 
 - Files changed
 - Behaviour changed

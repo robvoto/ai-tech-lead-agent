@@ -269,7 +269,7 @@ Constraints:
 - Reuse the existing backlog draft builder and approval gate.
 - Do not break the current /run <backlog-id> flow, for example /run ATL-001.
 - The backlog item must be saved before the coding agent starts.
-- Low priority — implement after more critical backlog and workflow items are stable.
+- Low priority â implement after more critical backlog and workflow items are stable.
 
 ## ATL-016 - Resolve /new command ambiguity
 
@@ -316,66 +316,77 @@ The AI Tech Lead setup/implementation documentation also explains:
 - What to do if `/mnt/e` Windows-mount latency causes Codex execution delays.
 - When to consider running the repo from native Linux home, such as `~/ai-tech-lead`.
 
-## ATL-018 - Add real coding-agent cancellation from Telegram
+## ATL-019 - Add approved orchestrator teaching and memory workflow
 
 Status: Backlog
 
+Creator: Human
+Epic: AI Tech Lead Memory and Learning
+Type: Story
+Priority: High
+Size: M
+
 Approval Guidance:
-Human review required because this changes process control for the worker coding-agent subprocess.
+Human review required because this changes how the orchestrator learns persistent rules across sessions.
 
 Problem:
-Rob needs a Telegram command, such as `/cancel-code`, that stops the currently running coding-agent subprocess when it is doing the wrong thing or taking too long. `/new` already starts a fresh Telegram session and clears waiting state, but it cannot reliably stop a coding-agent subprocess that is already running if the Telegram polling loop is blocked by that subprocess.
+Rob needs a controlled way to teach the orchestrator persistent rules, preferences, and operating policies without allowing the system to randomly remember, rewrite prompts, or change behaviour without evidence. Any long-term memory or procedural memory must be sourced, staged, and approved before it affects runtime behaviour.
+
+Source to Follow:
+Use the official LangGraph memory guidance as the primary source:
+- LangGraph Memory overview: https://docs.langchain.com/oss/python/concepts/memory
+- Relevant concepts from that source:
+  - short-term memory is thread-scoped graph state persisted with a checkpointer
+  - long-term memory is cross-session data saved under namespaces/keys in a Store
+  - procedural memory represents rules/instructions that affect agent behaviour
+  - memory writes can happen in the hot path or background, but hot-path writes add latency/complexity and must be controlled
+  - long-term memories are JSON documents in a store; use a DB-backed store for production-style persistence
 
 Outcome:
-The Telegram operator can request cancellation of the active coding-agent subprocess safely and clearly. The command must mean “stop the coding agent”, not “reject approval”, not “start a new session”, and not “stop the Telegram bot”.
+The orchestrator has a safe teaching workflow. Rob can teach it a rule, but the system must stage the proposed memory, show the source and impact, ask for approval, and only then persist it. Runtime prompts load only small selected memory categories, not the whole memory store.
 
-Scope:
-- Add an explicit command such as `/cancel-code`.
-- Track the active coding-agent subprocess in a safe process-control boundary.
-- Allow cancellation while the coding agent is running.
-- Report whether cancellation succeeded, failed, or no coding agent was running.
-- Keep `/approve` and `/reject` for approval decisions.
-- Keep `/new` for fresh-session reset.
+Teaching Flow:
+1. Rob sends a teaching command or phrase, such as `/teach`, `/remember`, or remember this.
+2. The orchestrator classifies the proposed memory into a bounded category.
+3. The orchestrator attaches source metadata.
+4. If the memory affects architecture, LangGraph, agents, approval, security, cost, subprocess control, or persistent behaviour, require a supporting source from docs/research or official documentation.
+5. The orchestrator shows the staged memory and asks Rob to approve it.
+6. The memory is saved only after explicit approval.
+7. The memory can later be listed, disabled, superseded, or audited.
 
-Out of Scope:
-- Do not reintroduce `/stop` as a user-facing command.
-- Do not use `/cancel` ambiguously for both approval rejection and subprocess cancellation.
-- Do not kill unrelated processes.
+Memory Categories:
+- command_policy
+- approval_policy
+- research_policy
+- backlog_policy
+- worker_agent_policy
+- architecture_decision
+- user_preference
+
+Storage Direction:
+Use SQLite or LangGraph Store-style JSON records, not Markdown files.
+
+Suggested Record Shape:
+- id/key
+- namespace
+- category
+- value_json
+- sources_json
+- approved_by
+- approved_at
+- active
+- supersedes
+- created_at
+- updated_at
 
 Acceptance Criteria:
-- `/approve` approves a waiting decision.
-- `/reject` rejects a waiting decision.
-- `/new` clears the current Telegram session state.
-- `/cancel-code` attempts to stop only the active coding-agent subprocess.
-- If no coding agent subprocess is running, `/cancel-code` says so clearly.
-- Tests cover successful cancellation, no-active-process behaviour, and no regression to `/approve`, `/reject`, and `/new`.
-
-Acceptance Criteria:
-1. Bubblewrap is installed globally in the WSL instance.
-
-   ```bash
-   sudo apt update
-   sudo apt install bubblewrap -y
-   ```
-
-2. The setup documentation explains why Bubblewrap is required for Codex sandbox execution in WSL.
-
-3. The setup documentation includes a verification command, such as:
-
-   ```bash
-   which bwrap
-   bwrap --version
-   ```
-
-4. Documentation includes a troubleshooting note for Codex hangs or slow execution from `/mnt/e`, including Windows-mounted filesystem latency as a possible cause.
-
-5. Documentation states when to consider moving or cloning the repo to native WSL Linux storage, for example `~/ai-tech-lead`, while keeping the current canonical Windows project path clear.
-
-6. A controlled Codex CLI execution is retested after Bubblewrap is installed.
-
-Constraints:
-- Do not remove the existing Windows project location from documentation.
-- Do not assume `/mnt/e` must be abandoned; document it as a possible latency factor only.
-- Do not bypass sandboxing to hide the Bubblewrap warning.
-- Keep this as an infrastructure/setup chore, not a feature change.
-
+- Add a staged memory proposal model/table.
+- Add approval flow before memory is persisted.
+- Every persisted memory has source metadata.
+- Human instruction can be a source, but architecture/procedural memories also require an approved technical source.
+- Runtime prompts load only selected categories and enforce a small token budget.
+- Add commands or operator actions to list, disable, and supersede memories.
+- Add tests proving memory is not saved without Rob approval.
+- Add tests proving unsupported/unsourced procedural memory is rejected or paused for source approval.
+- Do not add vector DB or RAG.
+- Do not let the orchestrator silently rewrite its own instructions.

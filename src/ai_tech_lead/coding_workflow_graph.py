@@ -15,7 +15,7 @@ from langgraph.graph import END, START, StateGraph
 from .app_settings import load_settings
 from .clarification_checker import check_task_clarification
 from .prompt_loader import load_prompt
-from .coding_agent_runner import run_coding_agent
+from .coding_agent_runner import CodingAgentCancellationToken, run_coding_agent
 from .plan_reviewer import PlanReviewUnavailable, review_plan
 from .research_checker import check_research_requirements
 from .task_formulator import formulate_task
@@ -200,16 +200,14 @@ def create_brief_node(state: GraphState) -> GraphState:
 
     settings = load_settings()
     state["brief"] = settings.prompts["execution_brief_template"].format(
-        request=state["request"],
         relevant_files=_format_bullets(settings.watched_directories),
         constraint_list=_format_bullets(settings.brief_constraints),
-        acceptance_criteria=_format_bullets(settings.acceptance_criteria),
         approval_reason=state["approval_reason"],
         risk_notes=_format_bullets(settings.risk_notes),
     )
 
-    logger.info("Brief purpose: convert request plus settings into the structured context used by the final agent handoff.")
-    logger.info("Brief changed instruction: adds watched directories=%s, constraints=%s, acceptance criteria=%s", len(settings.watched_directories), len(settings.brief_constraints), len(settings.acceptance_criteria))
+    logger.info("Brief purpose: supplementary context for agent handoff — relevant files, constraints, approval reason, risk notes.")
+    logger.info("Brief adds: watched_directories=%s, constraints=%s", len(settings.watched_directories), len(settings.brief_constraints))
     logger.info("Brief size: %s characters", len(state["brief"]))
     logger.info("Brief preview: %s", _single_line_preview(state["brief"]))
 
@@ -326,13 +324,11 @@ def request_plan_node(state: GraphState) -> GraphState:
     plan_prompt = load_prompt("plan_request_instruction.md")
     correction_section = f"\nPrevious plan was rejected. Correction needed:\n{correction}" if correction else ""
     instruction = plan_prompt.replace("{formulated_task}", state.get("formulated_task", "") or state["request"]).replace("{correction_feedback}", correction_section)
-
     result = run_coding_agent(
         agent_instruction=instruction,
         project_root=PROJECT_ROOT,
         settings=settings,
     )
-
     plan_text = result.stdout.strip()
     logger.info("Plan received (%d chars): %s", len(plan_text), _single_line_preview(plan_text, limit=360))
     logger.info("Plan full text:\n%s", plan_text or "<empty>")
@@ -443,14 +439,13 @@ def create_agent_instruction_node(state: GraphState) -> GraphState:
         formulated_task=state.get("formulated_task", ""),
         task_feedback=state["task_feedback"],
         needs_approval=state["needs_approval"],
-        approval_reason=state["approval_reason"],
         approved=state["approved"],
         settings=settings,
         research_sources=list(state.get("research_source_titles", []) or []),
     )
 
     _log_node_start("5/7", "CREATE_AGENT_INSTRUCTION", "Create coding-agent instruction")
-    logger.info("Instruction purpose: merge task, brief, orchestrator identity, project rules, selected skills, allowed directories, stop conditions, and validation expectations.")
+    logger.info("Instruction purpose: merge task, brief, project rules, selected skills, allowed directories, stop conditions, and validation expectations.")
     logger.info("Instruction size: %s characters", len(state["agent_instruction"]))
     logger.info("Instruction preview: %s", _single_line_preview(state["agent_instruction"], limit=360))
 
@@ -497,6 +492,7 @@ def run_coding_agent_node(
     state: GraphState,
     execute_coding_agent_override: bool | None = None,
     progress_callback: Callable[[str], None] | None = None,
+    cancellation_token: CodingAgentCancellationToken | None = None,
 ) -> GraphState:
     """Run the configured coding-agent command as a separate process.
 
@@ -536,12 +532,16 @@ def run_coding_agent_node(
     if settings.execute_coding_agent:
         logger.info("[LEARN] Starting coding agent subprocess now. This may take several minutes.")
 
-    result = run_coding_agent(
-        agent_instruction=state["agent_instruction"],
-        project_root=PROJECT_ROOT,
-        settings=settings,
-        progress_callback=progress_callback,
-    )
+    runner_kwargs = {
+        "agent_instruction": state["agent_instruction"],
+        "project_root": PROJECT_ROOT,
+        "settings": settings,
+        "progress_callback": progress_callback,
+    }
+    if cancellation_token is not None:
+        runner_kwargs["cancellation_token"] = cancellation_token
+
+    result = run_coding_agent(**runner_kwargs)
     state["coding_agent_result"] = result.summary()
     command = getattr(result, "command", ())
     state["coding_agent_success"] = getattr(result, "success", False)
@@ -597,6 +597,7 @@ def build_graph(
     checkpointer_storage=None,
     execute_coding_agent_override: bool | None = None,
     coding_agent_progress_callback: Callable[[str], None] | None = None,
+    coding_agent_cancellation_token: CodingAgentCancellationToken | None = None,
 ):
     """Build and compile the backlog-to-agent-instruction workflow."""
 
@@ -624,6 +625,7 @@ def build_graph(
             state,
             execute_coding_agent_override=execute_coding_agent_override,
             progress_callback=coding_agent_progress_callback,
+            cancellation_token=coding_agent_cancellation_token,
         ),
     )
     workflow.add_node(NodeName.END_NODE, end_node)

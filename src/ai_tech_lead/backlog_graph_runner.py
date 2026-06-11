@@ -17,6 +17,7 @@ from langgraph.checkpoint.memory import MemorySaver
 
 from .backlog_loader import backlog_item_to_graph_state, load_backlog_item_by_id
 from .coding_workflow_graph import build_graph
+from .config import GRAPH_DIAGRAM_PATH, ensure_project_dirs
 from .logging_setup import LOGGER_NAME
 
 logger = logging.getLogger(LOGGER_NAME)
@@ -76,9 +77,7 @@ def run_backlog_graph(
 def save_graph_diagram(app) -> None:
     """Save a generated PNG diagram of the compiled LangGraph workflow."""
 
+    ensure_project_dirs()
     png_bytes = app.get_graph().draw_mermaid_png()
-
-    with open("graph_diagram.png", "wb") as file:
-        file.write(png_bytes)
-
-    logger.info("Graph diagram: graph_diagram.png")
+    GRAPH_DIAGRAM_PATH.write_bytes(png_bytes)
+    logger.info("Graph diagram: %s", GRAPH_DIAGRAM_PATH)

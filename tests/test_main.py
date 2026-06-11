@@ -64,6 +64,37 @@ def test_main_starts_admin_only_when_telegram_disabled(monkeypatch) -> None:
     assert started_threads == ["admin-server"]
 
 
+def test_main_refreshes_graph_diagrams_in_debug_mode(monkeypatch) -> None:
+    started_threads: list[str] = []
+    exported_settings: list[object] = []
+    settings = parse_settings(valid_settings_dict())
+
+    class FakeThread:
+        def __init__(self, target, name):
+            self._target = target
+            self.name = name
+
+        def start(self):
+            started_threads.append(self.name)
+
+        def join(self):
+            return None
+
+    monkeypatch.setattr(main_module, "Thread", FakeThread)
+    monkeypatch.setattr(main_module, "configure_logging", lambda *, debug=False: None)
+    monkeypatch.setattr(main_module, "initialize_database", lambda: "db.sqlite")
+    monkeypatch.setattr(main_module, "load_settings", lambda: settings)
+    monkeypatch.setattr(main_module, "export_graph_diagrams", lambda *, settings: exported_settings.append(settings))
+    monkeypatch.setattr(main_module, "run_admin_server", lambda: None)
+    monkeypatch.setattr(main_module, "run_telegram_operator", lambda: None)
+    monkeypatch.setattr(main_module, "_parse_args", lambda: type("Args", (), {"debug": True})())
+
+    main_module.main()
+
+    assert exported_settings == [settings]
+    assert started_threads == ["admin-server", "telegram-operator"]
+
+
 def test_admin_bind_address_prefers_settings_values() -> None:
     settings = replace(
         parse_settings(valid_settings_dict()),

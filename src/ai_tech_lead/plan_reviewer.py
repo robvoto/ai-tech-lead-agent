@@ -79,9 +79,10 @@ def _llm_review_plan(
         ),
     )
     logger.info(
-        "Plan review LLM: in=%d out=%d cost=$%.5f",
+        "Plan review LLM: in=%d out=%d total=%d cost_total=$%.5f",
         result.tokens_in,
         result.tokens_out,
+        result.tokens_in + result.tokens_out,
         result.cost_usd,
     )
     payload = json.loads(result.text)

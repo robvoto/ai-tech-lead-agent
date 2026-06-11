@@ -8,6 +8,9 @@ DATA_DIR = PROJECT_ROOT / "data"
 LOGS_DIR = PROJECT_ROOT / "logs"
 SETTINGS_PATH = DATA_DIR / "coding_agent_settings.json"
 DB_PATH = DATA_DIR / "ai_tech_lead.sqlite3"
+GRAPH_DIAGRAM_PATH = DATA_DIR / "graph_diagram.png"
+TELEGRAM_AGENT_GRAPH_DIAGRAM_PATH = DATA_DIR / "telegram_agent_graph.png"
+GRAPH_DIAGRAM_SIGNATURES_PATH = DATA_DIR / "graph_diagram_signatures.json"
 
 
 def ensure_project_dirs() -> None:

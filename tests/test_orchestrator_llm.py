@@ -23,7 +23,14 @@ def test_call_orchestrator_llm_logs_elapsed_time(monkeypatch, caplog) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
 
     def fake_urlopen(request, timeout):
-        return _FakeResponse(json.dumps({"output_text": "done"}))
+        return _FakeResponse(
+            json.dumps(
+                {
+                    "output_text": "done",
+                    "usage": {"input_tokens": 10, "output_tokens": 4},
+                }
+            )
+        )
 
     monkeypatch.setattr("ai_tech_lead.orchestrator_llm.urlopen", fake_urlopen)
 
@@ -37,3 +44,7 @@ def test_call_orchestrator_llm_logs_elapsed_time(monkeypatch, caplog) -> None:
     assert "LLM call elapsed:" in caplog.text
     assert "model=test-model" in caplog.text
     assert "status=ok" in caplog.text
+    assert "in=10" in caplog.text
+    assert "out=4" in caplog.text
+    assert "total=14" in caplog.text
+    assert "cost_total=$0.00000" in caplog.text

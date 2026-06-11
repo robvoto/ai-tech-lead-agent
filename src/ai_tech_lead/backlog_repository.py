@@ -88,7 +88,7 @@ class MarkdownBacklogRepository:
         if not self._backlog_path.exists():
             raise FileNotFoundError(f"Backlog file not found: {self._backlog_path}")
 
-        text = self._backlog_path.read_text(encoding="utf-8")
+        text = self._backlog_path.read_text(encoding="utf-8", errors="replace")
         lines = text.splitlines()
         items: list[BacklogItem] = []
         current_heading: str | None = None
@@ -141,7 +141,7 @@ class MarkdownBacklogRepository:
     def add_item(self, draft: BacklogDraft) -> BacklogItem:
         validate_backlog_draft(draft, existing_ids={item.item_id for item in self.list_items()})
         rendered_item = render_backlog_draft(draft)
-        existing_text = self._backlog_path.read_text(encoding="utf-8").rstrip()
+        existing_text = self._backlog_path.read_text(encoding="utf-8", errors="replace").rstrip()
         self._backlog_path.write_text(
             f"{existing_text}\n\n{rendered_item}\n",
             encoding="utf-8",
@@ -157,7 +157,7 @@ class MarkdownBacklogRepository:
         if not new_status:
             raise ValueError("Status cannot be empty.")
 
-        text = self._backlog_path.read_text(encoding="utf-8")
+        text = self._backlog_path.read_text(encoding="utf-8", errors="replace")
         lines = text.splitlines(keepends=True)
 
         heading_re = re.compile(
@@ -199,7 +199,7 @@ class MarkdownBacklogRepository:
             existing_ids={item.item_id for item in self.list_items()},
         )
         rendered_item = render_backlog_refinement_draft(draft)
-        existing_text = self._backlog_path.read_text(encoding="utf-8").rstrip()
+        existing_text = self._backlog_path.read_text(encoding="utf-8", errors="replace").rstrip()
         self._backlog_path.write_text(
             f"{existing_text}\n\n{rendered_item}\n",
             encoding="utf-8",
