@@ -1,9 +1,9 @@
 from __future__ import annotations
 
+from helpers import valid_settings_dict
+
 from ai_tech_lead.app_settings import parse_settings
 from ai_tech_lead.instruction_assembler import build_agent_instruction, select_skills
-
-from helpers import valid_settings_dict
 
 
 def test_selects_multiple_relevant_skills_when_task_crosses_boundaries() -> None:
@@ -71,8 +71,11 @@ def test_assembled_instruction_includes_backlog_ownership_rules_from_prompt_file
         settings=settings,
     )
 
-    assert "Worker coding agents must not mark backlog items complete" in instruction
-    assert "Final backlog completion is owned by the orchestrator after human acceptance." in instruction
+    assert "Worker coding agents must not freely edit the Excel workbook" in instruction
+    assert (
+        "Final backlog completion is owned by the orchestrator after human acceptance."
+        in instruction
+    )
 
 
 def test_assembled_instruction_includes_current_task_feedback_only() -> None:

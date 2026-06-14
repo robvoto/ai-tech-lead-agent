@@ -8,7 +8,8 @@ Use this file for progressive disclosure. Start here, then open only the documen
 - `GRAPH_WORKFLOW.md` - implemented LangGraph workflow, nodes, routes, interrupts, and execution boundary.
 - `RUNTIME_RUNBOOK.md` - local run, test, Studio, admin, and troubleshooting commands.
 - `CONTEXT_MANAGEMENT.md` - context allowed in graph state, prompts, Telegram messages, logs, and coding-agent handoffs.
-- `BACKLOG.md` - current local prototype backlog items.
+- `BACKLOG_MANAGEMENT.md` - current backlog location, Excel workbook rules, and migration notes.
+- `BACKLOG.md` - legacy Markdown backlog source/backup retained for history and comparison; the current workbook lives at `data/backlog/ai_tech_lead_backlog.xlsx`.
 - `UI_ADMIN_DESIGN.md` - admin UI design notes and browser-side ownership rules.
 
 ## Entry points
@@ -25,7 +26,6 @@ Use this file for progressive disclosure. Start here, then open only the documen
 ## Sub-indexes
 
 - `plan/INDEX.md` - durable planning hook and roadmap references.
-- `prompts/INDEX.md` - prompt and rule text loaded by graph nodes or instruction builders.
 - `research/INDEX.md` - research notes and implementation pattern cache.
 
 ## Tool-specific files

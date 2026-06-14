@@ -15,6 +15,7 @@ from ai_tech_lead.app_settings import (
     settings_to_dict,
 )
 from ai_tech_lead.logging_setup import LOGGER_NAME
+from ai_tech_lead.prompt_loader import PROMPT_REGISTRY_PATH, list_prompts, save_prompt_registry
 
 ADMIN_ASSET_DIR = Path(__file__).resolve().parent / "admin"
 ADMIN_HTML_PATH = ADMIN_ASSET_DIR / "admin.html"
@@ -24,6 +25,7 @@ ADMIN_FORM_JS_PATH = ADMIN_ASSET_DIR / "admin_form.js"
 ADMIN_CONFIG_JS_PATH = ADMIN_ASSET_DIR / "admin_config.js"
 ADMIN_ROOT_ROUTE = "/"
 SETTINGS_API_ROUTE = "/api/settings"
+PROMPTS_API_ROUTE = "/api/prompts"
 ADMIN_CSS_ROUTE = "/admin.css"
 ADMIN_JS_ROUTE = "/admin.js"
 ADMIN_FORM_JS_ROUTE = "/admin_form.js"
@@ -36,6 +38,7 @@ def run_admin_server(
     host: str,
     port: int,
     settings_path: Path,
+    prompts_path: Path | None = None,
     admin_html_path: Path = ADMIN_HTML_PATH,
     admin_css_path: Path = ADMIN_CSS_PATH,
     admin_js_path: Path = ADMIN_JS_PATH,
@@ -44,8 +47,12 @@ def run_admin_server(
 ) -> None:
     """Start the local settings admin screen and JSON API."""
 
+    if prompts_path is None:
+        prompts_path = PROMPT_REGISTRY_PATH
+
     handler_class = _build_handler(
         settings_path=settings_path,
+        prompts_path=prompts_path,
         admin_html_path=admin_html_path,
         admin_css_path=admin_css_path,
         admin_js_path=admin_js_path,
@@ -55,11 +62,13 @@ def run_admin_server(
     server = ThreadingHTTPServer((host, port), handler_class)
     logger.info("Admin screen running at http://%s:%s%s", host, port, ADMIN_ROOT_ROUTE)
     logger.info("Settings API running at http://%s:%s%s", host, port, SETTINGS_API_ROUTE)
+    logger.info("Prompt registry API running at http://%s:%s%s", host, port, PROMPTS_API_ROUTE)
     server.serve_forever()
 
 
 def _build_handler(
     settings_path: Path,
+    prompts_path: Path,
     admin_html_path: Path,
     admin_css_path: Path,
     admin_js_path: Path,
@@ -107,6 +116,10 @@ def _build_handler(
                 self._send_settings()
                 return
 
+            if self.path == PROMPTS_API_ROUTE:
+                self._send_prompts()
+                return
+
             self.send_error(404, "Not found")
 
         def do_PUT(self) -> None:
@@ -114,11 +127,19 @@ def _build_handler(
                 self._save_settings_from_json()
                 return
 
+            if self.path == PROMPTS_API_ROUTE:
+                self._save_prompts_from_json()
+                return
+
             self.send_error(404, "Not found")
 
         def do_POST(self) -> None:
             if self.path == SETTINGS_API_ROUTE:
                 self._save_settings_from_json()
+                return
+
+            if self.path == PROMPTS_API_ROUTE:
+                self._save_prompts_from_json()
                 return
 
             self.send_error(404, "Not found")
@@ -146,12 +167,26 @@ def _build_handler(
             except (FileNotFoundError, ValueError) as error:
                 self._send_json({"error": str(error)}, status=500)
 
+        def _send_prompts(self) -> None:
+            try:
+                self._send_json({"prompts": list_prompts(path=prompts_path)})
+            except (FileNotFoundError, ValueError) as error:
+                self._send_json({"error": str(error)}, status=500)
+
         def _save_settings_from_json(self) -> None:
             try:
                 raw_settings = self._read_json_body()
                 settings = parse_settings(raw_settings)
                 save_settings(settings, settings_path)
                 self._send_json(settings_to_dict(settings))
+            except ValueError as error:
+                self._send_json({"error": str(error)}, status=400)
+
+        def _save_prompts_from_json(self) -> None:
+            try:
+                raw_payload = self._read_json_body()
+                prompts = save_prompt_registry(raw_payload, path=prompts_path)
+                self._send_json({"prompts": prompts})
             except ValueError as error:
                 self._send_json({"error": str(error)}, status=400)
 

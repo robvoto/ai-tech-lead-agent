@@ -17,6 +17,8 @@ Pick the smallest skill that matches the requested outcome or the files being ch
 - `instruction-maintenance/SKILL.md` - AGENTS, skills, prompt files, or instruction documentation.
 - `research-cache/SKILL.md` - reusable research notes, indexes, or implementation pattern cache.
 
+- `run-app/SKILL.md` - launch the bot for manual testing, background startup, and Telegram interaction.
+
 ## Maintenance rules
 
 - Add a skill here when a new `.skills/<name>/SKILL.md` is created.

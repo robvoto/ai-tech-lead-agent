@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import json
 
-from ai_tech_lead.risk_reviewer import review_task_risk
-
 from helpers import valid_settings_dict
+
+from ai_tech_lead.risk_reviewer import review_task_risk
 
 
 def _load_settings_from(path):
@@ -38,7 +38,10 @@ def test_risk_review_uses_ai_when_enabled(monkeypatch, tmp_path) -> None:
     )
 
     class FakeResult:
-        text = '{"needs_approval": false, "risk_level": "low", "reason": "Small safe task", "confidence": 0.9, "recommended_action": "continue"}'
+        text = (
+            '{"needs_approval": false, "reason": "Small safe task", '
+            '"confidence": 0.9}'
+        )
 
     monkeypatch.setattr(
         "ai_tech_lead.risk_reviewer.call_orchestrator_llm",
@@ -62,7 +65,10 @@ def test_risk_review_requires_approval_when_ai_confidence_is_low(monkeypatch, tm
     )
 
     class FakeResult:
-        text = '{"needs_approval": false, "risk_level": "low", "reason": "Looks safe", "confidence": 0.5, "recommended_action": "continue"}'
+        text = (
+            '{"needs_approval": false, "reason": "Looks safe", '
+            '"confidence": 0.5}'
+        )
 
     monkeypatch.setattr(
         "ai_tech_lead.risk_reviewer.call_orchestrator_llm",

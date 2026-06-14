@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import json
-import os
 import logging
+import os
 import time
+from dataclasses import dataclass
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -47,7 +47,8 @@ def call_orchestrator_llm(*, prompt: str, config: OrchestratorLlmConfig) -> Orch
     if not api_key or api_key == "replace-with-your-project-service-account-key":
         elapsed_ms = (time.perf_counter() - start_time) * 1000
         logger.info(
-            "LLM call elapsed: %.0fms model=%s status=skipped in=0 out=0 total=0 cost_total=$0.00000",
+            "LLM call elapsed: %.0fms model=%s status=skipped "
+            "in=0 out=0 total=0 cost_total=$0.00000",
             elapsed_ms,
             config.model,
         )
@@ -75,7 +76,8 @@ def call_orchestrator_llm(*, prompt: str, config: OrchestratorLlmConfig) -> Orch
         error_body = error.read().decode("utf-8", errors="replace")
         elapsed_ms = (time.perf_counter() - start_time) * 1000
         logger.info(
-            "LLM call elapsed: %.0fms model=%s status=error in=0 out=0 total=0 cost_total=$0.00000",
+            "LLM call elapsed: %.0fms model=%s status=error "
+            "in=0 out=0 total=0 cost_total=$0.00000",
             elapsed_ms,
             config.model,
         )
@@ -83,7 +85,8 @@ def call_orchestrator_llm(*, prompt: str, config: OrchestratorLlmConfig) -> Orch
     except URLError as error:
         elapsed_ms = (time.perf_counter() - start_time) * 1000
         logger.info(
-            "LLM call elapsed: %.0fms model=%s status=error in=0 out=0 total=0 cost_total=$0.00000",
+            "LLM call elapsed: %.0fms model=%s status=error "
+            "in=0 out=0 total=0 cost_total=$0.00000",
             elapsed_ms,
             config.model,
         )
@@ -94,7 +97,8 @@ def call_orchestrator_llm(*, prompt: str, config: OrchestratorLlmConfig) -> Orch
     if not text:
         elapsed_ms = (time.perf_counter() - start_time) * 1000
         logger.info(
-            "LLM call elapsed: %.0fms model=%s status=error in=0 out=0 total=0 cost_total=$0.00000",
+            "LLM call elapsed: %.0fms model=%s status=error "
+            "in=0 out=0 total=0 cost_total=$0.00000",
             elapsed_ms,
             config.model,
         )
@@ -115,15 +119,17 @@ def call_orchestrator_llm(*, prompt: str, config: OrchestratorLlmConfig) -> Orch
         tokens_total,
         cost_usd,
     )
-    return OrchestratorLlmResult(text=text, tokens_in=tokens_in, tokens_out=tokens_out, cost_usd=cost_usd)
+    return OrchestratorLlmResult(
+        text=text, tokens_in=tokens_in, tokens_out=tokens_out, cost_usd=cost_usd
+    )
 
 
 # Approximate USD per 1K tokens. Update when pricing changes.
 _COST_PER_1K: dict[str, dict[str, float]] = {
     "gpt-4.1-mini": {"input": 0.0004, "output": 0.0016},
-    "gpt-4.1":      {"input": 0.002,  "output": 0.008},
-    "gpt-4o-mini":  {"input": 0.00015, "output": 0.0006},
-    "gpt-4o":       {"input": 0.0025,  "output": 0.01},
+    "gpt-4.1": {"input": 0.002, "output": 0.008},
+    "gpt-4o-mini": {"input": 0.00015, "output": 0.0006},
+    "gpt-4o": {"input": 0.0025, "output": 0.01},
 }
 
 

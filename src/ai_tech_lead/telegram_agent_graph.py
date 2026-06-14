@@ -21,24 +21,23 @@ from typing import Any
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
-from langgraph.graph import MessagesState, START, StateGraph
+from langgraph.graph import START, MessagesState, StateGraph
 from langgraph.prebuilt import ToolNode, tools_condition
 
 from ai_tech_lead.app_settings import AppSettings
-from ai_tech_lead.backlog_repository import MarkdownBacklogRepository
+from ai_tech_lead.backlog_repository import (
+    MarkdownBacklogRepository,
+    format_backlog_list_item,
+)
 from ai_tech_lead.config import PROJECT_ROOT
 from ai_tech_lead.env_loader import load_local_env
-from ai_tech_lead.prompt_loader import load_prompt
-
+from ai_tech_lead.prompt_loader import TELEGRAM_AGENT_SYSTEM_PROMPT_KEY, load_prompt
 
 logger = logging.getLogger(__name__)
 
 _LLM_PRICING_PATH = PROJECT_ROOT / "config" / "llm_pricing.json"
 # Cached after first load — pricing file is read once per process.
 _pricing_cache: dict[str, tuple[float, float]] | None = None
-
-SYSTEM_PROMPT = load_prompt("telegram_agent_system.md")
-
 
 @dataclass(frozen=True)
 class TelegramAgentReply:
@@ -67,7 +66,7 @@ def build_telegram_agent_graph(*, settings: AppSettings, checkpointer: Any):
         timeout=settings.orchestrator_ai_timeout_seconds,
     )
     llm_with_tools = llm.bind_tools(tools)
-    system_message = SystemMessage(content=SYSTEM_PROMPT)
+    system_message = SystemMessage(content=load_prompt(TELEGRAM_AGENT_SYSTEM_PROMPT_KEY))
 
     def assistant(state: MessagesState) -> dict[str, list[BaseMessage]]:
         if state["messages"] and isinstance(state["messages"][-1], ToolMessage):
@@ -121,14 +120,21 @@ def run_telegram_agent_message(*, app: Any, thread_id: str, text: str) -> Telegr
     )
     if truncated:
         # Surface token-limit truncation instead of silently cutting off the reply.
-        logger.warning("Telegram agent reply truncated because the model hit the output token limit.")
-        text = "\n\n".join([text, "Note: reply was cut off because the model hit the output token limit."])
+        logger.warning(
+            "Telegram agent reply truncated because the model hit the output token limit."
+        )
+        text = "\n\n".join(
+            [text, "Note: reply was cut off because the model hit the output token limit."]
+        )
     logger.info("[LEARN] Assistant produced the final Telegram reply.")
     return TelegramAgentReply(text=text, truncated=truncated)
 
 
 def _build_backlog_tools(settings: AppSettings):
-    repository = MarkdownBacklogRepository(Path(settings.backlog_path))
+    repository = MarkdownBacklogRepository(
+        Path(settings.backlog_path),
+        project_root=Path(settings.project_root),
+    )
 
     @tool
     def count_backlog_items() -> str:
@@ -143,14 +149,14 @@ def _build_backlog_tools(settings: AppSettings):
 
     @tool
     def list_backlog_items(limit: int = 10) -> str:
-        """List backlog item IDs and titles. Use this for backlog overview questions."""
+        """List backlog items sorted by priority. Use this for backlog overview questions."""
 
         logger.info("[LEARN] Backlog tool is listing backlog items.")
         safe_limit = min(max(limit, 1), 20)
-        items = repository.list_open_items()[:safe_limit]
+        items = repository.list_open_items_sorted()[:safe_limit]
         if not items:
             return "No open backlog items."
-        lines = [f"{item.item_id} - {item.title}" for item in items]
+        lines = [format_backlog_list_item(item) for item in items]
         return "\n".join(lines)
 
     @tool
@@ -167,8 +173,11 @@ def _build_backlog_tools(settings: AppSettings):
 
     @tool
     def set_backlog_item_status(item_id: str, new_status: str) -> str:
-        """Set the Status field of a backlog item. Only call after the user has confirmed the change.
-        Common values: Backlog, In Progress, Done, Blocked, Cancelled."""
+        """Set the Status field of a backlog item.
+
+        Only call after the user has confirmed the change.
+        Common values: Backlog, Not Done, In Progress, Needs Review, Blocked, Done, Won't Do, Obsolete.
+        """
 
         logger.info(
             "[LEARN] Backlog tool is updating status of %s to '%s'.",
@@ -253,7 +262,9 @@ def _load_pricing() -> dict[str, tuple[float, float]]:
             if isinstance(v, dict)
         }
     except Exception:
-        logger.warning("Could not load LLM pricing from %s — cost reporting disabled", _LLM_PRICING_PATH)
+        logger.warning(
+            "Could not load LLM pricing from %s — cost reporting disabled", _LLM_PRICING_PATH
+        )
         _pricing_cache = {}
     return _pricing_cache
 

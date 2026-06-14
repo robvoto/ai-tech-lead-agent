@@ -98,5 +98,15 @@ Title: {item.title}
 
 def _repository(backlog_path: Path | None) -> MarkdownBacklogRepository:
     if backlog_path is not None:
-        return MarkdownBacklogRepository(backlog_path)
-    return MarkdownBacklogRepository(Path(load_settings().backlog_path))
+        if backlog_path.is_absolute():
+            return MarkdownBacklogRepository(backlog_path)
+        settings = load_settings()
+        return MarkdownBacklogRepository(
+            backlog_path,
+            project_root=Path(settings.project_root),
+        )
+    settings = load_settings()
+    return MarkdownBacklogRepository(
+        Path(settings.backlog_path),
+        project_root=Path(settings.project_root),
+    )

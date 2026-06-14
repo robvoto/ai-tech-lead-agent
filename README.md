@@ -37,6 +37,12 @@ cd /mnt/e/Programming/ai-tech-lead
 uv run python -m ai_tech_lead --task-id JH-001
 ```
 
+For local development, add `--reload` to restart the process when `src/`, `config/`, or `docs/` change:
+
+```bash
+uv run python -m ai_tech_lead --task-id JH-001 --reload
+```
+
 Real coding-agent execution is disabled unless explicitly requested:
 
 ```bash

@@ -9,12 +9,20 @@ Use this document for local run, test, and troubleshooting commands. Keep archit
 - Python: 3.13
 - Package manager: `uv`
 - Normal runtime shell: WSL Ubuntu, not PowerShell
+- Supported WSL distro for Codex sandboxing: Ubuntu with `apt` available.
+- Codex sandboxing in WSL requires `bubblewrap` (`bwrap`) to be on `PATH`.
 
 ## Normal CLI run
 
 ```bash
 cd /mnt/e/Programming/ai-tech-lead
 uv run python -m ai_tech_lead --task-id JH-001
+```
+
+For local development, use `--reload` to restart the process when source, config, or prompt files change:
+
+```bash
+uv run python -m ai_tech_lead --task-id JH-001 --reload
 ```
 
 Real coding-agent execution is disabled unless explicitly enabled:
@@ -79,8 +87,10 @@ uv run ruff format <file-or-folder>
 
 - If a command works in WSL but not PowerShell, prefer WSL. This project runtime is WSL-first.
 - If LangGraph Studio fails to import the graph, check `langgraph.json` and the exported `graph` object in `src/ai_tech_lead/coding_workflow_graph.py`.
-- If coding-agent execution hangs or warns about sandbox dependencies, check the backlog item for Bubblewrap/Codex WSL setup notes before enabling real execution.
-- If `/mnt/e` file access is slow, consider whether Windows-mounted filesystem latency is involved before blaming LangGraph.
+- If coding-agent execution warns that Bubblewrap is missing or hangs during startup, verify `command -v bwrap` and `bwrap --version` in WSL before retrying Codex.
+- On Ubuntu WSL, install it with `sudo apt update && sudo apt install bubblewrap`, then re-run `command -v bwrap` and `bwrap --version`.
+- If `/mnt/e` file access is slow, suspect Windows-mounted filesystem latency. Move the repo to native Linux storage, such as `~/ai-tech-lead`, when you need faster Codex and file-system performance.
+- If you keep the repo on `/mnt/e`, keep Codex runs short and avoid extra file scanning while debugging latency.
 
 ## Maintenance rule
 

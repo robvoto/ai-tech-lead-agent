@@ -2,10 +2,13 @@ from __future__ import annotations
 
 from typing import Any
 
+from ai_tech_lead.config import PROJECT_ROOT
+
 
 def valid_settings_dict() -> dict[str, Any]:
     return {
-        "backlog_path": "docs/BACKLOG.md",
+        "project_root": str(PROJECT_ROOT),
+        "backlog_path": "data/backlog/ai_tech_lead_backlog.xlsx",
         "max_runtime_minutes": 20,
         "coding_agent_command": "codex",
         "coding_agent_args": ["--ask-for-approval", "never", "exec"],
@@ -37,19 +40,4 @@ def valid_settings_dict() -> dict[str, Any]:
         "telegram_webhook_bind_host": "127.0.0.1",
         "telegram_webhook_bind_port": 8080,
         "telegram_webhook_secret_token": "",
-        "prompts": {
-            "risk_review_reason_template": (
-                "AI risk review is off, so I need your approval before continuing.\n"
-                "Task:\n{request}"
-            ),
-            "execution_brief_template": (
-                "Request:\n{request}\n\n"
-                "Relevant files:\n{relevant_files}\n\n"
-                "Constraints:\n{constraint_list}\n\n"
-                "Acceptance criteria:\n{acceptance_criteria}\n\n"
-                "Approval reason:\n{approval_reason}\n\n"
-                "Risk notes:\n{risk_notes}"
-            )
-        },
     }
-

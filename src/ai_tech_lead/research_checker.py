@@ -8,9 +8,9 @@ the caller must pause for human approval before continuing.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import json
 import logging
+from dataclasses import dataclass
 from typing import Any
 
 from .app_settings import AppSettings
@@ -20,10 +20,9 @@ from .orchestrator_llm import (
     OrchestratorLlmError,
     call_orchestrator_llm,
 )
-from .prompt_loader import load_prompt
+from .prompt_loader import RESEARCH_COMPLEXITY_PROMPT_KEY, render_prompt
 from .research_cache import ResearchCacheEntry, load_research_cache_entries
 
-RESEARCH_COMPLEXITY_PROMPT = load_prompt("research_complexity_prompt.md")
 MINIMUM_LOCAL_SOURCES = 2
 
 logger = logging.getLogger(LOGGER_NAME)
@@ -102,7 +101,9 @@ def check_research_requirements(
     online_research_needed = sources_found < MINIMUM_LOCAL_SOURCES
 
     logger.info("[LEARN] Local research sources found: %d", sources_found)
-    logger.info("[LEARN] Online research approval needed: %s", "yes" if online_research_needed else "no")
+    logger.info(
+        "[LEARN] Online research approval needed: %s", "yes" if online_research_needed else "no"
+    )
 
     return ResearchCheckResult(
         is_complex=True,
@@ -117,7 +118,7 @@ def _llm_check_complexity(
     request: str,
     settings: AppSettings,
 ) -> tuple[bool, str]:
-    prompt = RESEARCH_COMPLEXITY_PROMPT.replace("{request}", request)
+    prompt = render_prompt(RESEARCH_COMPLEXITY_PROMPT_KEY, request=request)
     result = call_orchestrator_llm(
         prompt=prompt,
         config=OrchestratorLlmConfig(

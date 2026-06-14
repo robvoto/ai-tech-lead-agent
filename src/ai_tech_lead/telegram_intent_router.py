@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from enum import StrEnum
 import json
 import logging
+from dataclasses import dataclass
+from enum import StrEnum
 from typing import Any
 
 from ai_tech_lead.app_settings import AppSettings
@@ -109,8 +109,10 @@ def _intent_prompt(text: str) -> str:
         "Use backlog_proposal when the user wants to capture work for later. "
         "Use ask when the user is asking a question or wants an explanation. "
         "Use unclear when intent is ambiguous. "
-        "Schema: {\"action\": string, \"summary\": string, \"response\": string}. "
-        "For code_task, the response must say this requires /code or approval before any coding workflow. "
-        "For backlog_proposal, the response must say a backlog item can be proposed but needs confirmation.\n\n"
+        'Schema: {"action": string, "summary": string, "response": string}. '
+        "For code_task, the response must say this requires /code or approval "
+        "before any coding workflow. "
+        "For backlog_proposal, the response must say a backlog item can be "
+        "proposed but needs confirmation.\n\n"
         f"User message:\n{text}"
     )

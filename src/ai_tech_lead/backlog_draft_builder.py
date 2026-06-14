@@ -7,9 +7,9 @@ duplicate checks, and implementation guidance before any code task starts.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import json
 import logging
+from dataclasses import dataclass
 from typing import Any
 
 from ai_tech_lead.app_settings import AppSettings
@@ -87,12 +87,14 @@ def build_backlog_refinement_from_text(
     except FileNotFoundError as error:
         logger.warning("Backlog refinement cache unavailable: %s", error)
         raise BacklogRefinementBuildError(
-            "Research cache is unavailable. Read docs/research/INDEX.md and add the relevant note before refining backlog items."
+            "Research cache is unavailable. Read docs/research/INDEX.md "
+            "and add the relevant note before refining backlog items."
         ) from error
     except (OrchestratorLlmError, json.JSONDecodeError, KeyError, TypeError, ValueError) as error:
         logger.warning("Backlog refinement build failed: %s", error)
         raise BacklogRefinementBuildError(
-            "I could not create a valid refined backlog item from that request. Try again with a clearer goal and constraints."
+            "I could not create a valid refined backlog item from that request. "
+            "Try again with a clearer goal and constraints."
         ) from error
 
 
@@ -219,26 +221,37 @@ def _backlog_refinement_prompt(
         "Return only valid JSON. Do not include Markdown. "
         "Turn the user's rough idea into one structured backlog item. "
         "Use this exact schema: "
-        "{\"title\": string, \"item_type\": string, \"epic\": string, \"priority\": string, \"size\": string, "
-        "\"approval_required\": boolean, \"approval_reason\": string, "
-        "\"problem\": string, \"desired_outcome\": string, \"scope\": string[], "
-        "\"out_of_scope\": string[], \"acceptance_criteria\": string[], "
-        "\"duplicate_check_result\": string, \"stale_check_result\": string, "
-        "\"already_done_check_result\": string, \"research_required\": boolean, "
-        "\"research_cache_used\": string[], \"external_research_needed\": boolean, "
-        "\"recommended_implementation_pattern\": string, "
-        "\"patterns_explicitly_rejected\": string[], \"freshness_risk\": string, "
-        "\"implementation_guidance\": string, \"approval_risk_flags\": string[]}. "
+        '{"title": string, "item_type": string, "epic": string, '
+        '"priority": string, "size": string, '
+        '"approval_required": boolean, "approval_reason": string, '
+        '"problem": string, "desired_outcome": string, "scope": string[], '
+        '"out_of_scope": string[], "acceptance_criteria": string[], '
+        '"duplicate_check_result": string, "stale_check_result": string, '
+        '"already_done_check_result": string, "research_required": boolean, '
+        '"research_cache_used": string[], "external_research_needed": boolean, '
+        '"recommended_implementation_pattern": string, '
+        '"patterns_explicitly_rejected": string[], "freshness_risk": string, '
+        '"implementation_guidance": string, "approval_risk_flags": string[]}. '
         "The item must be small, specific, and implementation-ready. "
         "item_type must be one of: Story, Task, Chore, Bug. "
         "epic is a short area name such as 'AI Tech Lead Infrastructure' or 'Backlog Management'. "
         "priority must be one of: High, Medium, Low. "
-        "size must be one of: XS, S, M, L, XL (effort estimate — XS=hours, S=1day, M=2-3days, L=week, XL=multi-week). "
+        "size must be one of: XS, S, M, L, XL "
+        "(effort estimate — XS=hours, S=1day, M=2-3days, L=week, XL=multi-week). "
         "research_cache_used may be empty if no cache entries were relevant. "
-        "Check docs/research/INDEX.md first and reuse the cached research notes below where possible. "
-        "If the cache is missing, stale, or insufficient, set external_research_needed=true and explain the freshness risk. "
+        "Check docs/research/INDEX.md first and reuse the cached research notes "
+        "below where possible. "
+        "If the cache is missing, stale, or insufficient, set "
+        "external_research_needed=true and explain the freshness risk. "
+        "Workbook-managed columns such as Status, Created Date, Creator, Has Goal, "
+        "Has Problem, Has Outcome, Has Acceptance Criteria, Has Constraints, "
+        "Missing Fields, Missing Count, Completeness, Cleanup Needed, and "
+        "Notes / Cleanup Action are set by the repository code after validation. "
+        "Do not try to invent those fields in the JSON; instead make the draft "
+        "specific enough that the repository can populate them without guessing. "
         "Do not invent implementation details beyond the user's request and the cached research. "
-        "Do not use hidden heuristics; make duplicate, stale, and already-done checks explicit in the JSON.\n\n"
+        "Do not use hidden heuristics; make duplicate, stale, and already-done "
+        "checks explicit in the JSON.\n\n"
         f"Backlog item ID to use: {item_id}\n"
         f"User rough idea:\n{text}\n\n"
         "Existing backlog items:\n"

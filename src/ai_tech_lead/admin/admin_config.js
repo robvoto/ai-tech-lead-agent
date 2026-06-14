@@ -8,10 +8,7 @@ export const LIST_FIELDS = [
   "telegram_allowed_chat_ids",
 ];
 
-export const PROMPT_FIELDS = [
-  "risk_review_reason_template",
-  "execution_brief_template",
-];
+export const PROMPTS_API_ROUTE = "/api/prompts";
 
 export const LIST_FIELD_CONFIG = {
   coding_agent_args: {
@@ -38,7 +35,8 @@ export const LIST_FIELD_CONFIG = {
 };
 
 export const FIELD_PLACEHOLDERS = {
-  backlog_path: "docs/BACKLOG.md",
+  project_root: "/mnt/e/Programming/ai-tech-lead",
+  backlog_path: "data/backlog/ai_tech_lead_backlog.xlsx",
   max_runtime_minutes: "20",
   coding_agent_command: "codex",
   admin_bind_host: "127.0.0.1",
@@ -48,7 +46,7 @@ export const FIELD_PLACEHOLDERS = {
   orchestrator_ai_timeout_seconds: "20",
   telegram_api_base_url: "https://api.telegram.org",
   telegram_long_poll_timeout_seconds: "25",
-  telegram_max_fix_request_chars: "3000",
+  telegram_max_code_request_chars: "3000",
   telegram_max_message_chars: "3900",
   telegram_webhook_url: "https://example.com/telegram/webhook",
   telegram_webhook_bind_host: "127.0.0.1",

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 from logging.handlers import RotatingFileHandler
-from pathlib import Path
 
 from ai_tech_lead.config import LOGS_DIR, ensure_project_dirs
 
@@ -25,9 +24,7 @@ def configure_logging(*, debug: bool = False) -> logging.Logger:
     logger.setLevel(log_level)
     logger.propagate = False
 
-    formatter = logging.Formatter(
-        "%(asctime)s %(levelname)s %(name)s: %(message)s"
-    )
+    formatter = logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
 
     file_handler = RotatingFileHandler(
         LOG_FILE,
@@ -40,9 +37,7 @@ def configure_logging(*, debug: bool = False) -> logging.Logger:
 
     console_handler = logging.StreamHandler()
     console_handler.setLevel(log_level)
-    console_handler.setFormatter(
-        logging.Formatter("%(message)s")
-    )
+    console_handler.setFormatter(logging.Formatter("%(message)s"))
 
     logger.addHandler(file_handler)
     logger.addHandler(console_handler)

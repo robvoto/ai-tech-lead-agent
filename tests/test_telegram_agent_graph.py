@@ -3,22 +3,18 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
+from helpers import valid_settings_dict
 from langchain_core.messages import AIMessage
-from langgraph.checkpoint.memory import MemorySaver
 
 from ai_tech_lead.app_settings import parse_settings
 from ai_tech_lead.telegram_agent_graph import _build_backlog_tools, run_telegram_agent_message
 from ai_tech_lead.telegram_operator import TelegramCommand, TelegramCommandName, TelegramOperator
 
-from helpers import valid_settings_dict
-
 
 def test_plain_text_uses_telegram_agent_graph_when_ai_enabled(monkeypatch, tmp_path: Path) -> None:
     backlog_path = tmp_path / "BACKLOG.md"
     backlog_path.write_text(
-        "# Backlog\n\n"
-        "## ATL-001 - First item\n\n"
-        "Goal:\nDo the first thing.\n",
+        "# Backlog\n\n## ATL-001 - First item\n\nGoal:\nDo the first thing.\n",
         encoding="utf-8",
     )
     raw_settings = valid_settings_dict()
@@ -35,8 +31,13 @@ def test_plain_text_uses_telegram_agent_graph_when_ai_enabled(monkeypatch, tmp_p
         captured["text"] = text
         return _Reply("Backlog has 1 item.")
 
-    monkeypatch.setattr("ai_tech_lead.telegram_operator.build_telegram_agent_graph", lambda *, settings, checkpointer: "fake-app")
-    monkeypatch.setattr("ai_tech_lead.telegram_operator.run_telegram_agent_message", fake_run_telegram_agent_message)
+    monkeypatch.setattr(
+        "ai_tech_lead.telegram_operator.build_telegram_agent_graph",
+        lambda *, settings, checkpointer: "fake-app",
+    )
+    monkeypatch.setattr(
+        "ai_tech_lead.telegram_operator.run_telegram_agent_message", fake_run_telegram_agent_message
+    )
 
     operator._handle_command(
         "chat-1",
@@ -91,8 +92,15 @@ def test_run_telegram_agent_message_logs_token_usage(caplog) -> None:
                 "messages": [
                     AIMessage(
                         content="Answer.",
-                        response_metadata={"finish_reason": "stop", "model_name": "gpt-4.1-mini-2025-04-14"},
-                        usage_metadata={"input_tokens": 100, "output_tokens": 20, "total_tokens": 120},
+                        response_metadata={
+                            "finish_reason": "stop",
+                            "model_name": "gpt-4.1-mini-2025-04-14",
+                        },
+                        usage_metadata={
+                            "input_tokens": 100,
+                            "output_tokens": 20,
+                            "total_tokens": 120,
+                        },
                     )
                 ]
             }
@@ -115,7 +123,11 @@ def test_run_telegram_agent_message_falls_back_to_response_metadata_tokens(caplo
                         response_metadata={
                             "finish_reason": "stop",
                             "model_name": "gpt-4.1-mini-2025-04-14",
-                            "token_usage": {"prompt_tokens": 80, "completion_tokens": 15, "total_tokens": 95},
+                            "token_usage": {
+                                "prompt_tokens": 80,
+                                "completion_tokens": 15,
+                                "total_tokens": 95,
+                            },
                         },
                     )
                 ]
@@ -150,10 +162,7 @@ def test_run_telegram_agent_message_skips_usage_log_when_no_usage(caplog) -> Non
 def test_count_backlog_items_logs_learner_message(caplog, tmp_path: Path) -> None:
     backlog_path = tmp_path / "BACKLOG.md"
     backlog_path.write_text(
-        "# Backlog\n\n"
-        "## ATL-001 - First item\n\n"
-        "Status: Backlog\n\n"
-        "Goal:\nDo the first thing.\n",
+        "# Backlog\n\n## ATL-001 - First item\n\nStatus: Backlog\n\nGoal:\nDo the first thing.\n",
         encoding="utf-8",
     )
     raw_settings = valid_settings_dict()
@@ -169,16 +178,31 @@ def test_count_backlog_items_logs_learner_message(caplog, tmp_path: Path) -> Non
     assert "[LEARN] Backlog tool is counting backlog items." in caplog.text
 
 
-def test_list_backlog_items_skips_done_items(tmp_path: Path) -> None:
+def test_list_backlog_items_orders_and_shows_metadata(tmp_path: Path) -> None:
     backlog_path = tmp_path / "BACKLOG.md"
     backlog_path.write_text(
         "# Backlog\n\n"
-        "## ATL-001 - Active item\n\n"
-        "Status: In Progress\n\n"
-        "Goal:\nDo the thing.\n\n"
-        "## ATL-002 - Done item\n\n"
+        "## ATL-003 - Medium item\n\n"
         "Status: Done\n\n"
-        "Goal:\nFinished.\n",
+        "Priority: Medium\n"
+        "Complexity: Low\n"
+        "Created Date: 2024-01-03\n"
+        "Approval Required: no\n\n"
+        "Goal:\nFinished.\n\n"
+        "## ATL-001 - High review item\n\n"
+        "Status: In Progress\n"
+        "Priority: High\n"
+        "Complexity: High\n"
+        "Created Date: 2024-02-01\n"
+        "Approval Required: yes\n\n"
+        "Goal:\nDo the thing.\n\n"
+        "## ATL-002 - High simple item\n\n"
+        "Status: Backlog\n"
+        "Priority: High\n"
+        "Complexity: Low\n"
+        "Created Date: 2024-01-01\n"
+        "Approval Required: no\n\n"
+        "Goal:\nDo the simpler thing.\n",
         encoding="utf-8",
     )
     raw_settings = valid_settings_dict()
@@ -189,7 +213,79 @@ def test_list_backlog_items_skips_done_items(tmp_path: Path) -> None:
 
     result = list_tool.invoke({"limit": 10})
 
-    assert result == "ATL-001 - Active item"
+    assert result.splitlines() == [
+        "ATL-002 - High simple item",
+        "Priority: High | Complexity: Low | Created: 2024-01-01 | Approval: no | Status: Backlog",
+        "ATL-001 - High review item",
+        "Priority: High | Complexity: High | Created: 2024-02-01 | Approval: yes | Status: In Progress",
+    ]
+    assert "ATL-003" not in result
+
+
+def test_read_backlog_item_tool_returns_selected_item_details(tmp_path: Path) -> None:
+    backlog_path = tmp_path / "BACKLOG.md"
+    backlog_path.write_text(
+        "# Backlog\n\n"
+        "## ATL-001 - Active item\n\n"
+        "Status: In Progress\n\n"
+        "Goal:\nDo the thing.\n",
+        encoding="utf-8",
+    )
+    raw_settings = valid_settings_dict()
+    raw_settings["backlog_path"] = str(backlog_path)
+    settings = parse_settings(raw_settings)
+    tools = _build_backlog_tools(settings)
+    read_tool = next(tool for tool in tools if tool.name == "read_backlog_item")
+
+    result = read_tool.invoke({"item_id": "ATL-001"})
+
+    assert result.startswith("ATL-001 - Active item")
+    assert "Status: In Progress" in result
+    assert "Do the thing." in result
+
+
+def test_set_backlog_item_status_tool_updates_repository(tmp_path: Path) -> None:
+    backlog_path = tmp_path / "BACKLOG.md"
+    backlog_path.write_text(
+        "# Backlog\n\n"
+        "## ATL-001 - Active item\n\n"
+        "Status: Backlog\n\n"
+        "Goal:\nDo the thing.\n",
+        encoding="utf-8",
+    )
+    raw_settings = valid_settings_dict()
+    raw_settings["backlog_path"] = str(backlog_path)
+    settings = parse_settings(raw_settings)
+    tools = _build_backlog_tools(settings)
+    status_tool = next(tool for tool in tools if tool.name == "set_backlog_item_status")
+
+    result = status_tool.invoke({"item_id": "ATL-001", "new_status": "Done"})
+
+    assert "Updated ATL-001 - Active item" in result
+    assert "Status is now 'Done'" in result
+    assert "Status: Done" in backlog_path.read_text(encoding="utf-8")
+
+
+def test_set_backlog_item_status_tool_accepts_wont_do(tmp_path: Path) -> None:
+    backlog_path = tmp_path / "BACKLOG.md"
+    backlog_path.write_text(
+        "# Backlog\n\n"
+        "## ATL-001 - First item\n\n"
+        "Status: Backlog\n\n"
+        "Goal:\nDo the first thing.\n",
+        encoding="utf-8",
+    )
+    raw_settings = valid_settings_dict()
+    raw_settings["backlog_path"] = str(backlog_path)
+    settings = parse_settings(raw_settings)
+
+    tools = _build_backlog_tools(settings)
+    status_tool = next(tool for tool in tools if tool.name == "set_backlog_item_status")
+
+    result = status_tool.invoke({"item_id": "ATL-001", "new_status": "won't do"})
+
+    assert "Status is now 'Won't Do'" in result
+    assert "Status: Won't Do" in backlog_path.read_text(encoding="utf-8")
 
 
 class _Reply:

@@ -8,24 +8,51 @@ code from those files.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from collections.abc import Callable
-from pathlib import Path
+import logging
+import os
+import pty
+import re
+import select as _select
 import subprocess
 import threading
 import time
-import logging
+from collections.abc import Callable
+from dataclasses import dataclass
+from pathlib import Path
 
 from ai_tech_lead.app_settings import AppSettings
 from ai_tech_lead.logging_setup import LOGGER_NAME
 
 logger = logging.getLogger(LOGGER_NAME)
 
-# How often the poll loop wakes up to check process state and fire progress updates.
 _POLL_INTERVAL_SECONDS = 1.0
-
-# Maximum lines of recent stdout included in each progress update sent to the operator.
 _PROGRESS_PREVIEW_LINES = 5
+
+# Strips ANSI escape sequences (colours, cursor movement, screen control).
+_ANSI_RE = re.compile(
+    rb"\x1b(?:"
+    rb"\[[0-9;]*[mGKHJABCDnsuhl]"
+    rb"|\[[?][0-9;]*[hl]"
+    rb"|\][0-9]+;[^\x07]*\x07"
+    rb"|[@-_][0-9;]*[@-~]?"
+    rb"|[78M]"
+    rb")"
+)
+
+
+def _clean_pty_line(raw: bytes) -> str:
+    """Strip ANSI codes and handle \\r overwrites; return printable text."""
+    last = raw.split(b"\r")[-1]
+    return _ANSI_RE.sub(b"", last).decode("utf-8", errors="replace").strip()
+
+
+@dataclass
+class _RunOutcome:
+    stdout: str
+    stderr: str
+    returncode: int | None
+    timed_out: bool
+    cancelled: bool
 
 
 class CodingAgentCancellationToken:
@@ -34,9 +61,9 @@ class CodingAgentCancellationToken:
     def __init__(self) -> None:
         self._event = threading.Event()
         self._lock = threading.Lock()
-        self._process: subprocess.Popen[str] | None = None
+        self._process: subprocess.Popen[bytes] | None = None
 
-    def attach_process(self, process: subprocess.Popen[str]) -> None:
+    def attach_process(self, process: subprocess.Popen[bytes]) -> None:
         with self._lock:
             self._process = process
             if self._event.is_set() and process.poll() is None:
@@ -75,8 +102,6 @@ class CodingAgentResult:
     changed_files_delta: tuple[str, ...] = ()
 
     def summary(self) -> str:
-        """Return a log-friendly summary of the subprocess outcome."""
-
         command_text = _display_command(self.command)
         parts: list[str] = [self.message or "Coding agent subprocess completed."]
 
@@ -113,9 +138,14 @@ def run_coding_agent(
     settings: AppSettings,
     progress_callback: Callable[[str], None] | None = None,
     cancellation_token: CodingAgentCancellationToken | None = None,
+    use_pty: bool = False,
 ) -> CodingAgentResult:
-    """Run the configured CLI agent for real when settings explicitly allow execution."""
+    """Run the configured CLI agent.
 
+    use_pty=True for long interactive runs (actual coding) so the agent sees a
+    real terminal and emits live progress. Leave False (default) for plan
+    requests where plain stdout text extraction is required.
+    """
     if not settings.execute_coding_agent:
         return CodingAgentResult(
             command=[],
@@ -140,15 +170,201 @@ def run_coding_agent(
     changed_files_before = _get_git_changed_files(project_root)
     started_at = time.time()
 
+    run_fn = _run_with_pty if use_pty else _run_with_pipes
+    outcome = run_fn(
+        command=command,
+        project_root=project_root,
+        timeout_seconds=timeout_seconds,
+        progress_interval=progress_interval,
+        progress_callback=progress_callback,
+        cancellation_token=cancellation_token,
+        settings=settings,
+    )
+
+    ended_at = time.time()
+    changed_files_after = _get_git_changed_files(project_root)
+    files_delta = _files_delta(changed_files_before, changed_files_after)
+
+    base = dict(
+        command=command,
+        returncode=outcome.returncode,
+        stdout=outcome.stdout,
+        stderr=outcome.stderr,
+        started_at=started_at,
+        ended_at=ended_at,
+        duration_seconds=ended_at - started_at,
+        changed_files_before=changed_files_before,
+        changed_files_after=changed_files_after,
+        changed_files_delta=files_delta,
+    )
+
+    if outcome.cancelled:
+        return CodingAgentResult(
+            **base,
+            cancelled=True,
+            message="The coding agent was cancelled by the operator.",
+        )
+
+    if outcome.timed_out:
+        return CodingAgentResult(
+            **base,
+            timed_out=True,
+            message=f"The coding agent timed out after {timeout_seconds} seconds.",
+        )
+
+    success = outcome.returncode == 0
+    message = (
+        f"The coding agent finished successfully. System exit code: {outcome.returncode}."
+        if success
+        else (
+            f"The coding agent reported a failure. System exit code: {outcome.returncode}. "
+            "It exited with a non-zero return code."
+        )
+    )
+    return CodingAgentResult(**base, success=success, message=message)
+
+
+def _run_with_pty(
+    *,
+    command: list[str],
+    project_root: Path,
+    timeout_seconds: float,
+    progress_interval: int,
+    progress_callback: Callable[[str], None] | None,
+    cancellation_token: CodingAgentCancellationToken | None,
+    settings: AppSettings,
+) -> _RunOutcome:
+    """Launch the agent with a PTY so TUI agents emit live terminal output."""
+    master_fd, slave_fd = pty.openpty()
+
     try:
         process = subprocess.Popen(
             command,
+            cwd=project_root,
+            stdin=slave_fd,
+            stdout=slave_fd,
+            stderr=slave_fd,
+            close_fds=True,
+            shell=False,
+        )
+    except FileNotFoundError as error:
+        os.close(master_fd)
+        os.close(slave_fd)
+        raise RuntimeError(
+            f"Coding agent command not found: {settings.coding_agent_command}"
+        ) from error
+
+    os.close(slave_fd)
+
+    if cancellation_token is not None:
+        cancellation_token.attach_process(process)
+
+    output_lines: list[str] = []
+    pty_buf = b""
+    started = time.time()
+    last_update_at = started
+    last_reported_count = 0
+    timed_out = False
+    cancelled = False
+
+    try:
+        while process.poll() is None:
+            elapsed = time.time() - started
+
+            if cancellation_token is not None and cancellation_token.is_cancel_requested():
+                cancelled = True
+                if process.poll() is None:
+                    process.terminate()
+                    try:
+                        process.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                break
+
+            if elapsed >= timeout_seconds:
+                timed_out = True
+                process.kill()
+                break
+
+            rlist, _, _ = _select.select([master_fd], [], [], _POLL_INTERVAL_SECONDS)
+            if rlist:
+                try:
+                    data = os.read(master_fd, 4096)
+                    if not data:
+                        break
+                    pty_buf += data
+                    while b"\n" in pty_buf:
+                        raw_line, pty_buf = pty_buf.split(b"\n", 1)
+                        line = _clean_pty_line(raw_line)
+                        if line:
+                            output_lines.append(line)
+                except OSError:
+                    break
+
+            if time.time() - last_update_at >= progress_interval:
+                new_lines = output_lines[last_reported_count:]
+                last_reported_count = len(output_lines)
+                _emit_progress_update(
+                    progress_callback, new_lines=new_lines, elapsed_seconds=elapsed
+                )
+                last_update_at = time.time()
+
+    except (KeyboardInterrupt, SystemExit):
+        process.kill()
+        raise
+    finally:
+        while True:
+            rlist, _, _ = _select.select([master_fd], [], [], 0)
+            if not rlist:
+                break
+            try:
+                data = os.read(master_fd, 4096)
+                if not data:
+                    break
+                pty_buf += data
+            except OSError:
+                break
+        if pty_buf:
+            line = _clean_pty_line(pty_buf)
+            if line:
+                output_lines.append(line)
+        try:
+            os.close(master_fd)
+        except OSError:
+            pass
+
+    if not timed_out and not cancelled:
+        process.wait()
+
+    return _RunOutcome(
+        stdout="\n".join(output_lines),
+        stderr="",
+        returncode=process.returncode,
+        timed_out=timed_out,
+        cancelled=cancelled,
+    )
+
+
+def _run_with_pipes(
+    *,
+    command: list[str],
+    project_root: Path,
+    timeout_seconds: float,
+    progress_interval: int,
+    progress_callback: Callable[[str], None] | None,
+    cancellation_token: CodingAgentCancellationToken | None,
+    settings: AppSettings,
+) -> _RunOutcome:
+    """Launch the agent with stdout/stderr pipes — for plan requests expecting plain text."""
+    try:
+        process = subprocess.Popen(
+            ["stdbuf", "-oL", *command],
             cwd=project_root,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
             shell=False,
-            bufsize=1,  # line-buffered so output arrives as produced
+            bufsize=1,
         )
     except FileNotFoundError as error:
         raise RuntimeError(
@@ -158,7 +374,6 @@ def run_coding_agent(
     if cancellation_token is not None:
         cancellation_token.attach_process(process)
 
-    # Read both streams concurrently to prevent pipe-buffer deadlock.
     stdout_lines: list[str] = []
     stderr_lines: list[str] = []
 
@@ -168,19 +383,25 @@ def run_coding_agent(
             if line:
                 target.append(line)
 
-    stdout_thread = threading.Thread(target=_collect, args=(process.stdout, stdout_lines), daemon=True)
-    stderr_thread = threading.Thread(target=_collect, args=(process.stderr, stderr_lines), daemon=True)
+    stdout_thread = threading.Thread(
+        target=_collect, args=(process.stdout, stdout_lines), daemon=True
+    )
+    stderr_thread = threading.Thread(
+        target=_collect, args=(process.stderr, stderr_lines), daemon=True
+    )
     stdout_thread.start()
     stderr_thread.start()
 
     timed_out = False
     cancelled = False
-    last_update_at = started_at
-    last_reported_count = 0
+    started = time.time()
+    last_update_at = started
+    last_reported_stdout = 0
+    last_reported_stderr = 0
 
     try:
         while process.poll() is None:
-            elapsed = time.time() - started_at
+            elapsed = time.time() - started
 
             if cancellation_token is not None and cancellation_token.is_cancel_requested():
                 cancelled = True
@@ -198,9 +419,14 @@ def run_coding_agent(
                 break
 
             if time.time() - last_update_at >= progress_interval:
-                new_lines = stdout_lines[last_reported_count:]
-                last_reported_count = len(stdout_lines)
-                _emit_progress_update(progress_callback, new_lines=new_lines, elapsed_seconds=elapsed)
+                new_stdout = stdout_lines[last_reported_stdout:]
+                new_stderr = stderr_lines[last_reported_stderr:]
+                last_reported_stdout = len(stdout_lines)
+                last_reported_stderr = len(stderr_lines)
+                new_lines = new_stdout or [f"[stderr] {l}" for l in new_stderr]
+                _emit_progress_update(
+                    progress_callback, new_lines=new_lines, elapsed_seconds=elapsed
+                )
                 last_update_at = time.time()
 
             time.sleep(_POLL_INTERVAL_SECONDS)
@@ -214,74 +440,19 @@ def run_coding_agent(
     stdout_thread.join(timeout=10)
     stderr_thread.join(timeout=10)
 
-    if not timed_out:
+    if not timed_out and not cancelled:
         process.wait()
 
-    ended_at = time.time()
-    stdout = "\n".join(stdout_lines)
-    stderr = "\n".join(stderr_lines)
-    changed_files_after = _get_git_changed_files(project_root)
-
-    if cancelled:
-        return CodingAgentResult(
-            command=command,
-            returncode=process.returncode,
-            stdout=stdout,
-            stderr=stderr,
-            cancelled=True,
-            message="The coding agent was cancelled by the operator.",
-            started_at=started_at,
-            ended_at=ended_at,
-            duration_seconds=ended_at - started_at,
-            changed_files_before=changed_files_before,
-            changed_files_after=changed_files_after,
-            changed_files_delta=_files_delta(changed_files_before, changed_files_after),
-        )
-
-    if timed_out:
-        return CodingAgentResult(
-            command=command,
-            returncode=None,
-            stdout=stdout,
-            stderr=stderr,
-            timed_out=True,
-            message=f"The coding agent timed out after {timeout_seconds} seconds.",
-            started_at=started_at,
-            ended_at=ended_at,
-            duration_seconds=ended_at - started_at,
-            changed_files_before=changed_files_before,
-            changed_files_after=changed_files_after,
-            changed_files_delta=_files_delta(changed_files_before, changed_files_after),
-        )
-
-    success = process.returncode == 0
-    message = (
-        f"The coding agent finished successfully. System exit code: {process.returncode}."
-        if success
-        else (
-            f"The coding agent reported a failure. System exit code: {process.returncode}. "
-            "It exited with a non-zero return code."
-        )
-    )
-
-    return CodingAgentResult(
-        command=command,
+    return _RunOutcome(
+        stdout="\n".join(stdout_lines),
+        stderr="\n".join(stderr_lines),
         returncode=process.returncode,
-        stdout=stdout,
-        stderr=stderr,
-        message=message,
-        started_at=started_at,
-        ended_at=ended_at,
-        duration_seconds=ended_at - started_at,
-        success=success,
-        changed_files_before=changed_files_before,
-        changed_files_after=changed_files_after,
-        changed_files_delta=_files_delta(changed_files_before, changed_files_after),
+        timed_out=timed_out,
+        cancelled=cancelled,
     )
 
 
 def _get_git_changed_files(cwd: Path) -> tuple[str, ...]:
-    """Return filenames reported by git status --short, or empty tuple on failure."""
     try:
         result = subprocess.run(
             ["git", "status", "--short"],
@@ -296,7 +467,6 @@ def _get_git_changed_files(cwd: Path) -> tuple[str, ...]:
             return ()
         files: list[str] = []
         for line in result.stdout.splitlines():
-            # git status --short: columns 0-1 are status, column 2 is space, 3+ is filename
             if len(line) > 3:
                 files.append(line[3:].strip())
         return tuple(files)
@@ -304,10 +474,7 @@ def _get_git_changed_files(cwd: Path) -> tuple[str, ...]:
         return ()
 
 
-def _files_delta(
-    before: tuple[str, ...], after: tuple[str, ...]
-) -> tuple[str, ...]:
-    """Return files present in after but not in before — new changes from the agent."""
+def _files_delta(before: tuple[str, ...], after: tuple[str, ...]) -> tuple[str, ...]:
     return tuple(sorted(set(after) - set(before)))
 
 
@@ -329,17 +496,19 @@ def _emit_progress_update(
     if new_lines:
         preview = "\n".join(new_lines[-_PROGRESS_PREVIEW_LINES:])
         message = f"[{elapsed_text}]\n{preview}"
+        logger.info(message)
+        if progress_callback is not None:
+            try:
+                progress_callback(message)
+            except Exception:
+                logger.exception("Coding agent progress callback failed.")
     else:
-        message = f"[{elapsed_text}] Still running, no new output."
-
-    logger.info(message)
-    if progress_callback is None:
-        return
-
-    try:
-        progress_callback(message)
-    except Exception:
-        logger.exception("Coding agent progress callback failed.")
+        logger.debug("[%s] Coding agent still running, no new output.", elapsed_text)
+        if progress_callback is not None:
+            try:
+                progress_callback(f"[{elapsed_text}] Still running...")
+            except Exception:
+                logger.exception("Coding agent progress callback failed.")
 
 
 def _format_elapsed_seconds(elapsed_seconds: float) -> str:

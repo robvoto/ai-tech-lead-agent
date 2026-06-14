@@ -2,22 +2,21 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import json
 import logging
+from dataclasses import dataclass
 from typing import Any
 
 from .app_settings import AppSettings
 from .logging_setup import LOGGER_NAME
-from .prompt_loader import load_prompt
 from .orchestrator_llm import (
     OrchestratorLlmConfig,
     OrchestratorLlmError,
     call_orchestrator_llm,
 )
+from .prompt_loader import TASK_FORMULATION_PROMPT_KEY, render_prompt
 
 logger = logging.getLogger(LOGGER_NAME)
-TASK_FORMULATION_PROMPT = load_prompt("task_formulation_prompt.md")
 
 
 @dataclass(frozen=True)
@@ -31,7 +30,7 @@ def formulate_task(
     task_feedback: list[str],
     settings: AppSettings,
 ) -> FormulatedTask:
-    """Write a clean coding-agent task description from the raw request, brief, and clarifications."""
+    """Write a clean task description from the request, brief, and clarifications."""
 
     if not settings.orchestrator_ai_enabled:
         return FormulatedTask(task_description=request)
@@ -53,11 +52,11 @@ def _llm_formulate_task(
     settings: AppSettings,
 ) -> FormulatedTask:
     feedback_text = "\n".join(task_feedback) if task_feedback else ""
-    prompt = (
-        TASK_FORMULATION_PROMPT
-        .replace("{request}", request)
-        .replace("{brief}", brief)
-        .replace("{task_feedback}", feedback_text)
+    prompt = render_prompt(
+        TASK_FORMULATION_PROMPT_KEY,
+        request=request,
+        brief=brief,
+        task_feedback=feedback_text,
     )
     result = call_orchestrator_llm(
         prompt=prompt,

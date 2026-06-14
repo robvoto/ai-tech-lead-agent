@@ -3,21 +3,22 @@ from __future__ import annotations
 import logging
 from dataclasses import replace
 
+from helpers import valid_settings_dict
 from langgraph.checkpoint.memory import MemorySaver
+from langgraph.types import Command
 
 from ai_tech_lead.app_settings import parse_settings
 from ai_tech_lead.coding_workflow_graph import (
     NodeName,
     build_graph,
+    request_plan_node,
     route_after_approval,
     route_after_check_research,
     route_after_formulate_task,
+    route_after_research_interrupt,
     route_after_review_plan,
-    request_plan_node,
     run_coding_agent_node,
 )
-
-from helpers import valid_settings_dict
 
 
 def graph_state(**overrides: object) -> dict[str, object]:
@@ -94,7 +95,9 @@ def test_graph_state_can_store_task_feedback_list() -> None:
 
 
 def test_routes_follow_explicit_approval_state() -> None:
-    assert route_after_formulate_task(graph_state(needs_approval=True)) == NodeName.APPROVAL_REQUIRED
+    assert (
+        route_after_formulate_task(graph_state(needs_approval=True)) == NodeName.APPROVAL_INTERRUPT
+    )
     assert route_after_formulate_task(graph_state(needs_approval=False)) == NodeName.REQUEST_PLAN
     assert route_after_approval(graph_state(approved=True)) == NodeName.REQUEST_PLAN
     assert route_after_approval(graph_state(approved=False)) == NodeName.END_NODE
@@ -120,7 +123,17 @@ def test_route_after_check_research_complex_with_insufficient_sources_gates() ->
         online_research_approved=False,
         research_sources_found=1,
     )
-    assert route_after_check_research(state) == NodeName.RESEARCH_GATE
+    assert route_after_check_research(state) == NodeName.RESEARCH_INTERRUPT
+
+
+def test_route_after_research_interrupt_rejection_ends_workflow() -> None:
+    state = graph_state(online_research_approved=False)
+    assert route_after_research_interrupt(state) == NodeName.END_NODE
+
+
+def test_route_after_research_interrupt_approval_continues() -> None:
+    state = graph_state(online_research_approved=True)
+    assert route_after_research_interrupt(state) == NodeName.REVIEW_RISK
 
 
 def test_run_coding_agent_node_override_can_disable_execution(monkeypatch) -> None:
@@ -135,6 +148,7 @@ def test_run_coding_agent_node_override_can_disable_execution(monkeypatch) -> No
         project_root,
         settings,
         progress_callback=None,
+        **_kwargs,
     ):
         seen_execute_values.append(settings.execute_coding_agent)
 
@@ -152,7 +166,9 @@ def test_run_coding_agent_node_override_can_disable_execution(monkeypatch) -> No
 
     monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.load_settings", fake_load_settings)
     monkeypatch.setattr("ai_tech_lead.risk_reviewer.load_settings", fake_load_settings)
-    monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.run_coding_agent", fake_run_coding_agent)
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.run_coding_agent", fake_run_coding_agent
+    )
 
     state = run_coding_agent_node(
         graph_state(agent_instruction="Do the task"),
@@ -175,6 +191,7 @@ def test_run_coding_agent_node_forwards_progress_updates(monkeypatch) -> None:
         project_root,
         settings,
         progress_callback=None,
+        **_kwargs,
     ):
         assert callable(progress_callback)
         progress_callback("Coding agent still running (about 1m 0s elapsed).")
@@ -193,7 +210,9 @@ def test_run_coding_agent_node_forwards_progress_updates(monkeypatch) -> None:
 
     monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.load_settings", fake_load_settings)
     monkeypatch.setattr("ai_tech_lead.risk_reviewer.load_settings", fake_load_settings)
-    monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.run_coding_agent", fake_run_coding_agent)
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.run_coding_agent", fake_run_coding_agent
+    )
 
     state = run_coding_agent_node(
         graph_state(agent_instruction="Do the task"),
@@ -201,22 +220,29 @@ def test_run_coding_agent_node_forwards_progress_updates(monkeypatch) -> None:
         progress_callback=progress_messages.append,
     )
 
-    assert progress_messages == ["Coding agent still running (about 1m 0s elapsed)."]
+    assert progress_messages[0].startswith("Running coding agent (")
+    assert "Coding agent still running (about 1m 0s elapsed)." in progress_messages
     assert state["coding_agent_result"] == "done"
 
 
 def test_request_plan_node_uses_generated_instruction_and_stores_stdout(monkeypatch) -> None:
     settings = replace(parse_settings(valid_settings_dict()), execute_coding_agent=False)
     captured: dict[str, object] = {}
+    progress_messages: list[str] = []
 
     def fake_load_settings():
         return settings
 
-    def fake_load_prompt(filename: str) -> str:
-        assert filename == "plan_request_instruction.md"
-        return "Plan for {formulated_task}\n{correction_feedback}"
+    def fake_render_prompt(prompt_key: str, **replacements: str) -> str:
+        assert prompt_key == "plan_request_instruction"
+        assert replacements["formulated_task"] == "Build the plan"
+        assert replacements["correction_feedback"] == "\nPrevious plan was rejected. Correction needed:\nKeep it small."
+        return (
+            f"Plan for {replacements['formulated_task']}\n"
+            f"{replacements['correction_feedback']}"
+        )
 
-    def fake_run_coding_agent(*, agent_instruction, project_root, settings):
+    def fake_run_coding_agent(*, agent_instruction, project_root, settings, **_kwargs):
         captured["agent_instruction"] = agent_instruction
         captured["project_root"] = project_root
         captured["settings"] = settings
@@ -229,19 +255,29 @@ def test_request_plan_node_uses_generated_instruction_and_stores_stdout(monkeypa
         return Result()
 
     monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.load_settings", fake_load_settings)
-    monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.load_prompt", fake_load_prompt)
-    monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.run_coding_agent", fake_run_coding_agent)
+    monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.render_prompt", fake_render_prompt)
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.run_coding_agent", fake_run_coding_agent
+    )
 
     state = graph_state(
         formulated_task="Build the plan",
         plan_correction="Keep it small.",
     )
 
-    result = request_plan_node(state)
+    result = request_plan_node(state, progress_callback=progress_messages.append)
 
-    assert captured["agent_instruction"] == "Plan for Build the plan\n\nPrevious plan was rejected. Correction needed:\nKeep it small."
+    expected_instruction = (
+        "Plan for Build the plan\n\nPrevious plan was rejected. "
+        "Correction needed:\nKeep it small."
+    )
+    assert captured["agent_instruction"] == expected_instruction
     assert captured["project_root"] is not None
     assert captured["settings"].execute_coding_agent is False
+    assert progress_messages == [
+        "Requesting implementation plan from coding agent...",
+        "Plan from coding agent:\n1. Do the thing\n2. Validate it",
+    ]
     assert result["plan_text"] == "1. Do the thing\n2. Validate it"
     assert result["plan_approved"] is False
     assert result["plan_correction"] == ""
@@ -255,15 +291,20 @@ def test_graph_runs_to_disabled_coding_agent_result(monkeypatch) -> None:
 
     monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.load_settings", fake_load_settings)
     monkeypatch.setattr("ai_tech_lead.risk_reviewer.load_settings", fake_load_settings)
-    monkeypatch.setattr("ai_tech_lead.clarification_checker.load_settings", fake_load_settings)
-    monkeypatch.setattr("ai_tech_lead.research_checker.load_research_cache_entries", lambda **_kw: [])
+    monkeypatch.setattr(
+        "ai_tech_lead.research_checker.load_research_cache_entries",
+        lambda **_kw: [],
+    )
     app = build_graph(execute_coding_agent_override=False)
 
     result = app.invoke(graph_state())
 
     assert "Relevant files:" in result["brief"]
     assert result["needs_approval"] is True
-    assert "AI risk review is off, so I need your approval before continuing." in result["approval_reason"]
+    assert (
+        "AI risk review is off, so I need your approval before continuing."
+        in result["approval_reason"]
+    )
     assert result["approved"] is False
     assert result["agent_instruction"] == ""
     assert result["coding_agent_result"] == ""
@@ -308,8 +349,10 @@ def test_rejected_graph_resumes_without_coding_agent_result_index_error(monkeypa
 
     monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.load_settings", fake_load_settings)
     monkeypatch.setattr("ai_tech_lead.risk_reviewer.load_settings", fake_load_settings)
-    monkeypatch.setattr("ai_tech_lead.clarification_checker.load_settings", fake_load_settings)
-    monkeypatch.setattr("ai_tech_lead.research_checker.load_research_cache_entries", lambda **_kw: [])
+    monkeypatch.setattr(
+        "ai_tech_lead.research_checker.load_research_cache_entries",
+        lambda **_kw: [],
+    )
 
     app = build_graph(checkpointer_storage=MemorySaver(), execute_coding_agent_override=False)
     thread_config = {"configurable": {"thread_id": "test-reject-path"}}
@@ -317,14 +360,57 @@ def test_rejected_graph_resumes_without_coding_agent_result_index_error(monkeypa
     app.invoke(graph_state(), config=thread_config)
     state_snapshot = app.get_state(thread_config)
 
-    assert state_snapshot.next == (NodeName.APPROVAL_REQUIRED,)
+    assert state_snapshot.next == (NodeName.APPROVAL_INTERRUPT,)
 
-    app.update_state(thread_config, {"approved": False})
-    app.invoke(None, config=thread_config)
+    app.invoke(Command(resume={"approved": False, "approved_by": ""}), config=thread_config)
 
     final_state = app.get_state(thread_config)
     assert final_state.next == ()
     assert final_state.values["approved"] is False
+    assert final_state.values["coding_agent_result"] == ""
+
+
+def test_rejected_research_interrupt_ends_graph(monkeypatch) -> None:
+    settings = replace(parse_settings(valid_settings_dict()), orchestrator_ai_enabled=True)
+
+    def fake_load_settings():
+        return settings
+
+    class _ResearchResult:
+        is_complex = True
+        sources_found = 0
+        online_research_needed = True
+        complexity_reason = "Needs sources."
+        usable_source_titles: list[str] = []
+
+    def fake_check_research_requirements(_request, _settings):
+        return _ResearchResult()
+
+    monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.load_settings", fake_load_settings)
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.check_research_requirements",
+        fake_check_research_requirements,
+    )
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.review_task_risk",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("risk review should not run")
+        ),
+    )
+
+    app = build_graph(checkpointer_storage=MemorySaver(), execute_coding_agent_override=False)
+    thread_config = {"configurable": {"thread_id": "test-research-reject-path"}}
+
+    app.invoke(graph_state(), config=thread_config)
+    state_snapshot = app.get_state(thread_config)
+
+    assert state_snapshot.next == (NodeName.RESEARCH_INTERRUPT,)
+
+    app.invoke(Command(resume={"approved": False}), config=thread_config)
+
+    final_state = app.get_state(thread_config)
+    assert final_state.next == ()
+    assert final_state.values["online_research_approved"] is False
     assert final_state.values["coding_agent_result"] == ""
 
 
@@ -340,9 +426,9 @@ def test_route_after_review_plan_rejected_first_time() -> None:
 
 def test_route_after_review_plan_rejected_twice_goes_to_human() -> None:
     state = graph_state(plan_approved=False, plan_rejection_count=2)
-    assert route_after_review_plan(state) == NodeName.PLAN_HUMAN_GATE
+    assert route_after_review_plan(state) == NodeName.PLAN_INTERRUPT
 
 
 def test_route_after_review_plan_reviewer_unavailable_goes_to_human() -> None:
     state = graph_state(plan_approved=False, plan_needs_human_review=True)
-    assert route_after_review_plan(state) == NodeName.PLAN_HUMAN_GATE
+    assert route_after_review_plan(state) == NodeName.PLAN_INTERRUPT

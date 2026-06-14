@@ -8,6 +8,7 @@ dependencies = [
   "langgraph",
   "langchain-core",
   "langchain-openai",
+  "openpyxl>=3.1.5",
 ]
 
 [project.scripts]

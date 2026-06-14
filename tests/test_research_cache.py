@@ -4,6 +4,8 @@ from dataclasses import replace
 from datetime import date
 from pathlib import Path
 
+from helpers import valid_settings_dict
+
 from ai_tech_lead.app_settings import parse_settings
 from ai_tech_lead.research_cache import (
     ResearchCacheEntry,
@@ -11,11 +13,8 @@ from ai_tech_lead.research_cache import (
     load_research_cache_entries,
 )
 from ai_tech_lead.research_checker import (
-    ResearchCheckResult,
     check_research_requirements,
 )
-
-from helpers import valid_settings_dict
 
 
 def test_load_research_cache_entries_reads_index_and_note(tmp_path: Path) -> None:
@@ -37,7 +36,8 @@ def test_load_research_cache_entries_reads_index_and_note(tmp_path: Path) -> Non
     index_path.write_text(
         "# Research Cache Index\n\n"
         "## Backlog / Refinement\n\n"
-        "- [backlog-refinement.md](backlog-refinement.md) — Cache-first backlog refinement (2026-06-10)\n",
+        "- [backlog-refinement.md](backlog-refinement.md) — "
+        "Cache-first backlog refinement (2026-06-10)\n",
         encoding="utf-8",
     )
 

@@ -1,23 +1,22 @@
-"""Clarification checker — asks the orchestrator LLM one focused question before writing the coding agent instruction."""
+"""Clarification checker for one focused question before coding-agent instruction."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import json
 import logging
+from dataclasses import dataclass
 from typing import Any
 
-from .app_settings import AppSettings, load_settings
+from .app_settings import AppSettings
 from .logging_setup import LOGGER_NAME
-from .prompt_loader import load_prompt
 from .orchestrator_llm import (
     OrchestratorLlmConfig,
     OrchestratorLlmError,
     call_orchestrator_llm,
 )
+from .prompt_loader import CLARIFICATION_CHECK_PROMPT_KEY, render_prompt
 
 logger = logging.getLogger(LOGGER_NAME)
-CLARIFICATION_CHECK_PROMPT = load_prompt("clarification_check_prompt.md")
 
 
 @dataclass(frozen=True)
@@ -33,7 +32,7 @@ def check_task_clarification(
     task_feedback: list[str],
     settings: AppSettings,
 ) -> ClarificationDecision:
-    """Decide whether the orchestrator needs more info before writing the coding agent instruction."""
+    """Decide whether more info is needed before writing the coding agent instruction."""
 
     if not settings.orchestrator_ai_enabled:
         return ClarificationDecision(needs_clarification=False, question="", reason="")
@@ -55,11 +54,11 @@ def _llm_clarification_decision(
     settings: AppSettings,
 ) -> ClarificationDecision:
     feedback_text = "\n".join(task_feedback) if task_feedback else ""
-    prompt = (
-        CLARIFICATION_CHECK_PROMPT
-        .replace("{request}", request)
-        .replace("{brief}", brief)
-        .replace("{task_feedback}", feedback_text)
+    prompt = render_prompt(
+        CLARIFICATION_CHECK_PROMPT_KEY,
+        request=request,
+        brief=brief,
+        task_feedback=feedback_text,
     )
     result = call_orchestrator_llm(
         prompt=prompt,

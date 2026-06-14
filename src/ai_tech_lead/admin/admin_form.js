@@ -2,13 +2,14 @@ import {
   FIELD_PLACEHOLDERS,
   LIST_FIELD_CONFIG,
   LIST_FIELDS,
-  PROMPT_FIELDS,
+  PROMPTS_API_ROUTE,
 } from "./admin_config.js";
 
 export function bootstrapAdminForm() {
   const form = document.querySelector("#settings-form");
   const statusElement = document.querySelector("#status");
   const saveButton = document.querySelector("#save-settings");
+  const promptEditor = form.elements.prompts_json;
 
   function setStatus(message) {
     statusElement.textContent = message;
@@ -20,7 +21,7 @@ export function bootstrapAdminForm() {
 
   function setSaving(isSaving) {
     saveButton.disabled = isSaving;
-    saveButton.textContent = isSaving ? "Saving..." : "Save local settings";
+    saveButton.textContent = isSaving ? "Saving..." : "Save settings and prompts";
   }
 
   function setField(name, value) {
@@ -93,6 +94,7 @@ export function bootstrapAdminForm() {
       setPlaceholder(fieldName, placeholder);
     }
 
+    setField("project_root", settings.project_root);
     setField("backlog_path", settings.backlog_path);
     setField("max_runtime_minutes", settings.max_runtime_minutes);
     setField("coding_agent_command", settings.coding_agent_command);
@@ -107,7 +109,7 @@ export function bootstrapAdminForm() {
     setField("telegram_transport", settings.telegram_transport);
     setField("telegram_api_base_url", settings.telegram_api_base_url);
     setField("telegram_long_poll_timeout_seconds", settings.telegram_long_poll_timeout_seconds);
-    setField("telegram_max_fix_request_chars", settings.telegram_max_fix_request_chars);
+    setField("telegram_max_code_request_chars", settings.telegram_max_code_request_chars);
     setField("telegram_max_message_chars", settings.telegram_max_message_chars);
     setField("telegram_webhook_url", settings.telegram_webhook_url);
     setField("telegram_webhook_bind_host", settings.telegram_webhook_bind_host);
@@ -117,13 +119,35 @@ export function bootstrapAdminForm() {
     for (const fieldName of LIST_FIELDS) {
       renderListEditor(fieldName, settings[fieldName]);
     }
+  }
 
-    setField("risk_review_reason_template", settings.prompts.risk_review_reason_template);
-    setField("execution_brief_template", settings.prompts.execution_brief_template);
+  function fillPrompts(promptsPayload) {
+    promptEditor.value = JSON.stringify(promptsPayload, null, 2);
+  }
+
+  function readPromptRegistry() {
+    const text = promptEditor.value.trim();
+    if (!text) {
+      throw new Error("Prompt registry cannot be empty.");
+    }
+
+    try {
+      const parsed = JSON.parse(text);
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        throw new Error("Prompt registry must be a JSON object.");
+      }
+      if (!Array.isArray(parsed.prompts) || parsed.prompts.length === 0) {
+        throw new Error("Prompt registry must include a non-empty prompts array.");
+      }
+      return parsed;
+    } catch (error) {
+      throw new Error(`Prompt registry must be valid JSON: ${error.message}`);
+    }
   }
 
   function readForm() {
     const settings = {
+      project_root: form.elements.project_root.value.trim(),
       backlog_path: form.elements.backlog_path.value.trim(),
       max_runtime_minutes: Number.parseInt(form.elements.max_runtime_minutes.value, 10),
       coding_agent_command: form.elements.coding_agent_command.value.trim(),
@@ -133,26 +157,39 @@ export function bootstrapAdminForm() {
       admin_bind_port: Number.parseInt(form.elements.admin_bind_port.value, 10),
       orchestrator_ai_enabled: form.elements.orchestrator_ai_enabled.checked,
       orchestrator_ai_model: form.elements.orchestrator_ai_model.value.trim(),
-      orchestrator_ai_max_output_tokens: Number.parseInt(form.elements.orchestrator_ai_max_output_tokens.value, 10),
-      orchestrator_ai_timeout_seconds: Number.parseInt(form.elements.orchestrator_ai_timeout_seconds.value, 10),
+      orchestrator_ai_max_output_tokens: Number.parseInt(
+        form.elements.orchestrator_ai_max_output_tokens.value,
+        10,
+      ),
+      orchestrator_ai_timeout_seconds: Number.parseInt(
+        form.elements.orchestrator_ai_timeout_seconds.value,
+        10,
+      ),
       telegram_transport: form.elements.telegram_transport.value.trim(),
       telegram_api_base_url: form.elements.telegram_api_base_url.value.trim(),
-      telegram_long_poll_timeout_seconds: Number.parseInt(form.elements.telegram_long_poll_timeout_seconds.value, 10),
-      telegram_max_fix_request_chars: Number.parseInt(form.elements.telegram_max_fix_request_chars.value, 10),
-      telegram_max_message_chars: Number.parseInt(form.elements.telegram_max_message_chars.value, 10),
+      telegram_long_poll_timeout_seconds: Number.parseInt(
+        form.elements.telegram_long_poll_timeout_seconds.value,
+        10,
+      ),
+      telegram_max_code_request_chars: Number.parseInt(
+        form.elements.telegram_max_code_request_chars.value,
+        10,
+      ),
+      telegram_max_message_chars: Number.parseInt(
+        form.elements.telegram_max_message_chars.value,
+        10,
+      ),
       telegram_webhook_url: form.elements.telegram_webhook_url.value.trim(),
       telegram_webhook_bind_host: form.elements.telegram_webhook_bind_host.value.trim(),
-      telegram_webhook_bind_port: Number.parseInt(form.elements.telegram_webhook_bind_port.value, 10),
+      telegram_webhook_bind_port: Number.parseInt(
+        form.elements.telegram_webhook_bind_port.value,
+        10,
+      ),
       telegram_webhook_secret_token: form.elements.telegram_webhook_secret_token.value.trim(),
-      prompts: {},
     };
 
     for (const fieldName of LIST_FIELDS) {
       settings[fieldName] = readListEditor(fieldName);
-    }
-
-    for (const fieldName of PROMPT_FIELDS) {
-      settings.prompts[fieldName] = form.elements[fieldName].value.trim();
     }
 
     return settings;
@@ -179,13 +216,52 @@ export function bootstrapAdminForm() {
     }
   }
 
+  async function loadPrompts() {
+    setStatusState("info");
+    setStatus("Loading prompt registry...");
+
+    try {
+      const promptResponse = await fetch(PROMPTS_API_ROUTE);
+      const promptData = await promptResponse.json();
+
+      if (!promptResponse.ok) {
+        throw new Error(promptData.error || "Unable to load prompt registry.");
+      }
+
+      fillPrompts(promptData);
+      setStatusState("success");
+      setStatus("Prompt registry loaded.");
+    } catch (error) {
+      setStatusState("error");
+      setStatus(error.message || "Unable to load prompt registry.");
+    }
+  }
+
+  async function savePrompts(promptsPayload) {
+    const promptResponse = await fetch(PROMPTS_API_ROUTE, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(promptsPayload),
+    });
+    const promptData = await promptResponse.json();
+
+    if (!promptResponse.ok) {
+      throw new Error(promptData.error || "Unable to save prompt registry.");
+    }
+
+    fillPrompts(promptData);
+  }
+
   async function saveSettings(event) {
     event.preventDefault();
     setSaving(true);
     setStatusState("info");
-    setStatus("Saving local settings...");
+    setStatus("Saving local settings and prompt registry...");
 
     try {
+      const promptRegistry = readPromptRegistry();
       const settingsResponse = await fetch("/api/settings", {
         method: "PUT",
         headers: {
@@ -200,8 +276,9 @@ export function bootstrapAdminForm() {
       }
 
       fillForm(settingsData);
+      await savePrompts(promptRegistry);
       setStatusState("success");
-      setStatus("Settings saved.");
+      setStatus("Settings and prompt registry saved.");
     } catch (error) {
       setStatusState("error");
       setStatus(error.message || "Unable to save settings.");
@@ -239,5 +316,11 @@ export function bootstrapAdminForm() {
   });
 
   form.addEventListener("submit", saveSettings);
-  loadSettings().catch((error) => setStatus(error.message));
+
+  void (async () => {
+    setStatusState("info");
+    setStatus("Loading local settings and prompt registry...");
+    await loadSettings();
+    await loadPrompts();
+  })();
 }

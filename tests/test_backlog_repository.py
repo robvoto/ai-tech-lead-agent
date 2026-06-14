@@ -20,9 +20,7 @@ from ai_tech_lead.backlog_status import BacklogStatus
 def test_repository_lists_gets_and_adds_markdown_items(tmp_path: Path) -> None:
     backlog_path = tmp_path / "BACKLOG.md"
     backlog_path.write_text(
-        "# Backlog\n\n"
-        "## ATL-001 - Existing item\n\n"
-        "Goal:\nExisting goal\n",
+        "# Backlog\n\n## ATL-001 - Existing item\n\nGoal:\nExisting goal\n",
         encoding="utf-8",
     )
     repository = MarkdownBacklogRepository(backlog_path)
@@ -66,6 +64,50 @@ def test_list_open_items_excludes_done_items(tmp_path: Path) -> None:
 
     assert [item.item_id for item in open_items] == ["ATL-001"]
     assert open_items[0].status == BacklogStatus.BACKLOG
+
+
+def test_list_open_items_sorted_orders_by_priority_and_simplicity(tmp_path: Path) -> None:
+    backlog_path = tmp_path / "BACKLOG.md"
+    backlog_path.write_text(
+        "# Backlog\n\n"
+        "## ATL-005 - High priority oldest simple\n\n"
+        "Status: Backlog\n"
+        "Priority: High\n"
+        "Complexity: Low\n"
+        "Created Date: 2024-01-01\n"
+        "Approval Required: no\n\n"
+        "Goal:\nDo the oldest simple thing.\n\n"
+        "## ATL-002 - High priority newer simple\n\n"
+        "Status: Backlog\n"
+        "Priority: High\n"
+        "Complexity: Low\n"
+        "Created Date: 2024-03-01\n"
+        "Approval Required: no\n\n"
+        "Goal:\nDo the newer simple thing.\n\n"
+        "## ATL-001 - High priority human review\n\n"
+        "Status: Backlog\n"
+        "Priority: High\n"
+        "Complexity: High\n"
+        "Created Date: 2024-02-01\n"
+        "Approval Required: yes\n\n"
+        "Goal:\nDo the reviewed thing.\n\n"
+        "## ATL-003 - Medium priority item\n\n"
+        "Status: Backlog\n"
+        "Priority: Medium\n"
+        "Complexity: Low\n"
+        "Created Date: 2024-01-15\n"
+        "Approval Required: no\n\n"
+        "Goal:\nDo the medium thing.\n",
+        encoding="utf-8",
+    )
+    repository = MarkdownBacklogRepository(backlog_path)
+
+    open_items = repository.list_open_items_sorted()
+
+    assert [item.item_id for item in open_items] == ["ATL-005", "ATL-002", "ATL-001", "ATL-003"]
+    assert open_items[0].priority == "High"
+    assert open_items[0].complexity == "Low"
+    assert open_items[0].created_date == "2024-01-01"
 
 
 def test_validate_backlog_draft_rejects_missing_constraints() -> None:
@@ -134,10 +176,7 @@ def test_validate_backlog_refinement_draft_rejects_missing_priority() -> None:
 def test_update_item_status_sets_new_status(tmp_path: Path) -> None:
     backlog_path = tmp_path / "BACKLOG.md"
     backlog_path.write_text(
-        "# Backlog\n\n"
-        "## ATL-001 - Some item\n\n"
-        "Status: Backlog\n\n"
-        "Goal:\nDo the thing.\n",
+        "# Backlog\n\n## ATL-001 - Some item\n\nStatus: Backlog\n\nGoal:\nDo the thing.\n",
         encoding="utf-8",
     )
     repository = MarkdownBacklogRepository(backlog_path)
@@ -154,9 +193,7 @@ def test_update_item_status_sets_new_status(tmp_path: Path) -> None:
 def test_update_item_status_inserts_when_missing(tmp_path: Path) -> None:
     backlog_path = tmp_path / "BACKLOG.md"
     backlog_path.write_text(
-        "# Backlog\n\n"
-        "## ATL-001 - Some item\n\n"
-        "Goal:\nDo the thing.\n",
+        "# Backlog\n\n## ATL-001 - Some item\n\nGoal:\nDo the thing.\n",
         encoding="utf-8",
     )
     repository = MarkdownBacklogRepository(backlog_path)
@@ -167,17 +204,29 @@ def test_update_item_status_inserts_when_missing(tmp_path: Path) -> None:
     assert "Status: In Progress" in text
 
 
+def test_update_item_status_accepts_wont_do(tmp_path: Path) -> None:
+    backlog_path = tmp_path / "BACKLOG.md"
+    backlog_path.write_text(
+        "# Backlog\n\n## ATL-001 - Some item\n\nStatus: Backlog\n\nGoal:\nDo the thing.\n",
+        encoding="utf-8",
+    )
+
+    repository = MarkdownBacklogRepository(backlog_path)
+    item = repository.update_item_status("ATL-001", "won't do")
+
+    assert item.status == BacklogStatus.WONT_DO
+    assert "Status: Won't Do" in backlog_path.read_text(encoding="utf-8")
+
+
 def test_update_item_status_rejects_unknown_status(tmp_path: Path) -> None:
     backlog_path = tmp_path / "BACKLOG.md"
     backlog_path.write_text(
-        "# Backlog\n\n"
-        "## ATL-001 - Some item\n\n"
-        "Goal:\nDo the thing.\n",
+        "# Backlog\n\n## ATL-001 - Some item\n\nGoal:\nDo the thing.\n",
         encoding="utf-8",
     )
     repository = MarkdownBacklogRepository(backlog_path)
 
-    with pytest.raises(ValueError, match="Backlog, In Progress, Done"):
+    with pytest.raises(ValueError, match="1=Backlog, 2=Not Done, 3=In Progress"):
         repository.update_item_status("ATL-001", "Almost Done")
 
 
@@ -228,7 +277,10 @@ def test_render_backlog_refinement_draft_includes_research_context() -> None:
         desired_outcome="Turn rough ideas into refined backlog items.",
         scope=["Refine backlog ideas", "Capture research outcome"],
         out_of_scope=["Build a full RAG system"],
-        acceptance_criteria=["The item includes research cache usage", "The item lists rejected patterns"],
+        acceptance_criteria=[
+            "The item includes research cache usage",
+            "The item lists rejected patterns",
+        ],
         duplicate_check_result="No duplicate found.",
         stale_check_result="No stale item found.",
         already_done_check_result="Not already done.",
@@ -261,10 +313,7 @@ def test_render_backlog_refinement_draft_includes_research_context() -> None:
 def test_add_refined_item_appends_rendered_backlog_item(tmp_path: Path) -> None:
     backlog_path = tmp_path / "BACKLOG.md"
     backlog_path.write_text(
-        "# Backlog\n\n"
-        "## ATL-001 - Existing item\n\n"
-        "Status: Backlog\n\n"
-        "Goal:\nExisting goal\n",
+        "# Backlog\n\n## ATL-001 - Existing item\n\nStatus: Backlog\n\nGoal:\nExisting goal\n",
         encoding="utf-8",
     )
     repository = MarkdownBacklogRepository(backlog_path)

@@ -19,8 +19,7 @@ from .config import (
     TELEGRAM_AGENT_GRAPH_DIAGRAM_PATH,
     ensure_project_dirs,
 )
-from .logging_setup import configure_logging
-from .logging_setup import LOGGER_NAME
+from .logging_setup import LOGGER_NAME, configure_logging
 from .telegram_agent_graph import build_telegram_agent_graph
 
 logger = logging.getLogger(LOGGER_NAME)
@@ -74,7 +73,9 @@ def export_graph_diagrams(*, settings: AppSettings | None = None) -> list[Path]:
         _save_signature_state(next_signature_state)
 
     if updated_paths:
-        logger.info("Graph diagram export complete: %s", ", ".join(str(path) for path in updated_paths))
+        logger.info(
+            "Graph diagram export complete: %s", ", ".join(str(path) for path in updated_paths)
+        )
     else:
         logger.info("Graph diagram export complete: no graph changes detected.")
     return updated_paths

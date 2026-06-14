@@ -7,9 +7,8 @@ from pathlib import Path
 
 from ai_tech_lead.app_settings import AppSettings
 from ai_tech_lead.config import PROJECT_ROOT
-from ai_tech_lead.prompt_loader import load_prompt
+from ai_tech_lead.prompt_loader import BACKLOG_OWNERSHIP_RULES_PROMPT_KEY, load_prompt
 
-AGENTS_PATH = PROJECT_ROOT / "AGENTS.md"
 SKILLS_DIR = PROJECT_ROOT / ".skills"
 
 
@@ -29,17 +28,20 @@ def build_agent_instruction(
     needs_approval: bool,
     approved: bool,
     settings: AppSettings,
+    project_root: Path | None = None,
     research_sources: list[str] | None = None,
 ) -> str:
     skills = select_skills(request)
     selected_skills = "\n\n".join(_render_skill(skill) for skill in skills)
-    project_rules = _extract_project_rules()
-    backlog_ownership_rules = load_prompt("backlog_ownership_rules.md")
+    project_rules = _extract_project_rules(project_root or Path(settings.project_root))
+    backlog_ownership_rules = load_prompt(BACKLOG_OWNERSHIP_RULES_PROMPT_KEY)
     stop_conditions = _format_bullets(
         [
             "Stop if files outside the allowed directories are needed.",
             "Stop if the task conflicts with project rules.",
             "Stop if validation cannot be run or cannot be explained.",
+            "If this task appears to already be implemented in the codebase, "
+            "reply 'ALREADY_DONE: [reason]' and stop without making changes.",
         ]
     )
     final_instruction = (
@@ -57,7 +59,8 @@ def build_agent_instruction(
         sections.append(
             _section(
                 "Evidence Sources",
-                "Local research notes consulted for this task:\n" + _format_bullets(research_sources),
+                "Local research notes consulted for this task:\n"
+                + _format_bullets(research_sources),
             )
         )
     if task_feedback:
@@ -88,22 +91,46 @@ def build_agent_instruction(
 def select_skills(request: str) -> list[SkillSelection]:
     text = request.lower()
     selections: list[SkillSelection] = []
-    if _has_any(text, ["code", "test", "runtime", "graph", "telegram", "admin", "settings", "subprocess", "codex", "python"]):
+    if _has_any(
+        text,
+        [
+            "code",
+            "test",
+            "runtime",
+            "graph",
+            "telegram",
+            "admin",
+            "settings",
+            "subprocess",
+            "codex",
+            "python",
+        ],
+    ):
         selections.append(_skill("code-change", "Task changes code or runtime behaviour."))
     if _has_any(text, ["backlog", "jh-", "task id", "approval required"]):
-        selections.append(_skill("backlog-management", "Task touches backlog selection or task handoff."))
+        selections.append(
+            _skill("backlog-management", "Task touches backlog selection or task handoff.")
+        )
     if _has_any(text, ["agents.md", ".skills", "skill.md", "handoff", "project rules"]):
-        selections.append(_skill("instruction-maintenance", "Task edits or relies on project rule files."))
+        selections.append(
+            _skill("instruction-maintenance", "Task edits or relies on project rule files.")
+        )
     if not selections:
         selections.append(_skill("code-change", "Default for implementation work."))
     return _dedupe(selections)
 
 
-def _extract_project_rules() -> str:
-    content = AGENTS_PATH.read_text(encoding="utf-8")
+def _extract_project_rules(project_root: Path) -> str:
+    agents_path = project_root / "AGENTS.md"
+    content = agents_path.read_text(encoding="utf-8")
     return "\n\n".join(
         _extract_section(content, heading)
-        for heading in ["Default workflow", "Navigation", "Universal rules", "Finish report"]
+        for heading in [
+            "Default workflow",
+            "Navigation",
+            "Universal rules",
+            "Finish report",
+        ]
     )
 
 

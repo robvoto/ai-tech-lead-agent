@@ -6,20 +6,25 @@ Markdown today or Google Sheets later. This module is the current storage edge.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from pathlib import Path
 import re
+from dataclasses import dataclass
+from datetime import date, datetime
+from pathlib import Path
 
-from ai_tech_lead.config import PROJECT_ROOT
+from openpyxl import load_workbook
+
 from ai_tech_lead.backlog_status import (
     BacklogStatus,
     backlog_status_choices,
     normalize_backlog_status,
     open_backlog_statuses,
 )
-
+from ai_tech_lead.config import PROJECT_ROOT
 
 BACKLOG_ITEM_HEADING_PATTERN = re.compile(r"^## (?P<item_id>[A-Z]+-\d{3}) - (?P<title>.+)$")
+EXCEL_BACKLOG_SHEETS = {"xlsx", "xlsm"}
+EXCEL_BACKLOG_SHEET_NAME = "Backlog"
+BACKLOG_ARCHIVE_RELATIVE_PATH = Path("archive") / "BACKLOG.md"
 
 
 @dataclass(frozen=True)
@@ -29,6 +34,9 @@ class BacklogItem:
     item_id: str
     title: str
     body: str
+    priority: str = ""
+    complexity: str = ""
+    created_date: str = ""
     interrupt_before_implementation: bool = False
     status: BacklogStatus = BacklogStatus.BACKLOG
 
@@ -88,8 +96,9 @@ class MarkdownBacklogRepository:
     can provide the same methods without changing Telegram or graph code.
     """
 
-    def __init__(self, backlog_path: Path) -> None:
-        self._backlog_path = _resolve_project_path(backlog_path)
+    def __init__(self, backlog_path: Path, *, project_root: Path | None = None) -> None:
+        self._project_root = project_root or PROJECT_ROOT
+        self._backlog_path = _resolve_project_path(backlog_path, self._project_root)
 
     @property
     def backlog_path(self) -> Path:
@@ -98,6 +107,9 @@ class MarkdownBacklogRepository:
     def list_items(self) -> list[BacklogItem]:
         if not self._backlog_path.exists():
             raise FileNotFoundError(f"Backlog file not found: {self._backlog_path}")
+
+        if self._is_excel_backlog():
+            return self._list_items_from_workbook()
 
         text = self._backlog_path.read_text(encoding="utf-8", errors="replace")
         lines = text.splitlines()
@@ -129,6 +141,16 @@ class MarkdownBacklogRepository:
 
         return [item for item in self.list_items() if item.status in open_backlog_statuses()]
 
+    def list_items_sorted(self) -> list[BacklogItem]:
+        """Return all backlog items ordered by the current listing rule."""
+
+        return sorted(self.list_items(), key=_backlog_item_listing_key)
+
+    def list_open_items_sorted(self) -> list[BacklogItem]:
+        """Return open backlog items ordered by the current listing rule."""
+
+        return sorted(self.list_open_items(), key=_backlog_item_listing_key)
+
     def get_item(self, item_id: str) -> BacklogItem:
         requested_id = item_id.strip().lower()
         items = self.list_items()
@@ -137,15 +159,13 @@ class MarkdownBacklogRepository:
                 return item
 
         available_ids = ", ".join(item.item_id for item in items)
-        raise ValueError(
-            f"Backlog item '{item_id}' was not found. Available IDs: {available_ids}"
-        )
+        raise ValueError(f"Backlog item '{item_id}' was not found. Available IDs: {available_ids}")
 
     def get_item_for_execution(self, item_id: str) -> BacklogItem:
         """Return an item only if it is still actionable."""
 
         item = self.get_item(item_id)
-        if item.status == BacklogStatus.DONE:
+        if item.status in {BacklogStatus.DONE, BacklogStatus.WONT_DO, BacklogStatus.OBSOLETE}:
             raise ValueError(
                 f"Backlog item '{item.item_id}' is Done and cannot be selected for execution."
             )
@@ -166,6 +186,8 @@ class MarkdownBacklogRepository:
 
     def add_item(self, draft: BacklogDraft) -> BacklogItem:
         validate_backlog_draft(draft, existing_ids={item.item_id for item in self.list_items()})
+        if self._is_excel_backlog():
+            return self._add_item_to_workbook(draft)
         rendered_item = render_backlog_draft(draft)
         existing_text = self._backlog_path.read_text(encoding="utf-8", errors="replace").rstrip()
         self._backlog_path.write_text(
@@ -185,12 +207,13 @@ class MarkdownBacklogRepository:
         if status_value is None:
             raise ValueError(f"Status must be one of: {backlog_status_choices()}.")
 
+        if self._is_excel_backlog():
+            return self._update_item_status_in_workbook(normalized_id, status_value)
+
         text = self._backlog_path.read_text(encoding="utf-8", errors="replace")
         lines = text.splitlines(keepends=True)
 
-        heading_re = re.compile(
-            rf"^## {re.escape(normalized_id)} - ", re.IGNORECASE
-        )
+        heading_re = re.compile(rf"^## {re.escape(normalized_id)} - ", re.IGNORECASE)
         next_heading_re = re.compile(r"^## ")
 
         item_start: int | None = None
@@ -221,11 +244,71 @@ class MarkdownBacklogRepository:
         self._backlog_path.write_text("".join(lines), encoding="utf-8")
         return self.get_item(normalized_id)
 
+    def complete_item(self, item_id: str, validation_note: str) -> BacklogItem:
+        """Set Status: Done and insert/replace the Validation line in one write."""
+        normalized_id = item_id.strip().upper()
+        self.get_item(normalized_id)
+
+        if self._is_excel_backlog():
+            return self._complete_item_in_workbook(normalized_id, validation_note)
+
+        text = self._backlog_path.read_text(encoding="utf-8", errors="replace")
+        lines = text.splitlines(keepends=True)
+
+        heading_re = re.compile(rf"^## {re.escape(normalized_id)} - ", re.IGNORECASE)
+        next_heading_re = re.compile(r"^## ")
+
+        item_start: int | None = None
+        item_end: int | None = None
+        status_line_index: int | None = None
+        validation_line_index: int | None = None
+
+        for i, line in enumerate(lines):
+            if heading_re.match(line):
+                item_start = i
+            elif item_start is not None:
+                if next_heading_re.match(line):
+                    item_end = i
+                    break
+                if line.strip().startswith("Status:"):
+                    status_line_index = i
+                if line.strip().startswith("Validation:"):
+                    validation_line_index = i
+
+        if item_start is None:
+            raise ValueError(f"Backlog item '{normalized_id}' not found in file.")
+        if item_end is None:
+            item_end = len(lines)
+
+        if status_line_index is not None:
+            lines[status_line_index] = f"Status: {BacklogStatus.DONE.value}\n"
+            insert_after = status_line_index
+        else:
+            lines.insert(item_start + 1, f"Status: {BacklogStatus.DONE.value}\n")
+            item_end += 1
+            insert_after = item_start + 1
+
+        validation_text = f"Validation: {validation_note.strip()}\n"
+        if validation_line_index is not None:
+            actual_index = (
+                validation_line_index
+                if validation_line_index <= insert_after
+                else validation_line_index + (1 if status_line_index is None else 0)
+            )
+            lines[actual_index] = validation_text
+        else:
+            lines.insert(insert_after + 1, validation_text)
+
+        self._backlog_path.write_text("".join(lines), encoding="utf-8")
+        return self.get_item(normalized_id)
+
     def add_refined_item(self, draft: BacklogRefinementDraft) -> BacklogItem:
         validate_backlog_refinement_draft(
             draft,
             existing_ids={item.item_id for item in self.list_items()},
         )
+        if self._is_excel_backlog():
+            return self._add_refined_item_to_workbook(draft)
         rendered_item = render_backlog_refinement_draft(draft)
         existing_text = self._backlog_path.read_text(encoding="utf-8", errors="replace").rstrip()
         self._backlog_path.write_text(
@@ -233,6 +316,290 @@ class MarkdownBacklogRepository:
             encoding="utf-8",
         )
         return self.get_item(draft.item_id)
+
+    def _is_excel_backlog(self) -> bool:
+        return self._backlog_path.suffix.lower().lstrip(".") in EXCEL_BACKLOG_SHEETS
+
+    def _archive_backlog_path(self) -> Path | None:
+        if not self._is_excel_backlog():
+            return None
+        archive_path = self._backlog_path.parent / BACKLOG_ARCHIVE_RELATIVE_PATH
+        return archive_path if archive_path.exists() else None
+
+    def _list_items_from_workbook(self) -> list[BacklogItem]:
+        workbook = load_workbook(self._backlog_path)
+        sheet = self._backlog_sheet(workbook)
+        headers = self._sheet_header_map(sheet)
+        archive_items = self._archive_items_by_id()
+
+        items: list[BacklogItem] = []
+        for row in sheet.iter_rows(min_row=2, values_only=True):
+            item_id = self._row_value(row, headers, "ID")
+            if not item_id:
+                continue
+
+            normalized_id = str(item_id).strip()
+            archive_item = archive_items.get(normalized_id.upper())
+            title = self._row_value(row, headers, "Title") or (
+                archive_item.title if archive_item else ""
+            )
+            raw_status = self._row_value(row, headers, "Status")
+            status = self._parse_workbook_status(raw_status, archive_item=archive_item)
+            priority = self._row_value(row, headers, "Priority") or (
+                archive_item.priority if archive_item else ""
+            )
+            complexity = self._row_value(row, headers, "Complexity") or (
+                archive_item.complexity if archive_item else ""
+            )
+            created_date = self._row_value(row, headers, "Created Date") or (
+                archive_item.created_date if archive_item else ""
+            )
+            approval_required = self._parse_workbook_yes_no(
+                self._row_value(row, headers, "Approval Required"),
+                fallback=archive_item.interrupt_before_implementation if archive_item else False,
+            )
+            body = archive_item.body if archive_item else self._build_workbook_body(row, headers)
+
+            items.append(
+                BacklogItem(
+                    item_id=normalized_id,
+                    title=str(title).strip(),
+                    body=body,
+                    priority=priority,
+                    complexity=complexity,
+                    created_date=created_date,
+                    interrupt_before_implementation=approval_required,
+                    status=status,
+                )
+            )
+
+        if not items:
+            raise ValueError(f"No backlog items found in {self._backlog_path}")
+        return items
+
+    def _backlog_sheet(self, workbook):
+        if EXCEL_BACKLOG_SHEET_NAME in workbook.sheetnames:
+            return workbook[EXCEL_BACKLOG_SHEET_NAME]
+        return workbook.active
+
+    def _sheet_header_map(self, sheet) -> dict[str, int]:
+        headers: dict[str, int] = {}
+        for index, cell in enumerate(next(sheet.iter_rows(min_row=1, max_row=1)), start=1):
+            if cell.value is None:
+                continue
+            header = str(cell.value).strip()
+            if header:
+                headers[header] = index
+        return headers
+
+    def _row_value(self, row: tuple[object, ...], headers: dict[str, int], header: str) -> str:
+        index = headers.get(header)
+        if index is None or index - 1 >= len(row):
+            return ""
+        value = row[index - 1]
+        if value is None:
+            return ""
+        if isinstance(value, datetime):
+            return value.date().isoformat()
+        if isinstance(value, date):
+            return value.isoformat()
+        return str(value).strip()
+
+    def _parse_workbook_status(
+        self,
+        raw_status: str,
+        *,
+        archive_item: BacklogItem | None,
+    ) -> BacklogStatus:
+        if raw_status.strip():
+            status = normalize_backlog_status(raw_status)
+            if status is None:
+                raise BacklogValidationError(
+                    f"Unknown backlog status '{raw_status}'. Allowed statuses: "
+                    f"{backlog_status_choices()}."
+                )
+            return status
+        if archive_item is not None:
+            return archive_item.status
+        return BacklogStatus.BACKLOG
+
+    def _parse_workbook_yes_no(self, raw_value: str, *, fallback: bool = False) -> bool:
+        normalized = raw_value.strip().lower()
+        if not normalized:
+            return fallback
+        return normalized in {"yes", "true", "1"}
+
+    def _archive_items_by_id(self) -> dict[str, BacklogItem]:
+        archive_path = self._archive_backlog_path()
+        if archive_path is None:
+            return {}
+        return {
+            item.item_id.upper(): item
+            for item in MarkdownBacklogRepository(archive_path).list_items()
+        }
+
+    def _extract_field_from_archive(self, body: str, field_name: str) -> str:
+        marker = f"{field_name}:"
+        for line in body.splitlines():
+            stripped = line.strip()
+            if stripped.lower().startswith(marker.lower()):
+                return stripped[len(marker) :].strip()
+        return ""
+
+    def _build_workbook_body(
+        self,
+        row: tuple[object, ...],
+        headers: dict[str, int],
+    ) -> str:
+        lines = []
+        field_order = [
+            "ID",
+            "Title",
+            "Status",
+            "Creator",
+            "Epic",
+            "Type",
+            "Priority",
+            "Size",
+            "Approval Required",
+            "Approval Reason",
+            "Notes / Cleanup Action",
+        ]
+        for field in field_order:
+            value = self._row_value(row, headers, field)
+            if value:
+                lines.append(f"{field}: {value}")
+        return "\n".join(lines).strip()
+
+    def _load_workbook(self):
+        return load_workbook(self._backlog_path)
+
+    def _save_workbook(self, workbook) -> None:
+        workbook.save(self._backlog_path)
+
+    def _write_row(
+        self,
+        sheet,
+        headers: dict[str, int],
+        values: dict[str, object],
+        *,
+        row_index: int | None = None,
+    ) -> int:
+        target_row = row_index or (sheet.max_row + 1)
+        for header, value in values.items():
+            column = headers.get(header)
+            if column is None:
+                continue
+            sheet.cell(row=target_row, column=column, value=value)
+        return target_row
+
+    def _update_workbook_row(
+        self,
+        item_id: str,
+        updates: dict[str, object],
+    ) -> BacklogItem:
+        workbook = self._load_workbook()
+        sheet = self._backlog_sheet(workbook)
+        headers = self._sheet_header_map(sheet)
+
+        target_row_index: int | None = None
+        for row_index in range(2, sheet.max_row + 1):
+            row_id = sheet.cell(row=row_index, column=headers["ID"]).value
+            if row_id and str(row_id).strip().upper() == item_id.upper():
+                target_row_index = row_index
+                break
+        if target_row_index is None:
+            raise ValueError(f"Backlog item '{item_id}' not found in workbook.")
+
+        for header, value in updates.items():
+            column = headers.get(header)
+            if column is None:
+                continue
+            sheet.cell(row=target_row_index, column=column, value=value)
+
+        self._save_workbook(workbook)
+        refreshed = self._list_items_from_workbook()
+        return next(item for item in refreshed if item.item_id.upper() == item_id.upper())
+
+    def _update_item_status_in_workbook(
+        self,
+        item_id: str,
+        status: BacklogStatus,
+    ) -> BacklogItem:
+        item = self._update_workbook_row(item_id, {"Status": status.value})
+        archive_path = self._archive_backlog_path()
+        if archive_path is not None:
+            MarkdownBacklogRepository(archive_path).update_item_status(item_id, status.value)
+        return item
+
+    def _complete_item_in_workbook(self, item_id: str, validation_note: str) -> BacklogItem:
+        updates = {
+            "Status": BacklogStatus.DONE.value,
+            "Notes / Cleanup Action": validation_note.strip(),
+        }
+        item = self._update_workbook_row(item_id, updates)
+        archive_path = self._archive_backlog_path()
+        if archive_path is not None:
+            MarkdownBacklogRepository(archive_path).complete_item(item_id, validation_note)
+        return item
+
+    def _append_workbook_row(self, values: dict[str, object]) -> BacklogItem:
+        workbook = self._load_workbook()
+        sheet = self._backlog_sheet(workbook)
+        headers = self._sheet_header_map(sheet)
+        self._write_row(sheet, headers, values)
+        self._save_workbook(workbook)
+        return self.get_item(str(values["ID"]))
+
+    def _add_item_to_workbook(self, draft: BacklogDraft) -> BacklogItem:
+        row_values = {
+            "ID": draft.item_id,
+            "Title": draft.title.strip(),
+            "Status": BacklogStatus.BACKLOG.value,
+            "Created Date": date.today().isoformat(),
+            "Approval Required": "yes" if draft.approval_required else "no",
+            "Approval Reason": draft.approval_reason.strip(),
+            "Notes / Cleanup Action": "Imported from backlog draft.",
+        }
+        item = self._append_workbook_row(row_values)
+        archive_path = self._archive_backlog_path()
+        if archive_path is not None:
+            existing_text = archive_path.read_text(encoding="utf-8", errors="replace").rstrip()
+            rendered_item = render_backlog_draft(draft)
+            archive_path.write_text(f"{existing_text}\n\n{rendered_item}\n", encoding="utf-8")
+        return item
+
+    def _add_refined_item_to_workbook(self, draft: BacklogRefinementDraft) -> BacklogItem:
+        row_values = {
+            "ID": draft.item_id,
+            "Title": draft.title.strip(),
+            "Status": BacklogStatus.BACKLOG.value,
+            "Created Date": date.today().isoformat(),
+            "Creator": draft.creator.strip(),
+            "Epic": draft.epic.strip(),
+            "Type": draft.item_type.strip(),
+            "Priority": draft.priority.strip(),
+            "Size": draft.size.strip(),
+            "Approval Required": "yes" if draft.approval_required else "no",
+            "Approval Reason": draft.approval_reason.strip(),
+            "Has Goal": "True",
+            "Has Problem": "True",
+            "Has Outcome": "True",
+            "Has Acceptance Criteria": "True",
+            "Has Constraints": "True",
+            "Missing Fields": "",
+            "Missing Count": 0,
+            "Completeness": 1.0,
+            "Cleanup Needed": "No",
+            "Notes / Cleanup Action": "",
+        }
+        item = self._append_workbook_row(row_values)
+        archive_path = self._archive_backlog_path()
+        if archive_path is not None:
+            existing_text = archive_path.read_text(encoding="utf-8", errors="replace").rstrip()
+            rendered_item = render_backlog_refinement_draft(draft)
+            archive_path.write_text(f"{existing_text}\n\n{rendered_item}\n", encoding="utf-8")
+        return item
 
 
 def validate_backlog_draft(
@@ -324,7 +691,9 @@ def validate_backlog_refinement_draft(
     if not draft.already_done_check_result.strip():
         raise BacklogValidationError("Already-done check result is required.")
     if draft.research_required and not draft.research_cache_used:
-        raise BacklogValidationError("Research cache used must be provided when research is required.")
+        raise BacklogValidationError(
+            "Research cache used must be provided when research is required."
+        )
     if not draft.recommended_implementation_pattern.strip():
         raise BacklogValidationError("Recommended implementation pattern is required.")
     _require_non_empty_items(draft.patterns_explicitly_rejected, "Patterns explicitly rejected")
@@ -410,6 +779,21 @@ def render_backlog_refinement_draft(draft: BacklogRefinementDraft) -> str:
     )
 
 
+def format_backlog_list_item(item: BacklogItem) -> str:
+    """Return a compact, phone-friendly backlog list block."""
+
+    approval = "no" if not item.interrupt_before_implementation else "yes"
+    title_line = f"{item.item_id} - {item.title}"
+    details_line = (
+        f"Priority: {_display_field(item.priority)} | "
+        f"Complexity: {_display_field(item.complexity)} | "
+        f"Created: {_display_created_date(item.created_date)} | "
+        f"Approval: {approval} | "
+        f"Status: {item.status.value}"
+    )
+    return "\n".join([title_line, details_line])
+
+
 def _build_item(heading: str, body_lines: list[str]) -> BacklogItem:
     if " - " in heading:
         item_id, title = heading.split(" - ", 1)
@@ -418,14 +802,22 @@ def _build_item(heading: str, body_lines: list[str]) -> BacklogItem:
         title = heading
 
     body = "\n".join(body_lines).strip()
-    interrupt_before_implementation = _parse_yes_no_field(
-        body_lines, "Interrupt Before Implementation"
-    )
+    priority = _parse_text_field(body_lines, "Priority")
+    complexity = _parse_text_field(body_lines, "Complexity")
+    created_date = _parse_text_field(body_lines, "Created Date")
+    interrupt_before_implementation = _parse_yes_no_field(body_lines, "Approval Required")
+    if not _field_exists(body_lines, "Approval Required"):
+        interrupt_before_implementation = _parse_yes_no_field(
+            body_lines, "Interrupt Before Implementation"
+        )
     status = _parse_status_field(body_lines)
     return BacklogItem(
         item_id=item_id.strip(),
         title=title.strip(),
         body=body,
+        priority=priority,
+        complexity=complexity,
+        created_date=created_date,
         interrupt_before_implementation=interrupt_before_implementation,
         status=status,
     )
@@ -436,8 +828,26 @@ def _parse_yes_no_field(body_lines: list[str], field_name: str) -> bool:
     for line in body_lines:
         stripped = line.strip()
         if stripped.lower().startswith(prefix.lower()):
-            value = stripped[len(prefix):].strip().lower()
+            value = stripped[len(prefix) :].strip().lower()
             return value == "yes"
+    return False
+
+
+def _parse_text_field(body_lines: list[str], field_name: str) -> str:
+    prefix = f"{field_name}:"
+    for line in body_lines:
+        stripped = line.strip()
+        if stripped.lower().startswith(prefix.lower()):
+            return stripped[len(prefix) :].strip()
+    return ""
+
+
+def _field_exists(body_lines: list[str], field_name: str) -> bool:
+    prefix = f"{field_name}:"
+    for line in body_lines:
+        stripped = line.strip()
+        if stripped.lower().startswith(prefix.lower()):
+            return True
     return False
 
 
@@ -446,14 +856,68 @@ def _parse_status_field(body_lines: list[str]) -> BacklogStatus:
     for line in body_lines:
         stripped = line.strip()
         if stripped.lower().startswith(prefix.lower()):
-            raw_value = stripped[len(prefix):].strip()
+            raw_value = stripped[len(prefix) :].strip()
             status = normalize_backlog_status(raw_value)
             if status is None:
+                allowed_statuses = backlog_status_choices()
                 raise BacklogValidationError(
-                    f"Unknown backlog status '{raw_value}'. Allowed statuses: {backlog_status_choices()}."
+                    f"Unknown backlog status '{raw_value}'. "
+                    f"Allowed statuses: {allowed_statuses}."
                 )
             return status
     return BacklogStatus.BACKLOG
+
+
+def _backlog_item_listing_key(item: BacklogItem) -> tuple[int, int, int, date, str]:
+    return (
+        _priority_rank(item.priority),
+        0 if not item.interrupt_before_implementation else 1,
+        _complexity_rank(item.complexity),
+        _created_date_sort_value(item.created_date),
+        item.item_id.upper(),
+    )
+
+
+def _priority_rank(priority: str) -> int:
+    return _rank_value(priority, {"high": 0, "medium": 1, "low": 2})
+
+
+def _complexity_rank(complexity: str) -> int:
+    return _rank_value(complexity, {"low": 0, "medium": 1, "high": 2})
+
+
+def _rank_value(value: str, order: dict[str, int]) -> int:
+    normalized = " ".join(value.split()).lower()
+    return order.get(normalized, len(order))
+
+
+def _created_date_sort_value(value: str) -> date:
+    normalized = " ".join(value.split())
+    if not normalized:
+        return date.max
+    for candidate in (normalized, normalized.split(" ", 1)[0]):
+        try:
+            return date.fromisoformat(candidate)
+        except ValueError:
+            continue
+    return date.max
+
+
+def _display_field(value: str) -> str:
+    normalized = " ".join(value.split())
+    return normalized or "Unknown"
+
+
+def _display_created_date(value: str) -> str:
+    normalized = " ".join(value.split())
+    if not normalized:
+        return "Unknown"
+    for candidate in (normalized, normalized.split(" ", 1)[0]):
+        try:
+            return date.fromisoformat(candidate).isoformat()
+        except ValueError:
+            continue
+    return normalized
 
 
 def _require_non_empty_items(items: list[str], label: str) -> None:
@@ -488,7 +952,8 @@ def _normalize_size(size: str) -> str | None:
     return normalized
 
 
-def _resolve_project_path(path: Path) -> Path:
+def _resolve_project_path(path: Path, project_root: Path | None = None) -> Path:
+    root = project_root or PROJECT_ROOT
     if path.is_absolute():
         return path
-    return PROJECT_ROOT / path
+    return root / path

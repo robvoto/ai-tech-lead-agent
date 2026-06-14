@@ -1,5 +1,5 @@
 {
-  "backlog_path": "docs/BACKLOG.md",
+  "backlog_path": "data/backlog/ai_tech_lead_backlog.xlsx",
   "max_runtime_minutes": 20,
   "coding_agent_command": "codex",
   "coding_agent_args": [
@@ -33,10 +33,6 @@
   "risk_notes": [
     "Approval is controlled by the selected backlog item until the planned LLM review node exists."
   ],
-  "prompts": {
-    "risk_review_reason_template": "AI risk review is off, so I need your approval before continuing.\nTask:\n{request}",
-    "execution_brief_template": "Request:\n{request}\n\nRelevant files:\n{relevant_files}\n\nConstraints:\n{constraint_list}\n\nAcceptance criteria:\n{acceptance_criteria}\n\nApproval reason:\n{approval_reason}\n\nRisk notes:\n{risk_notes}"
-  },
   "telegram_transport": "polling",
   "telegram_api_base_url": "https://api.telegram.org",
   "telegram_long_poll_timeout_seconds": 25,

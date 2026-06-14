@@ -2,22 +2,25 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import json
 import logging
+from dataclasses import dataclass
 from typing import Any
 
 from .app_settings import AppSettings, load_settings
 from .logging_setup import LOGGER_NAME
-from .prompt_loader import load_prompt
 from .orchestrator_llm import (
     OrchestratorLlmConfig,
     OrchestratorLlmError,
     call_orchestrator_llm,
 )
+from .prompt_loader import (
+    RISK_REVIEW_PROMPT_KEY,
+    RISK_REVIEW_REASON_PROMPT_KEY,
+    render_prompt,
+)
 
 logger = logging.getLogger(LOGGER_NAME)
-RISK_REVIEW_PROMPT = load_prompt("risk_review_prompt.md")
 
 
 @dataclass(frozen=True)
@@ -101,11 +104,11 @@ def _safe_default_decision(
     *,
     prefix: str | None = None,
 ) -> RiskReviewDecision:
-    reason = settings.prompts["risk_review_reason_template"].format(request=request)
+    reason = render_prompt(RISK_REVIEW_REASON_PROMPT_KEY, request=request)
     if prefix:
         reason = f"{prefix}\n\n{reason}"
     return RiskReviewDecision(needs_approval=True, approval_reason=reason)
 
 
 def _risk_review_prompt(request: str) -> str:
-    return RISK_REVIEW_PROMPT.replace("{request}", request)
+    return render_prompt(RISK_REVIEW_PROMPT_KEY, request=request)

@@ -20,6 +20,52 @@ Use before editing graph workflow behaviour.
 - Put external actions in separate nodes with clear retry and error behaviour.
 - Keep downstream handoff context bounded.
 
+## LangGraph interrupt pattern (Academy Lesson 4 — dynamic breakpoints)
+
+Human-in-the-loop nodes use `interrupt()` inside the node, NOT `interrupt_before` at compile time.
+
+```python
+# Node calls interrupt() with a structured value
+result = interrupt({"kind": "approval", "reason": reason, "formulated_task": task})
+approved = result.get("approved", False)
+return {"approved": approved, "approved_by": result.get("approved_by", "")}
+```
+
+```python
+# Operator resumes with Command(resume=value)
+app.invoke(Command(resume={"approved": True, "approved_by": sender}), config=thread_config)
+```
+
+Detect the interrupt from the state snapshot:
+```python
+interrupt_value = state_snapshot.tasks[0].interrupts[0].value  # dict with "kind"
+```
+
+## Node return pattern
+
+All nodes return `dict[str, Any]` (partial state), not the full `GraphState`. Only return keys that changed.
+
+```python
+def my_node(state: GraphState) -> dict[str, Any]:
+    ...
+    return {"key": value}
+```
+
+## Annotated reducer for append-only lists
+
+```python
+from typing import Annotated
+import operator
+
+class GraphState(TypedDict):
+    task_feedback: Annotated[list[str], operator.add]  # appends, never replaces
+```
+
+Return a list with the new item only — the reducer accumulates:
+```python
+return {"task_feedback": ["new feedback item"]}
+```
+
 ## Review checklist
 
 1. Inspect `docs/ARCHITECTURE.md` and the affected graph/node files before editing.

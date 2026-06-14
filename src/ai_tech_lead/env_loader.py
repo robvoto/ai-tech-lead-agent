@@ -7,7 +7,6 @@ from pathlib import Path
 
 from ai_tech_lead.config import PROJECT_ROOT
 
-
 ENV_PATH = PROJECT_ROOT / ".env"
 
 

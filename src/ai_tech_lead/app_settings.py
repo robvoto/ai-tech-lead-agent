@@ -2,28 +2,12 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import json
+from dataclasses import dataclass
 from pathlib import Path
-from string import Formatter
 from typing import Any
 
-from ai_tech_lead.config import SETTINGS_PATH
-
-
-REQUIRED_PROMPTS = {
-    "risk_review_reason_template": {
-        "request",
-    },
-    "execution_brief_template": {
-        "acceptance_criteria",
-        "approval_reason",
-        "constraint_list",
-        "relevant_files",
-        "request",
-        "risk_notes",
-    },
-}
+from ai_tech_lead.config import PROJECT_ROOT, SETTINGS_PATH
 
 ALLOWED_TELEGRAM_TRANSPORTS = {"polling", "webhook"}
 
@@ -32,6 +16,7 @@ ALLOWED_TELEGRAM_TRANSPORTS = {"polling", "webhook"}
 class AppSettings:
     """Small local settings that are real inputs to the current prototype."""
 
+    project_root: str
     backlog_path: str
     max_runtime_minutes: int
     coding_agent_command: str
@@ -43,7 +28,6 @@ class AppSettings:
     brief_constraints: list[str]
     acceptance_criteria: list[str]
     risk_notes: list[str]
-    prompts: dict[str, str]
     telegram_transport: str
     telegram_api_base_url: str
     telegram_long_poll_timeout_seconds: int
@@ -91,7 +75,15 @@ def save_settings(settings: AppSettings, settings_path: Path = SETTINGS_PATH) ->
 def parse_settings(raw_settings: dict[str, Any]) -> AppSettings:
     """Convert raw JSON data into validated settings."""
 
+    if "prompts" in raw_settings:
+        raise ValueError("Setting 'prompts' was removed; use data/prompts.json instead.")
+
     settings = AppSettings(
+        project_root=_optional_string(
+            raw_settings,
+            "project_root",
+            default=str(PROJECT_ROOT),
+        ),
         backlog_path=_required_string(raw_settings, "backlog_path"),
         max_runtime_minutes=_required_positive_int(raw_settings, "max_runtime_minutes"),
         coding_agent_command=_required_string(raw_settings, "coding_agent_command"),
@@ -111,7 +103,6 @@ def parse_settings(raw_settings: dict[str, Any]) -> AppSettings:
         brief_constraints=_required_string_list(raw_settings, "brief_constraints"),
         acceptance_criteria=_required_string_list(raw_settings, "acceptance_criteria"),
         risk_notes=_required_string_list(raw_settings, "risk_notes"),
-        prompts=_required_prompt_map(raw_settings),
         telegram_transport=_required_telegram_transport(raw_settings),
         telegram_api_base_url=_optional_url(
             raw_settings,
@@ -189,7 +180,6 @@ def parse_settings(raw_settings: dict[str, Any]) -> AppSettings:
             default=10,
         ),
     )
-    _validate_prompt_placeholders(settings.prompts)
     _validate_telegram_settings(settings)
     return settings
 
@@ -198,6 +188,7 @@ def settings_to_dict(settings: AppSettings) -> dict[str, Any]:
     """Convert validated settings into JSON-serializable data."""
 
     return {
+        "project_root": settings.project_root,
         "backlog_path": settings.backlog_path,
         "max_runtime_minutes": settings.max_runtime_minutes,
         "coding_agent_command": settings.coding_agent_command,
@@ -209,7 +200,6 @@ def settings_to_dict(settings: AppSettings) -> dict[str, Any]:
         "brief_constraints": settings.brief_constraints,
         "acceptance_criteria": settings.acceptance_criteria,
         "risk_notes": settings.risk_notes,
-        "prompts": settings.prompts,
         "telegram_transport": settings.telegram_transport,
         "telegram_api_base_url": settings.telegram_api_base_url,
         "telegram_long_poll_timeout_seconds": settings.telegram_long_poll_timeout_seconds,
@@ -330,9 +320,7 @@ def _required_telegram_transport(raw_settings: dict[str, Any]) -> str:
     normalized_value = value.strip().lower()
     if normalized_value not in ALLOWED_TELEGRAM_TRANSPORTS:
         allowed = ", ".join(sorted(ALLOWED_TELEGRAM_TRANSPORTS))
-        raise ValueError(
-            f"Setting 'telegram_transport' must be one of: {allowed}."
-        )
+        raise ValueError(f"Setting 'telegram_transport' must be one of: {allowed}.")
     return normalized_value
 
 
@@ -344,39 +332,3 @@ def _validate_telegram_settings(settings: AppSettings) -> None:
             raise ValueError(
                 "Setting 'telegram_webhook_secret_token' is required for webhook mode."
             )
-
-
-def _required_prompt_map(raw_settings: dict[str, Any]) -> dict[str, str]:
-    value = raw_settings.get("prompts")
-    if not isinstance(value, dict):
-        raise ValueError("Setting 'prompts' must be an object.")
-
-    prompts: dict[str, str] = {}
-    for prompt_name in REQUIRED_PROMPTS:
-        prompt = value.get(prompt_name)
-        if not isinstance(prompt, str) or not prompt.strip():
-            raise ValueError(f"Prompt '{prompt_name}' must be a non-empty string.")
-        prompts[prompt_name] = prompt.strip()
-
-    return prompts
-
-
-def _validate_prompt_placeholders(prompts: dict[str, str]) -> None:
-    for prompt_name, required_placeholders in REQUIRED_PROMPTS.items():
-        found_placeholders = {
-            field_name
-            for _, field_name, _, _ in Formatter().parse(prompts[prompt_name])
-            if field_name
-        }
-        missing_placeholders = required_placeholders - found_placeholders
-        if missing_placeholders:
-            missing = ", ".join(sorted(missing_placeholders))
-            raise ValueError(f"Prompt '{prompt_name}' is missing placeholders: {missing}")
-
-        unexpected_placeholders = found_placeholders - required_placeholders
-        if unexpected_placeholders:
-            unexpected = ", ".join(sorted(unexpected_placeholders))
-            raise ValueError(
-                f"Prompt '{prompt_name}' has unknown placeholders: {unexpected}"
-            )
-

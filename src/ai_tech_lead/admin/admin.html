@@ -21,9 +21,14 @@
     <fieldset>
       <legend>Runtime</legend>
       <label>
+        Project root
+        <span class="field-help">Defaults to this ai-tech-lead project root for now. Change it later when you want the coding agent to work in another repo.</span>
+        <input name="project_root" placeholder="/mnt/e/Programming/ai-tech-lead">
+      </label>
+      <label>
         Backlog path
-        <span class="field-help">Relative path to the backlog file. Example: <code>docs/BACKLOG.md</code>.</span>
-        <input name="backlog_path" placeholder="docs/BACKLOG.md">
+        <span class="field-help">Relative path to the backlog workbook. Example: <code>data/backlog/ai_tech_lead_backlog.xlsx</code>.</span>
+        <input name="backlog_path" placeholder="data/backlog/ai_tech_lead_backlog.xlsx">
       </label>
       <label>
         Max runtime minutes
@@ -111,7 +116,7 @@
       <label>
         Max /fix characters
         <span class="field-help">Maximum length for a <code>/fix</code> request. Example: <code>3000</code>.</span>
-        <input name="telegram_max_fix_request_chars" type="number" min="1" placeholder="3000">
+        <input name="telegram_max_code_request_chars" type="number" min="1" placeholder="3000">
       </label>
       <label>
         Max message characters
@@ -182,23 +187,21 @@
       </div>
     </fieldset>
     <fieldset>
-      <legend>Prompts</legend>
+      <legend>Prompt Registry</legend>
+      <p class="field-help">
+        The full prompt registry lives in <code>data/prompts.json</code>. Each entry shows the prompt key, class, purpose, usage, and editable template text in one place.
+      </p>
       <label>
-        Risk review reason template
-        <span class="field-help">Template used when the workflow pauses for human approval. Required placeholder: request.</span>
-        <textarea name="risk_review_reason_template" class="prompt"></textarea>
-      </label>
-      <label>
-        Execution brief template
-        <span class="field-help">Template used to generate the human brief. Required placeholders: request, relevant_files, constraint_list, acceptance_criteria, approval_reason, risk_notes.</span>
-        <textarea name="execution_brief_template" class="prompt"></textarea>
+        Prompt registry JSON
+        <span class="field-help">Edit the registry directly if you want to change prompt text or metadata. Keep the file as a JSON object with a <code>prompts</code> array.</span>
+        <textarea name="prompts_json" class="prompt-json" spellcheck="false"></textarea>
       </label>
     </fieldset>
   </form>
 </main>
-<div class="save-bar" aria-label="Save local settings">
+<div class="save-bar" aria-label="Save local settings and prompts">
   <p id="status" class="status" role="status" aria-live="polite"></p>
-  <button id="save-settings" type="submit" form="settings-form">Save local settings</button>
+  <button id="save-settings" type="submit" form="settings-form">Save settings and prompts</button>
 </div>
 <script type="module" src="/admin.js"></script>
 </body>

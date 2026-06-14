@@ -1,19 +1,19 @@
 from __future__ import annotations
 
+import os
+import subprocess
 from dataclasses import replace
 from io import StringIO
 from pathlib import Path
-import subprocess
 
 import pytest
+from helpers import valid_settings_dict
 
 from ai_tech_lead.app_settings import parse_settings
 from ai_tech_lead.coding_agent_runner import run_coding_agent
 
-from helpers import valid_settings_dict
 
-
-def _install_fake_popen(
+def _install_fake_pipe_popen(
     monkeypatch: pytest.MonkeyPatch,
     *,
     returncode: int = 0,
@@ -21,6 +21,7 @@ def _install_fake_popen(
     stderr: str = "",
     poll_calls_before_done: int = 0,
 ) -> list[dict[str, object]]:
+    """Fake for pipe-mode runs (use_pty=False, the default)."""
     calls: list[dict[str, object]] = []
 
     class FakePopen:
@@ -30,7 +31,6 @@ def _install_fake_popen(
             self.returncode: int | None = None
             self._poll_calls = 0
             self._returncode = returncode
-            # Expose stdout/stderr as line-iterable streams
             self.stdout = StringIO((stdout + "\n") if stdout else "")
             self.stderr = StringIO((stderr + "\n") if stderr else "")
 
@@ -41,12 +41,76 @@ def _install_fake_popen(
             self.returncode = self._returncode
             return self._returncode
 
-        def wait(self) -> int:
+        def wait(self, timeout: float | None = None) -> int:
             self.returncode = self._returncode
             return self._returncode
 
         def kill(self) -> None:
             self.returncode = -9
+
+        def terminate(self) -> None:
+            self.returncode = self._returncode
+
+    monkeypatch.setattr(subprocess, "Popen", FakePopen)
+    return calls
+
+
+def _install_fake_pty_popen(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    returncode: int = 0,
+    output: str = "done",
+    poll_calls_before_done: int = 0,
+) -> list[dict[str, object]]:
+    """Fake for PTY-mode runs (use_pty=True)."""
+    calls: list[dict[str, object]] = []
+
+    r_fd, w_fd = os.pipe()
+    if output:
+        os.write(w_fd, (output + "\n").encode())
+
+    monkeypatch.setattr("pty.openpty", lambda: (r_fd, -1))
+
+    original_os_close = os.close
+
+    def _safe_close(fd: int) -> None:
+        if fd == -1:
+            return
+        original_os_close(fd)
+
+    monkeypatch.setattr(os, "close", _safe_close)
+
+    class FakePopen:
+        def __init__(self, args: object, **kwargs: object) -> None:
+            calls.append({"args": args, "kwargs": kwargs})
+            self.args = args
+            self.returncode: int | None = None
+            self._poll_calls = 0
+            self._returncode = returncode
+            self._w_fd: int | None = w_fd
+
+        def poll(self) -> int | None:
+            if self._poll_calls < poll_calls_before_done:
+                self._poll_calls += 1
+                return None
+            if self._w_fd is not None:
+                try:
+                    original_os_close(self._w_fd)
+                except OSError:
+                    pass
+                self._w_fd = None
+            self.returncode = self._returncode
+            return self._returncode
+
+        def wait(self, timeout: float | None = None) -> int:
+            self.returncode = self._returncode
+            return self._returncode
+
+        def kill(self) -> None:
+            self.returncode = -9
+
+        def terminate(self) -> None:
+            self.returncode = self._returncode
 
     monkeypatch.setattr(subprocess, "Popen", FakePopen)
     return calls
@@ -75,17 +139,19 @@ def test_run_coding_agent_calls_configured_command(
 ) -> None:
     settings = replace(parse_settings(valid_settings_dict()), execute_coding_agent=True)
 
-    def fake_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
-        return subprocess.CompletedProcess(args=args[0], returncode=0, stdout="done", stderr="")
-
-    monkeypatch.setattr(subprocess, "run", fake_run)
-    calls = _install_fake_popen(monkeypatch)
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *a, **kw: subprocess.CompletedProcess(args=a[0], returncode=0, stdout="", stderr=""),
+    )
+    calls = _install_fake_pipe_popen(monkeypatch, stdout="done")
 
     result = run_coding_agent("Do the task", tmp_path, settings)
 
-    # calls[0] = coding agent process; git status calls are handled by subprocess.run.
     agent_call = calls[0]
+    # Pipe mode prepends stdbuf -oL for line-buffered output.
     assert agent_call["args"] == [
+        "stdbuf", "-oL",
         "codex",
         "--ask-for-approval",
         "never",
@@ -114,11 +180,12 @@ def test_run_coding_agent_reports_nonzero_exit(
 ) -> None:
     settings = replace(parse_settings(valid_settings_dict()), execute_coding_agent=True)
 
-    def fake_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
-        return subprocess.CompletedProcess(args=args[0], returncode=2, stdout="", stderr="bad args")
-
-    monkeypatch.setattr(subprocess, "run", fake_run)
-    _install_fake_popen(monkeypatch, returncode=2, stdout="", stderr="bad args")
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *a, **kw: subprocess.CompletedProcess(args=a[0], returncode=2, stdout="", stderr=""),
+    )
+    _install_fake_pipe_popen(monkeypatch, returncode=2, stdout="", stderr="bad args")
 
     result = run_coding_agent("Do the task", tmp_path, settings)
 
@@ -133,10 +200,13 @@ def test_run_coding_agent_success_uses_friendly_wording(
 ) -> None:
     settings = replace(parse_settings(valid_settings_dict()), execute_coding_agent=True)
     monkeypatch.setattr(
-        subprocess, "run",
-        lambda *a, **kw: subprocess.CompletedProcess(args=a[0], returncode=0, stdout="ok", stderr=""),
+        subprocess,
+        "run",
+        lambda *a, **kw: subprocess.CompletedProcess(
+            args=a[0], returncode=0, stdout="ok", stderr=""
+        ),
     )
-    _install_fake_popen(monkeypatch, returncode=0, stdout="ok", stderr="")
+    _install_fake_pipe_popen(monkeypatch, returncode=0, stdout="ok")
 
     result = run_coding_agent("Do the task", tmp_path, settings)
 
@@ -154,10 +224,13 @@ def test_run_coding_agent_failure_uses_friendly_wording(
 ) -> None:
     settings = replace(parse_settings(valid_settings_dict()), execute_coding_agent=True)
     monkeypatch.setattr(
-        subprocess, "run",
-        lambda *a, **kw: subprocess.CompletedProcess(args=a[0], returncode=1, stdout="", stderr="err"),
+        subprocess,
+        "run",
+        lambda *a, **kw: subprocess.CompletedProcess(
+            args=a[0], returncode=1, stdout="", stderr="err"
+        ),
     )
-    _install_fake_popen(monkeypatch, returncode=1, stdout="", stderr="err")
+    _install_fake_pipe_popen(monkeypatch, returncode=1, stdout="", stderr="err")
 
     result = run_coding_agent("Do the task", tmp_path, settings)
 
@@ -172,10 +245,11 @@ def test_run_coding_agent_records_duration(
 ) -> None:
     settings = replace(parse_settings(valid_settings_dict()), execute_coding_agent=True)
     monkeypatch.setattr(
-        subprocess, "run",
+        subprocess,
+        "run",
         lambda *a, **kw: subprocess.CompletedProcess(args=a[0], returncode=0, stdout="", stderr=""),
     )
-    _install_fake_popen(monkeypatch, returncode=0, stdout="", stderr="")
+    _install_fake_pipe_popen(monkeypatch, returncode=0, stdout="")
 
     result = run_coding_agent("Do the task", tmp_path, settings)
 
@@ -197,13 +271,12 @@ def test_run_coding_agent_records_changed_files_delta(
         cmd = args[0]
         if isinstance(cmd, list) and cmd[0] == "git":
             git_call_count += 1
-            # First git call (before): no changes; second (after): one new file
             stdout = "" if git_call_count == 1 else " M src/new_file.py\n"
             return subprocess.CompletedProcess(args=cmd, returncode=0, stdout=stdout, stderr="")
         return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="done", stderr="")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
-    _install_fake_popen(monkeypatch, returncode=0, stdout="done", stderr="")
+    _install_fake_pipe_popen(monkeypatch, returncode=0, stdout="done")
 
     result = run_coding_agent("Do the task", tmp_path, settings)
 
@@ -216,15 +289,15 @@ def test_run_coding_agent_emits_progress_heartbeats(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    # interval=1s in test settings; poll_calls_before_done=2 means ~2s of real elapsed time,
-    # ensuring the 1s interval fires at least once before the process finishes.
     settings = replace(parse_settings(valid_settings_dict()), execute_coding_agent=True)
     monkeypatch.setattr(
         subprocess,
         "run",
         lambda *a, **kw: subprocess.CompletedProcess(args=a[0], returncode=0, stdout="", stderr=""),
     )
-    _install_fake_popen(monkeypatch, returncode=0, stdout="agent output line", stderr="", poll_calls_before_done=2)
+    _install_fake_pty_popen(
+        monkeypatch, returncode=0, output="agent output line", poll_calls_before_done=2
+    )
 
     progress_messages: list[str] = []
 
@@ -233,6 +306,7 @@ def test_run_coding_agent_emits_progress_heartbeats(
         tmp_path,
         settings,
         progress_callback=progress_messages.append,
+        use_pty=True,
     )
 
     assert len(progress_messages) >= 1

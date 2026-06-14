@@ -19,7 +19,7 @@ Use a simple two-zone layout:
 
 The `Execute coding agent` toggle is dangerous because it allows the configured coding agent to modify files. It must be visually distinct and clearly labelled as a real execution switch.
 
-The `Enable Telegram operator` toggle should explain that changes apply on restart until hot reload exists.
+The `Enable Telegram operator` toggle should explain that changes apply on restart or when the local launcher is started with `--reload`.
 
 ## Field Behaviour
 

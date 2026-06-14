@@ -1,10 +1,9 @@
 from __future__ import annotations
 
 import pytest
+from helpers import valid_settings_dict
 
 from ai_tech_lead.app_settings import parse_settings, settings_to_dict
-
-from helpers import valid_settings_dict
 
 
 def test_parse_settings_round_trips_valid_config() -> None:
@@ -12,7 +11,8 @@ def test_parse_settings_round_trips_valid_config() -> None:
 
     settings = parse_settings(raw_settings)
 
-    assert settings.backlog_path == "docs/BACKLOG.md"
+    assert settings.project_root == "/mnt/e/Programming/ai-tech-lead"
+    assert settings.backlog_path == "data/backlog/ai_tech_lead_backlog.xlsx"
     assert settings.coding_agent_command == "codex"
     assert settings.coding_agent_args == ["--ask-for-approval", "never", "exec"]
     assert settings.execute_coding_agent is False
@@ -78,9 +78,10 @@ def test_parse_settings_rejects_invalid_coding_agent_fields() -> None:
         parse_settings(raw_settings)
 
 
-def test_parse_settings_rejects_prompt_placeholder_drift() -> None:
+def test_parse_settings_defaults_project_root_when_missing() -> None:
     raw_settings = valid_settings_dict()
-    raw_settings["prompts"]["execution_brief_template"] = "Request:\n{request}"
+    raw_settings.pop("project_root")
 
-    with pytest.raises(ValueError, match="missing placeholders"):
-        parse_settings(raw_settings)
+    settings = parse_settings(raw_settings)
+
+    assert settings.project_root.endswith("ai-tech-lead")

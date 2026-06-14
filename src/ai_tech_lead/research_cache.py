@@ -7,14 +7,13 @@ system.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
-import re
 from typing import Any
 
 from .config import PROJECT_ROOT
-
 
 RESEARCH_INDEX_PATH = PROJECT_ROOT / "docs" / "research" / "INDEX.md"
 RESEARCH_NOTE_STALE_AFTER_DAYS = 90
@@ -70,7 +69,9 @@ def load_research_cache_entries(
         entries.append(
             ResearchCacheEntry(
                 path=note_path,
-                title=str(note_data.get("topic") or note_data.get("title") or match.group("filename")),
+                title=str(
+                    note_data.get("topic") or note_data.get("title") or match.group("filename")
+                ),
                 summary=match.group("summary").strip(),
                 body=_extract_summary_body(note_path.read_text(encoding="utf-8")),
                 sources=_parse_sources(note_data.get("sources")),
@@ -197,7 +198,9 @@ def _extract_summary_body(text: str) -> str:
 
 def _freshness_risk(refreshed_on: date | None, today: date) -> str:
     if refreshed_on is None:
-        return "Medium: the note has no refresh date, so re-check if APIs or best practices changed."
+        return (
+            "Medium: the note has no refresh date, so re-check if APIs or best practices changed."
+        )
 
     age_days = (today - refreshed_on).days
     if age_days < 0:

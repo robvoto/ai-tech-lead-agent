@@ -36,7 +36,9 @@ def test_export_graph_diagrams_writes_both_graphs(monkeypatch, tmp_path: Path) -
     monkeypatch.setattr(graph_diagrams, "TELEGRAM_AGENT_GRAPH_DIAGRAM_PATH", telegram_path)
     monkeypatch.setattr(graph_diagrams, "GRAPH_DIAGRAM_SIGNATURES_PATH", signatures_path)
     monkeypatch.setattr(graph_diagrams, "ensure_project_dirs", lambda: None)
-    monkeypatch.setattr(graph_diagrams, "build_graph", lambda **_kw: _FakeApp("coding-mermaid", b"coding-png"))
+    monkeypatch.setattr(
+        graph_diagrams, "build_graph", lambda **_kw: _FakeApp("coding-mermaid", b"coding-png")
+    )
     monkeypatch.setattr(
         graph_diagrams,
         "build_telegram_agent_graph",
@@ -87,7 +89,9 @@ def test_export_graph_diagrams_skips_unchanged_graphs(monkeypatch, tmp_path: Pat
     monkeypatch.setattr(graph_diagrams, "TELEGRAM_AGENT_GRAPH_DIAGRAM_PATH", telegram_path)
     monkeypatch.setattr(graph_diagrams, "GRAPH_DIAGRAM_SIGNATURES_PATH", signatures_path)
     monkeypatch.setattr(graph_diagrams, "ensure_project_dirs", lambda: None)
-    monkeypatch.setattr(graph_diagrams, "build_graph", lambda **_kw: build_calls.append("coding") or coding_app)
+    monkeypatch.setattr(
+        graph_diagrams, "build_graph", lambda **_kw: build_calls.append("coding") or coding_app
+    )
     monkeypatch.setattr(
         graph_diagrams,
         "build_telegram_agent_graph",

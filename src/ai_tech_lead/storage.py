@@ -3,7 +3,6 @@ from pathlib import Path
 
 from ai_tech_lead.config import DB_PATH, ensure_project_dirs
 
-
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS app_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

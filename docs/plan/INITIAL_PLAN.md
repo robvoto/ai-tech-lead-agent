@@ -139,7 +139,8 @@ src/ai_tech_lead/admin_server.py
 
 The JavaScript is intentionally separate from the HTML and uses ES modules.
 
-The admin screen edits validated local settings through the API. The current coding-agent settings file is:
+The admin screen edits validated local settings and the prompt registry through
+the API. The current coding-agent settings file is:
 
 ```text
 data/coding_agent_settings.json
@@ -147,12 +148,12 @@ data/coding_agent_settings.json
 
 Python validates settings before saving them. The JSON contains adjustable
 prototype settings for values the app currently consumes, including runtime,
-Telegram, admin, and prompt-template settings.
+Telegram, and admin settings. Prompt text now lives in `data/prompts.json` so
+the registry stays visible in one place without being mixed into settings.
 
-Agent policy, directory allowlists, model routing, tool permissions, and prompt
-templates are now exposed in admin as validated local settings. Keep new fields
-explicit and small, and do not hide product behaviour behind undocumented local
-state.
+Agent policy, directory allowlists, model routing, and tool permissions are now
+exposed in admin as validated local settings. Keep new fields explicit and
+small, and do not hide product behaviour behind undocumented local state.
 
 ## VS Code / WSL rule
 
@@ -300,18 +301,28 @@ Current behaviour:
 
 ## Backlog rule
 
-Current local backlog:
+Current working backlog:
+
+```text
+data/backlog/ai_tech_lead_backlog.xlsx
+```
+
+Legacy/source backup:
 
 ```text
 docs/BACKLOG.md
 ```
+
+The Excel workbook was created from the Markdown backlog because the Markdown structure had drifted: some items had rich metadata, while others were missing fields such as Status, Creator, Epic, Type, Priority, Size, Problem, Outcome, Acceptance Criteria, or Constraints.
+
+Treat the Excel workbook as the working backlog and `docs/BACKLOG.md` as historical/source backup. The code reads and writes the workbook through the backlog repository boundary, so spreadsheet edits are available at runtime while remaining controlled.
 
 Backlog selection must not be hidden.
 
 Normal prototype selection should use explicit ID:
 
 ```python
-load_backlog_item_by_id("JH-001")
+load_backlog_item_by_id("ATL-001")
 ```
 
 Demo-only selection is allowed only if the function name says so, for example:
@@ -321,6 +332,8 @@ load_first_backlog_item_for_demo()
 ```
 
 Do not silently select the first task in production-like flow.
+
+Worker coding agents must not freely edit `data/backlog/ai_tech_lead_backlog.xlsx`. Spreadsheet edits must be explicit, field-bounded, and human-approved.
 
 ## Initial prototype scope
 

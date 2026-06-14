@@ -145,8 +145,8 @@ textarea {
   resize: vertical;
 }
 
-textarea.prompt {
-  min-height: 220px;
+textarea.prompt-json {
+  min-height: 560px;
   font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
   font-size: 0.92rem;
 }

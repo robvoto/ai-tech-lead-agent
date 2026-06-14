@@ -2,22 +2,23 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import json
 import logging
+from dataclasses import dataclass
 from typing import Any
 
 from .app_settings import AppSettings
 from .logging_setup import LOGGER_NAME
-from .prompt_loader import load_prompt
 from .orchestrator_llm import (
     OrchestratorLlmConfig,
     OrchestratorLlmError,
     call_orchestrator_llm,
 )
+from .prompt_loader import PLAN_REVIEW_PROMPT_KEY, render_prompt
 
 logger = logging.getLogger(LOGGER_NAME)
-PLAN_REVIEW_PROMPT = load_prompt("plan_review_prompt.md")
+MAX_PLAN_REVIEW_WORDS = 120
+MAX_PLAN_REVIEW_LINES = 5
 
 
 class PlanReviewUnavailable(RuntimeError):
@@ -50,13 +51,25 @@ def review_plan(
             correction="Please output a brief implementation plan as described.",
         )
 
+    if _plan_is_too_verbose(plan_text):
+        logger.warning(
+            "Plan review: plan text is too verbose, rejecting before LLM review."
+        )
+        return PlanReviewDecision(
+            approved=False,
+            reason="The coding agent's plan is too long.",
+            correction="Please rewrite it as 3 to 5 short bullets and one Done when line.",
+        )
+
     try:
         return _llm_review_plan(formulated_task, plan_text, settings)
     except OrchestratorLlmError as error:
         logger.warning("Plan review LLM call failed: %s — routing to human approval.", error)
         raise PlanReviewUnavailable(f"Plan review LLM unavailable: {error}") from error
     except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
-        logger.warning("Plan review returned invalid response: %s — routing to human approval.", error)
+        logger.warning(
+            "Plan review returned invalid response: %s — routing to human approval.", error
+        )
         raise PlanReviewUnavailable(f"Plan review returned invalid response: {error}") from error
 
 
@@ -65,10 +78,10 @@ def _llm_review_plan(
     plan_text: str,
     settings: AppSettings,
 ) -> PlanReviewDecision:
-    prompt = (
-        PLAN_REVIEW_PROMPT
-        .replace("{formulated_task}", formulated_task)
-        .replace("{plan_text}", plan_text)
+    prompt = render_prompt(
+        PLAN_REVIEW_PROMPT_KEY,
+        formulated_task=formulated_task,
+        plan_text=plan_text,
     )
     result = call_orchestrator_llm(
         prompt=prompt,
@@ -100,3 +113,8 @@ def _parse_review_payload(payload: dict[str, Any]) -> PlanReviewDecision:
         raise ValueError("reason cannot be empty")
 
     return PlanReviewDecision(approved=approved, reason=reason, correction=correction)
+
+
+def _plan_is_too_verbose(plan_text: str) -> bool:
+    lines = [line.strip() for line in plan_text.splitlines() if line.strip()]
+    return len(lines) > MAX_PLAN_REVIEW_LINES or len(plan_text.split()) > MAX_PLAN_REVIEW_WORDS

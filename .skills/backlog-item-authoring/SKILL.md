@@ -15,6 +15,8 @@ Use when creating or changing backlog items.
 - Keep backlog items executable by explicit ID.
 - Do not turn backlog items into universal operating rules.
 - Put durable project rules in `AGENTS.md`; put repeatable procedures in `.skills`; put rationale in `docs`.
+- For refined backlog items created through `/propose`, the AI must provide structured fields for title, item type, epic, priority, size, approval status, approval reason, problem, desired outcome, scope, out of scope, acceptance criteria, duplicate/stale/already-done checks, research use, implementation pattern, and risk flags.
+- Workbook-managed columns such as `Status`, `Created Date`, `Creator`, `Has Goal`, `Has Problem`, `Has Outcome`, `Has Acceptance Criteria`, `Has Constraints`, `Missing Fields`, `Missing Count`, `Completeness`, `Cleanup Needed`, and `Notes / Cleanup Action` are filled by code, not by the AI.
 
 ## Draft format
 
@@ -33,6 +35,8 @@ Constraints:
 - Constraint 1.
 - Constraint 2.
 ```
+
+For refined backlog items, keep the AI output structured and specific enough for the workbook import path to validate and populate the row safely. The orchestrator code adds the workbook-only columns after validation.
 
 ## Validation
 

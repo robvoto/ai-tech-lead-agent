@@ -1,19 +1,17 @@
 from __future__ import annotations
 
+from helpers import valid_settings_dict
+
 from ai_tech_lead.app_settings import parse_settings
 from ai_tech_lead.backlog_draft_builder import build_backlog_refinement_from_text
 from ai_tech_lead.backlog_repository import MarkdownBacklogRepository
 from ai_tech_lead.research_cache import ResearchCacheEntry
 
-from helpers import valid_settings_dict
-
 
 def test_build_backlog_refinement_from_text_uses_cache_and_ai(monkeypatch, tmp_path) -> None:
     backlog_path = tmp_path / "BACKLOG.md"
     backlog_path.write_text(
-        "# Backlog\n\n"
-        "## ATL-001 - Existing\n\n"
-        "Goal:\nExisting\n",
+        "# Backlog\n\n## ATL-001 - Existing\n\nGoal:\nExisting\n",
         encoding="utf-8",
     )
     repository = MarkdownBacklogRepository(backlog_path)
@@ -56,10 +54,13 @@ def test_build_backlog_refinement_from_text_uses_cache_and_ai(monkeypatch, tmp_p
             '"stale_check_result": "No stale item found.", '
             '"already_done_check_result": "Not already done.", '
             '"research_required": true, '
-            '"research_cache_used": ["docs/research/backlog-refinement-implementation-patterns.md"], '
+            '"research_cache_used": ['
+            '"docs/research/backlog-refinement-implementation-patterns.md"], '
             '"external_research_needed": false, '
-            '"recommended_implementation_pattern": "Use a schema-validated backlog refinement flow.", '
-            '"patterns_explicitly_rejected": ["Freeform prose draft", "Heuristic duplicate matching"], '
+            '"recommended_implementation_pattern": '
+            '"Use a schema-validated backlog refinement flow.", '
+            '"patterns_explicitly_rejected": '
+            '["Freeform prose draft", "Heuristic duplicate matching"], '
             '"freshness_risk": "Low.", '
             '"implementation_guidance": "Check the cache first and keep the item structured.", '
             '"approval_risk_flags": ["Touches local settings and UI"]'
@@ -80,12 +81,13 @@ def test_build_backlog_refinement_from_text_uses_cache_and_ai(monkeypatch, tmp_p
 
     assert cache_calls == [True]
     assert prompts and "Cached research notes:" in prompts[0]
-    assert "\"priority\": string" in prompts[0]
+    assert '"priority": string' in prompts[0]
     assert "High, Medium, Low" in prompts[0]
-    assert "\"item_type\": string" in prompts[0]
+    assert '"item_type": string' in prompts[0]
     assert "Story, Task, Chore, Bug" in prompts[0]
-    assert "\"size\": string" in prompts[0]
+    assert '"size": string' in prompts[0]
     assert "XS, S, M, L, XL" in prompts[0]
+    assert "Workbook-managed columns" in prompts[0]
     assert "Existing" in prompts[0]
     assert result.draft.item_id == "ATL-002"
     assert result.draft.title == "Improve admin UI"

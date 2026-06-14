@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from ai_tech_lead.backlog_loader import (
     backlog_item_to_graph_state,
     load_backlog_item_by_id,
@@ -61,6 +63,16 @@ Approval Reason: Safe local work.
     item = load_backlog_item_by_id("jh-001", backlog_path)
 
     assert item.title == "Local placeholder"
+
+
+def test_load_backlog_items_relative_path_requires_settings(monkeypatch) -> None:
+    def fake_load_settings():
+        raise FileNotFoundError("Settings file not found")
+
+    monkeypatch.setattr("ai_tech_lead.backlog_loader.load_settings", fake_load_settings)
+
+    with pytest.raises(FileNotFoundError, match="Settings file not found"):
+        load_backlog_items(Path("BACKLOG.md"))
 
 
 def test_backlog_item_to_graph_state_sets_required_initial_fields(tmp_path: Path) -> None:

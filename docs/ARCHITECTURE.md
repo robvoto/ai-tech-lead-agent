@@ -83,9 +83,10 @@ Supporting modules such as `src/ai_tech_lead/backlog_graph_runner.py` call the c
   Current adapters: CLI backlog task selection and Telegram long polling.
   Telegram is an operator surface only; it must call the bounded workflow and must not become a second agent brain.
   Future adapters may include web or other chat surfaces.
-- Backlog storage is accessed through a repository boundary. The current implementation is Markdown-backed, with explicit list, get, next ID, add, and validation operations. A future Google Sheets implementation should preserve this boundary instead of changing Telegram or graph code.
+- Backlog storage must stay behind a repository boundary. The current working backlog file is `data/backlog/ai_tech_lead_backlog.xlsx`; `docs/BACKLOG.md` is retained as a legacy Markdown source/backup. The repository now reads and writes the workbook directly, and a future Google Sheets implementation should preserve this boundary instead of changing Telegram or graph code.
 - Backlog loading parses local task data and converts one selected item into
   graph state. It must not silently choose work.
+- Worker coding agents must not freely edit the Excel backlog. Any backlog edit must be explicitly requested, field-bounded, and owned by the human/orchestrator until a controlled backlog repository handles spreadsheet writes safely.
 - The coding workflow graph owns orchestration state, approval routing, brief
   creation, agent-instruction creation, orchestrator-input request state, and the
   coding-agent execution node.
@@ -97,9 +98,11 @@ Supporting modules such as `src/ai_tech_lead/backlog_graph_runner.py` call the c
   backend-neutral. Future backends may include Claude Code, OpenAI tools, local
   agents, or other compatible execution backends.
 - Settings own configurable values, limits, paths, model names, and prices.
-  Human-readable prompt and rule text lives in `docs/prompts/` and is loaded by
-  graph nodes or instruction builders when they need it. Admin viewing/editing
-  can be added later without changing that ownership boundary.
+  Human-readable prompt and rule text lives in `data/prompts.json`. Prompt keys
+  are centralized in `src/ai_tech_lead/prompt_loader.py`, and graph nodes or
+  instruction builders load the registry entries on demand when they need them.
+  The local admin UI exposes the same registry so prompts can be inspected and
+  edited in one obvious place.
 - The coding-agent runner owns subprocess execution. It receives a complete
   instruction, project root, and validated settings, then captures stdout and
   stderr without using `shell=True`.
