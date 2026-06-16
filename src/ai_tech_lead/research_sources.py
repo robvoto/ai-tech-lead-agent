@@ -22,7 +22,11 @@ from urllib.request import Request, urlopen
 
 from .app_settings import AppSettings
 from .logging_setup import LOGGER_NAME
-from .research_cache import ResearchCacheEntry, load_research_cache_entries, write_research_cache_note
+from .research_cache import (
+    ResearchCacheEntry,
+    load_research_cache_entries,
+    write_research_cache_note,
+)
 
 logger = logging.getLogger(LOGGER_NAME)
 
@@ -98,7 +102,7 @@ def collect_local_research_sources(
 
     candidates.sort(key=lambda item: (-item[0], item[1].title.lower(), item[1].location))
     selected = [source for _, source in candidates[: settings.research_max_local_sources]]
-    logger.info("[LEARN] Local research sources selected: %d", len(selected))
+    _log_selected_sources("Local research selection", selected)
     if selected:
         logger.info(
             "[LEARN] Local research evidence preview:\n%s",
@@ -142,7 +146,7 @@ def collect_online_research_sources(
     if not selected:
         selected = [source for _, source in sources]
 
-    logger.info("[LEARN] Online research sources fetched: %d", len(selected))
+    _log_selected_sources("Online research selection", selected)
     if selected:
         logger.info(
             "[LEARN] Online research evidence preview:\n%s",
@@ -165,6 +169,31 @@ def format_research_sources_for_prompt(
 
     text = "\n".join(rendered)
     return text if len(text) <= limit else f"{text[: limit - 3].rstrip()}..."
+
+
+def _log_selected_sources(label: str, sources: list[ResearchSource]) -> None:
+    if not sources:
+        logger.info("[LEARN] %s: no sources selected", label)
+        return
+
+    source_kind_counts: dict[str, int] = {}
+    for source in sources:
+        source_kind_counts[source.source_kind] = source_kind_counts.get(source.source_kind, 0) + 1
+
+    kind_summary = ", ".join(
+        f"{count} {kind}" for kind, count in sorted(source_kind_counts.items())
+    )
+    preview_sources = ", ".join(f"{source.source_kind}:{source.title}" for source in sources[:4])
+    if len(sources) > 4:
+        preview_sources = f"{preview_sources}, ... (+{len(sources) - 4} more)"
+
+    logger.info(
+        "[LEARN] %s: selected %d source(s) (%s): %s",
+        label,
+        len(sources),
+        kind_summary,
+        preview_sources,
+    )
 
 
 def _score_docs_index_entries(
@@ -275,7 +304,11 @@ def _refresh_stale_research_cache_entry(
             today=date.today(),
         )
     except OSError as error:
-        logger.warning("[LEARN] Unable to update stale research cache note %s: %s", entry.path, error)
+        logger.warning(
+            "[LEARN] Unable to update stale research cache note %s: %s",
+            entry.path,
+            error,
+        )
         return entry
 
     refreshed_entry = replace(
@@ -347,7 +380,10 @@ class _HtmlFieldExtractor(HTMLParser):
         if tag == "title":
             self._capture_title = False
             return
-        if tag in {"header", "nav", "footer", "aside", "script", "style", "noscript"} and self._skip_depth:
+        if (
+            tag in {"header", "nav", "footer", "aside", "script", "style", "noscript"}
+            and self._skip_depth
+        ):
             self._skip_depth -= 1
             return
         if tag == "body":

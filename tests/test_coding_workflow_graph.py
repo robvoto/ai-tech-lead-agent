@@ -15,9 +15,9 @@ from ai_tech_lead.coding_workflow_graph import (
     request_plan_node,
     route_after_approval,
     route_after_check_research,
-    route_after_tech_lead_analyse,
     route_after_research_interrupt,
     route_after_review_plan,
+    route_after_tech_lead_analyse,
     run_coding_agent_node,
 )
 from ai_tech_lead.plan_reviewer import PlanReviewDecision
@@ -80,17 +80,17 @@ def test_graph_state_defaults_do_not_require_human_input() -> None:
 def test_graph_state_can_store_orchestrator_input_request_fields() -> None:
     state = graph_state(
         orchestrator_input_required=True,
-        orchestrator_input_kind="clarification",
-        orchestrator_input_reason="The request is ambiguous.",
-        orchestrator_input_question="Should I keep the existing structure?",
-        orchestrator_input_source_node="2_review_risk",
+        orchestrator_input_kind="research_approval",
+        orchestrator_input_reason="Complex task needs external docs.",
+        orchestrator_input_question="Fetch approved LangChain docs?",
+        orchestrator_input_source_node="1b_check_research",
     )
 
     assert state["orchestrator_input_required"] is True
-    assert state["orchestrator_input_kind"] == "clarification"
-    assert state["orchestrator_input_reason"] == "The request is ambiguous."
-    assert state["orchestrator_input_question"] == "Should I keep the existing structure?"
-    assert state["orchestrator_input_source_node"] == "2_review_risk"
+    assert state["orchestrator_input_kind"] == "research_approval"
+    assert state["orchestrator_input_reason"] == "Complex task needs external docs."
+    assert state["orchestrator_input_question"] == "Fetch approved LangChain docs?"
+    assert state["orchestrator_input_source_node"] == "1b_check_research"
 
 
 def test_graph_state_can_store_task_feedback_list() -> None:
@@ -154,7 +154,8 @@ def test_route_after_research_interrupt_approval_continues() -> None:
     assert route_after_research_interrupt(state) == NodeName.COLLECT_RESEARCH_EVIDENCE
 
 
-def test_collect_research_evidence_node_appends_online_docs(monkeypatch) -> None:
+def test_collect_research_evidence_node_appends_online_docs(monkeypatch, caplog) -> None:
+    caplog.set_level(logging.INFO)
     settings = replace(parse_settings(valid_settings_dict()), orchestrator_ai_enabled=True)
 
     def fake_load_settings():
@@ -198,6 +199,11 @@ def test_collect_research_evidence_node_appends_online_docs(monkeypatch) -> None
         "https://docs.langchain.com/oss/python/langgraph/interrupts",
     ]
     assert result["research_online_sources_found"] == 1
+    assert (
+        "Research handoff summary: local_sources=1 online_sources=1 "
+        "new_cache_notes=0 reused_cache_sources=1"
+        in caplog.text
+    )
 
 
 def test_run_coding_agent_node_override_can_disable_execution(monkeypatch) -> None:
@@ -620,3 +626,20 @@ def test_route_after_review_plan_rejected_twice_goes_to_human() -> None:
 def test_route_after_review_plan_reviewer_unavailable_goes_to_human() -> None:
     state = graph_state(plan_approved=False, plan_needs_human_review=True)
     assert route_after_review_plan(state) == NodeName.PLAN_INTERRUPT
+
+
+def test_graph_has_no_clarification_gate_nodes() -> None:
+    """Clarification check was removed; the compiled graph must not contain those nodes."""
+    app = build_graph()
+    node_names = set(app.get_graph().nodes.keys())
+    assert "3_check_clarification" not in node_names
+    assert "3b_clarification_interrupt" not in node_names
+
+
+def test_review_risk_connects_directly_to_tech_lead_analyse() -> None:
+    """After review_risk, the graph must route to tech_lead_analyse without a clarification gate."""
+    app = build_graph()
+    edges = [(e.source, e.target) for e in app.get_graph().edges]
+    targets_from_review_risk = [t for s, t in edges if s == NodeName.REVIEW_RISK]
+    assert NodeName.TECH_LEAD_ANALYSE in targets_from_review_risk
+    assert "3_check_clarification" not in targets_from_review_risk

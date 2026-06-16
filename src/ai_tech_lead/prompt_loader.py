@@ -13,7 +13,6 @@ from ai_tech_lead.config import DATA_DIR
 PROMPT_REGISTRY_PATH = DATA_DIR / "prompts.json"
 
 BACKLOG_OWNERSHIP_RULES_PROMPT_KEY = "backlog_ownership_rules"
-CLARIFICATION_CHECK_PROMPT_KEY = "clarification_check"
 COMPLETION_SUMMARY_PROMPT_KEY = "completion_summary"
 PLAN_REQUEST_INSTRUCTION_PROMPT_KEY = "plan_request_instruction"
 PLAN_REVIEW_PROMPT_KEY = "plan_review"

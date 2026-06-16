@@ -51,7 +51,13 @@ def check_research_requirements(
 
     if not settings.orchestrator_ai_enabled:
         logger.warning(
-            "[LEARN] Research check: AI disabled, treating task as uncertain and requiring approval."
+            "[LEARN] Research check: AI disabled, treating task as "
+            "uncertain and requiring approval."
+        )
+        logger.info(
+            "[LEARN] Research gate summary: complex=yes local_sources=0 "
+            "min_required=%d online_approval_needed=yes",
+            settings.research_min_local_sources,
         )
         return ResearchCheckResult(
             is_complex=True,
@@ -95,12 +101,17 @@ def check_research_requirements(
         )
 
     logger.info(
-        "[LEARN] Research evidence required: %s — %s",
+        "[LEARN] Research complexity verdict: complex=%s reason=%s",
         "yes" if is_complex else "no",
         reason,
     )
 
     if not is_complex:
+        logger.info(
+            "[LEARN] Research gate summary: complex=no local_sources=0 "
+            "min_required=%d online_approval_needed=no",
+            settings.research_min_local_sources,
+        )
         return ResearchCheckResult(
             is_complex=False,
             sources_found=0,
@@ -121,6 +132,13 @@ def check_research_requirements(
     logger.info("[LEARN] Local research sources found: %d", sources_found)
     logger.info(
         "[LEARN] Online research approval needed: %s", "yes" if online_research_needed else "no"
+    )
+    logger.info(
+        "[LEARN] Research gate summary: complex=yes local_sources=%d "
+        "min_required=%d online_approval_needed=%s",
+        sources_found,
+        settings.research_min_local_sources,
+        "yes" if online_research_needed else "no",
     )
 
     return ResearchCheckResult(

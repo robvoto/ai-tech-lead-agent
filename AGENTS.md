@@ -4,6 +4,14 @@ Purpose: minimal always-loaded repository instructions for AI agents working in 
 
 This file is a routing layer only. It is not the project manual, backlog process, architecture guide, skill catalogue, or test plan.
 
+## Canonical project standards
+
+Before structural, runtime, documentation, backlog, or automation changes, check the current project standards source of truth:
+
+- https://docs.google.com/document/d/1VDlwjmfUwGA-eveXeHD7rBJ4tRRBafloQwj62KWU3Q0/edit?tab=t.0
+
+If the standards document cannot be accessed, stop and ask the operator for the current exported text. Do not guess standards updates.
+
 ## Default workflow
 
 1. Use `docs/INDEX.md` to find the smallest relevant project document.

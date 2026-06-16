@@ -2,6 +2,11 @@
 
 Use this file for progressive disclosure. Start here, then open only the document needed for the current task.
 
+## Canonical project standards
+
+- External standards source of truth: https://docs.google.com/document/d/1VDlwjmfUwGA-eveXeHD7rBJ4tRRBafloQwj62KWU3Q0/edit?tab=t.0
+- If the standards document cannot be accessed, stop and ask the operator for the current exported text. Do not guess standards updates.
+
 ## Core project documents
 
 - `ARCHITECTURE.md` - system architecture, module boundaries, adapter strategy, persistence, and growth rules.

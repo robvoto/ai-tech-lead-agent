@@ -84,6 +84,13 @@ def load_research_cache_entries(
             )
         )
 
+    stale_count = sum(1 for entry in entries if entry.freshness_risk.startswith("High"))
+    logger.info(
+        "[LEARN] Research cache loaded: %d note(s) from %s (%d high freshness-risk)",
+        len(entries),
+        resolved_index_path,
+        stale_count,
+    )
     return entries
 
 
@@ -134,6 +141,11 @@ def save_online_source_to_cache(
         try:
             existing = load_research_cache_entries(index_path=index_path)
             if any(location in entry.sources for entry in existing):
+                logger.info(
+                    "[LEARN] Reusing cached online source: %s already present in %s",
+                    location,
+                    index_path,
+                )
                 return False
         except FileNotFoundError:
             pass
@@ -160,7 +172,7 @@ def save_online_source_to_cache(
         today=current_day,
     )
 
-    logger.info("[LEARN] Cached online source: %s -> %s", location, filename)
+    logger.info("[LEARN] New research cache note created: %s -> %s", location, filename)
     return True
 
 

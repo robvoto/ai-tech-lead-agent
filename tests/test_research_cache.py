@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import replace
 from datetime import date
 from pathlib import Path
@@ -19,7 +20,8 @@ from ai_tech_lead.research_checker import (
 from ai_tech_lead.research_sources import ResearchSource
 
 
-def test_load_research_cache_entries_reads_index_and_note(tmp_path: Path) -> None:
+def test_load_research_cache_entries_reads_index_and_note(tmp_path: Path, caplog) -> None:
+    caplog.set_level(logging.INFO)
     research_dir = tmp_path / "docs" / "research"
     research_dir.mkdir(parents=True)
     note_path = research_dir / "backlog-refinement.md"
@@ -50,6 +52,7 @@ def test_load_research_cache_entries_reads_index_and_note(tmp_path: Path) -> Non
     assert entries[0].title == "Backlog refinement with cache-first research"
     assert "Freshness risk: Low" in prompt_block
     assert "Cache-first backlog refinement" in prompt_block
+    assert "Research cache loaded: 1 note(s)" in caplog.text
 
 
 def _make_fake_source(title: str, location: str = "/fake/path.md") -> ResearchSource:
@@ -77,7 +80,11 @@ def test_check_research_requirements_simple_task_skips_cache(monkeypatch) -> Non
     assert result.sources_found == 0
 
 
-def test_check_research_requirements_complex_with_two_sources_continues(monkeypatch) -> None:
+def test_check_research_requirements_complex_with_two_sources_continues(
+    monkeypatch,
+    caplog,
+) -> None:
+    caplog.set_level(logging.INFO)
     settings = replace(parse_settings(valid_settings_dict()), orchestrator_ai_enabled=True)
 
     monkeypatch.setattr(
@@ -98,6 +105,11 @@ def test_check_research_requirements_complex_with_two_sources_continues(monkeypa
     assert result.sources_found == 2
     assert result.online_research_needed is False
     assert len(result.usable_source_titles) == 2
+    assert (
+        "Research gate summary: complex=yes local_sources=2 "
+        "min_required=2 online_approval_needed=no"
+        in caplog.text
+    )
 
 
 def test_check_research_requirements_complex_with_one_source_triggers_gate(monkeypatch) -> None:
@@ -205,7 +217,8 @@ def test_save_online_source_to_cache_writes_note_and_index(tmp_path: Path) -> No
     assert "Interrupts pause graph execution" in index_content
 
 
-def test_save_online_source_to_cache_skips_duplicate_url(tmp_path: Path) -> None:
+def test_save_online_source_to_cache_skips_duplicate_url(tmp_path: Path, caplog) -> None:
+    caplog.set_level(logging.INFO)
     kwargs = dict(
         title="LangGraph interrupts",
         location="https://docs.langchain.com/oss/python/langgraph/interrupts",
@@ -220,6 +233,7 @@ def test_save_online_source_to_cache_skips_duplicate_url(tmp_path: Path) -> None
 
     assert first is True
     assert second is False
+    assert "Reusing cached online source" in caplog.text
     research_dir = tmp_path / "docs" / "research"
     note_files = list(research_dir.glob("*.md"))
     assert len(note_files) == 2  # INDEX.md + one note

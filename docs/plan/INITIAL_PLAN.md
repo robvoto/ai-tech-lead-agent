@@ -253,7 +253,13 @@ src/ai_tech_lead/coding_agent_runner.py
 
 ## Backlog rule
 
-Current working backlog:
+Current runtime backlog:
+
+```text
+data/backlog.sqlite3
+```
+
+Human-review/planning workbook:
 
 ```text
 data/backlog/ai_tech_lead_backlog.xlsx
@@ -267,7 +273,7 @@ data/backlog/archive/BACKLOG.md
 
 The Excel workbook was created from the Markdown backlog because the Markdown structure had drifted: some items had rich metadata, while others were missing fields such as Status, Creator, Epic, Type, Priority, Size, Problem, Outcome, Acceptance Criteria, or Constraints.
 
-Treat the Excel workbook as the working backlog and `data/backlog/archive/BACKLOG.md` as historical/source backup. The code reads and writes the workbook through the backlog repository boundary, so spreadsheet edits are available at runtime while remaining controlled.
+Treat `data/backlog.sqlite3` as the runtime backlog, `data/backlog/ai_tech_lead_backlog.xlsx` as the human-review/planning workbook, and `data/backlog/archive/BACKLOG.md` as historical/source backup. Runtime code reads and writes through the backlog repository boundary. Do not edit the workbook alone when the running app must see the change.
 
 Backlog selection must not be hidden.
 
