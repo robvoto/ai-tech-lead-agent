@@ -42,6 +42,7 @@ def test_parse_settings_round_trips_valid_config() -> None:
     assert settings.research_max_online_source_urls == 4
     assert settings.research_fetch_timeout_seconds == 10
     assert settings.research_max_excerpt_chars == 800
+    assert settings.army_allowed_project_roots == [str(PROJECT_ROOT)]
     assert settings_to_dict(settings) == raw_settings
 
 
@@ -121,6 +122,14 @@ def test_parse_settings_rejects_missing_project_context() -> None:
         assert False, "Expected ValueError"
     except ValueError as err:
         assert "project_context" in str(err)
+
+
+def test_parse_settings_rejects_stale_army_project_root_allowlist() -> None:
+    raw_settings = valid_settings_dict()
+    raw_settings["army_allowed_project_roots"] = ["/some/other/path"]
+
+    with pytest.raises(ValueError, match="army_allowed_project_roots"):
+        parse_settings(raw_settings)
 
 
 def test_parse_settings_rejects_empty_project_context() -> None:

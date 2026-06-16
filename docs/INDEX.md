@@ -10,7 +10,7 @@ Use this file for progressive disclosure. Start here, then open only the documen
 - `ARMY_INTEGRATION.md` - Agent Army / agent-to-agent subprocess contract, JSON input/output shape, and Telegram boundary.
 - `CONTEXT_MANAGEMENT.md` - context allowed in graph state, prompts, Telegram messages, logs, and coding-agent handoffs.
 - `BACKLOG_MANAGEMENT.md` - current backlog location, Excel workbook rules, and migration notes.
-- `BACKLOG.md` - legacy Markdown backlog source/backup retained for history and comparison; the current workbook lives at `data/backlog/ai_tech_lead_backlog.xlsx`.
+- `BACKLOG.md` - archived Markdown backlog source/backup retained for history and comparison at `data/backlog/archive/BACKLOG.md`; the current workbook lives at `data/backlog/ai_tech_lead_backlog.xlsx`.
 - `UI_ADMIN_DESIGN.md` - admin UI design notes and browser-side ownership rules.
 
 ## Entry points

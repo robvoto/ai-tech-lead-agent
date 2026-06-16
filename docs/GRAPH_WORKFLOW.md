@@ -87,6 +87,7 @@ Read the interrupt value from `state_snapshot.tasks[0].interrupts[0].value`. The
 ## Looping behaviour
 
 - Clarification interrupt loops back to `3_check_clarification` after the human replies. The `task_feedback` Annotated reducer accumulates all replies.
+- If the research complexity check is disabled, unavailable, or returns invalid output, the workflow now fails closed and routes to the research approval path instead of silently treating the task as simple.
 - Research approval rejection ends the workflow before risk review.
 - Approved research resumes into bounded evidence collection, then continues to risk review.
 - Rejected plans loop back to `5b_request_plan` with LLM correction feedback.

@@ -26,7 +26,7 @@ The system should prevent common coding-agent failure modes:
 - doing more than requested
 - making risky changes without approval
 - adding unapproved fallbacks
-- preserving useless legacy code
+- preserving useless obsolete code
 - leaving unused code
 - hardcoding sample heuristics as general rules
 - skipping useful help text/docstrings
@@ -259,15 +259,15 @@ Current working backlog:
 data/backlog/ai_tech_lead_backlog.xlsx
 ```
 
-Legacy/source backup:
+Archived/source backup:
 
 ```text
-docs/BACKLOG.md
+data/backlog/archive/BACKLOG.md
 ```
 
 The Excel workbook was created from the Markdown backlog because the Markdown structure had drifted: some items had rich metadata, while others were missing fields such as Status, Creator, Epic, Type, Priority, Size, Problem, Outcome, Acceptance Criteria, or Constraints.
 
-Treat the Excel workbook as the working backlog and `docs/BACKLOG.md` as historical/source backup. The code reads and writes the workbook through the backlog repository boundary, so spreadsheet edits are available at runtime while remaining controlled.
+Treat the Excel workbook as the working backlog and `data/backlog/archive/BACKLOG.md` as historical/source backup. The code reads and writes the workbook through the backlog repository boundary, so spreadsheet edits are available at runtime while remaining controlled.
 
 Backlog selection must not be hidden.
 

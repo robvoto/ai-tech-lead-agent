@@ -50,12 +50,14 @@ def check_research_requirements(
     """
 
     if not settings.orchestrator_ai_enabled:
-        logger.info("[LEARN] Research check: AI disabled, treating task as simple.")
+        logger.warning(
+            "[LEARN] Research check: AI disabled, treating task as uncertain and requiring approval."
+        )
         return ResearchCheckResult(
-            is_complex=False,
+            is_complex=True,
             sources_found=0,
-            online_research_needed=False,
-            complexity_reason="AI complexity check disabled.",
+            online_research_needed=True,
+            complexity_reason="AI complexity check disabled; requiring human approval.",
             usable_source_titles=[],
             usable_source_locations=[],
             usable_source_summaries=[],
@@ -64,23 +66,29 @@ def check_research_requirements(
     try:
         is_complex, reason = _llm_check_complexity(request, settings)
     except OrchestratorLlmError as error:
-        logger.warning("Research complexity check LLM unavailable: %s — treating as simple.", error)
+        logger.warning(
+            "Research complexity check LLM unavailable: %s — requiring human approval.",
+            error,
+        )
         return ResearchCheckResult(
-            is_complex=False,
+            is_complex=True,
             sources_found=0,
-            online_research_needed=False,
-            complexity_reason="Complexity check unavailable.",
+            online_research_needed=True,
+            complexity_reason="Complexity check unavailable; requiring human approval.",
             usable_source_titles=[],
             usable_source_locations=[],
             usable_source_summaries=[],
         )
     except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
-        logger.warning("Research complexity response invalid: %s — treating as simple.", error)
+        logger.warning(
+            "Research complexity response invalid: %s — requiring human approval.",
+            error,
+        )
         return ResearchCheckResult(
-            is_complex=False,
+            is_complex=True,
             sources_found=0,
-            online_research_needed=False,
-            complexity_reason="Complexity check response invalid.",
+            online_research_needed=True,
+            complexity_reason="Complexity check response invalid; requiring human approval.",
             usable_source_titles=[],
             usable_source_locations=[],
             usable_source_summaries=[],

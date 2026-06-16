@@ -230,6 +230,7 @@ def parse_settings(raw_settings: dict[str, Any]) -> AppSettings:
     )
     _validate_telegram_settings(settings)
     _validate_research_settings(settings)
+    _validate_army_settings(settings)
     return settings
 
 
@@ -441,3 +442,16 @@ def _validate_research_settings(settings: AppSettings) -> None:
                 "Each entry in 'research_online_source_urls' must use one of the "
                 "allowed research domains."
             )
+
+
+def _validate_army_settings(settings: AppSettings) -> None:
+    if not settings.army_allowed_project_roots:
+        raise ValueError("Setting 'army_allowed_project_roots' must include the project root.")
+
+    project_root = str(Path(settings.project_root).resolve())
+    allowed_roots = {str(Path(root).resolve()) for root in settings.army_allowed_project_roots}
+    if project_root not in allowed_roots:
+        raise ValueError(
+            "Setting 'army_allowed_project_roots' must include the current project_root "
+            f"({project_root})."
+        )

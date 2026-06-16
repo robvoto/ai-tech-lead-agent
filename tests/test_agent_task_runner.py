@@ -100,9 +100,9 @@ def _stub_settings(
 ) -> None:
     """Stub load_settings to return a known settings object without reading disk."""
     raw = valid_settings_dict()
-    if overrides:
-        raw.update(overrides)
     settings = parse_settings(raw)
+    if overrides:
+        settings = replace(settings, **overrides)
 
     monkeypatch.setattr("ai_tech_lead.agent_task_runner.load_settings", lambda: settings)
 
@@ -161,9 +161,8 @@ def test_unreadable_input_file_returns_failed(
 
 class TestValidateProjectRoot:
     def _settings(self, allowed_roots: list[str]) -> Any:
-        raw = valid_settings_dict()
-        raw["army_allowed_project_roots"] = allowed_roots
-        return parse_settings(raw)
+        settings = parse_settings(valid_settings_dict())
+        return replace(settings, army_allowed_project_roots=allowed_roots)
 
     def test_none_input_returns_none(self) -> None:
         settings = self._settings(["/allowed/path"])

@@ -74,4 +74,4 @@ def test_backlog_ownership_prompt_points_to_current_backlog_policy_doc() -> None
     prompt_text = load_prompt("backlog_ownership_rules")
 
     assert "docs/BACKLOG_MANAGEMENT.md" in prompt_text
-    assert "docs/BACKLOG.md" not in prompt_text
+    assert "data/backlog/archive/BACKLOG.md" not in prompt_text

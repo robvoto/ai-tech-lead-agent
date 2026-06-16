@@ -88,7 +88,7 @@ Supporting modules such as `src/ai_tech_lead/backlog_graph_runner.py` call the c
   Telegram is an operator surface only; it must call the bounded workflow and must not become a second agent brain.
   Agent Army enters through `run-agent-task`, which validates the JSON contract before handing the task to the graph.
   Future adapters may include web or other chat surfaces.
-- Backlog storage must stay behind a repository boundary. The current working backlog file is `data/backlog/ai_tech_lead_backlog.xlsx`; `docs/BACKLOG.md` is retained as a legacy Markdown source/backup.
+- Backlog storage must stay behind a repository boundary. The current working backlog file is `data/backlog/ai_tech_lead_backlog.xlsx`; the archived Markdown source/backup lives at `data/backlog/archive/BACKLOG.md`.
 - Backlog loading parses local task data and converts one selected item into
   graph state. It must not silently choose work.
 - Worker coding agents must not freely edit the Excel backlog. Any backlog edit must be explicitly requested, field-bounded, and owned by the human/orchestrator until a controlled backlog repository handles spreadsheet writes safely.
@@ -163,4 +163,4 @@ and UI behavior in the same file.
 
 When a prototype file is superseded by a real implementation, either remove it
 or clearly document why it still exists. Do not let old placeholders become
-silent legacy code.
+silent dead code.

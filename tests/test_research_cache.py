@@ -7,6 +7,7 @@ from pathlib import Path
 from helpers import valid_settings_dict
 
 from ai_tech_lead.app_settings import parse_settings
+from ai_tech_lead.orchestrator_llm import OrchestratorLlmError
 from ai_tech_lead.research_cache import (
     format_research_cache_for_prompt,
     load_research_cache_entries,
@@ -118,13 +119,44 @@ def test_check_research_requirements_complex_with_one_source_triggers_gate(monke
     assert result.online_research_needed is True
 
 
-def test_check_research_requirements_ai_disabled_treats_as_simple() -> None:
+def test_check_research_requirements_ai_disabled_requires_approval() -> None:
     settings = replace(parse_settings(valid_settings_dict()), orchestrator_ai_enabled=False)
 
     result = check_research_requirements("Add interrupt gate to LangGraph workflow", settings)
 
-    assert result.is_complex is False
-    assert result.online_research_needed is False
+    assert result.is_complex is True
+    assert result.online_research_needed is True
+    assert "requiring human approval" in result.complexity_reason.lower()
+
+
+def test_check_research_requirements_llm_unavailable_requires_approval(monkeypatch) -> None:
+    settings = replace(parse_settings(valid_settings_dict()), orchestrator_ai_enabled=True)
+
+    monkeypatch.setattr(
+        "ai_tech_lead.research_checker._llm_check_complexity",
+        lambda _req, _settings: (_ for _ in ()).throw(OrchestratorLlmError("offline")),
+    )
+
+    result = check_research_requirements("Add interrupt gate to LangGraph workflow", settings)
+
+    assert result.is_complex is True
+    assert result.online_research_needed is True
+    assert "unavailable" in result.complexity_reason.lower()
+
+
+def test_check_research_requirements_invalid_llm_response_requires_approval(monkeypatch) -> None:
+    settings = replace(parse_settings(valid_settings_dict()), orchestrator_ai_enabled=True)
+
+    monkeypatch.setattr(
+        "ai_tech_lead.research_checker._llm_check_complexity",
+        lambda _req, _settings: (_ for _ in ()).throw(ValueError("bad payload")),
+    )
+
+    result = check_research_requirements("Add interrupt gate to LangGraph workflow", settings)
+
+    assert result.is_complex is True
+    assert result.online_research_needed is True
+    assert "invalid" in result.complexity_reason.lower()
 
 
 def test_check_research_requirements_online_not_triggered_without_approval(monkeypatch) -> None:

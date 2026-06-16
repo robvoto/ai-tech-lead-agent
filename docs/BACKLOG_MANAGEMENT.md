@@ -16,9 +16,9 @@ From WSL, the same file is available at:
 
 The workbook was created from the previous Markdown backlog and contains structured sheets for backlog items, quality checks, dashboard summaries, and schema guidance.
 
-## Legacy Markdown backlog
+## Archived Markdown backlog
 
-`docs/BACKLOG.md` is now a historical/source backup, not the preferred working format.
+`data/backlog/archive/BACKLOG.md` is now a historical/source backup, not the preferred working format.
 
 It is still useful for:
 
@@ -27,7 +27,7 @@ It is still useful for:
 - comparing migration results;
 - keeping git-readable history while the Excel-backed backlog is being evaluated.
 
-Do not add new backlog items to `docs/BACKLOG.md` unless the task is explicitly about migration, repair, or historical documentation.
+Do not add new backlog items to `data/backlog/archive/BACKLOG.md` unless the task is explicitly about migration, repair, or historical documentation.
 
 ## Current editing rule
 
@@ -57,4 +57,4 @@ Before Google Sheets, the next safer step is to keep the Excel-backed backlog re
 
 ## Migration note
 
-The Excel workbook exposed quality issues in the Markdown backlog, including missing `Status`, inconsistent metadata, and uneven detail across items. The workbook is now the working structure, while `docs/BACKLOG.md` remains a historical/source backup.
+The Excel workbook exposed quality issues in the Markdown backlog, including missing `Status`, inconsistent metadata, and uneven detail across items. The workbook is now the working structure, while `data/backlog/archive/BACKLOG.md` remains a historical/source backup.

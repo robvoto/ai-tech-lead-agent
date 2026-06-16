@@ -354,8 +354,21 @@ def test_graph_runs_to_disabled_coding_agent_result(monkeypatch) -> None:
     def fake_load_settings():
         return settings
 
+    class _SimpleResearchResult:
+        is_complex = False
+        sources_found = 0
+        online_research_needed = False
+        complexity_reason = "Simple task."
+        usable_source_titles: list[str] = []
+        usable_source_locations: list[str] = []
+        usable_source_summaries: list[str] = []
+
     monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.load_settings", fake_load_settings)
     monkeypatch.setattr("ai_tech_lead.risk_reviewer.load_settings", fake_load_settings)
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.check_research_requirements",
+        lambda _request, _settings: _SimpleResearchResult(),
+    )
     app = build_graph(execute_coding_agent_override=False)
 
     result = app.invoke(graph_state())
@@ -393,6 +406,15 @@ def test_already_approved_army_state_skips_approval_interrupt(monkeypatch) -> No
     def fake_review_plan(*_args, **_kwargs):
         return PlanReviewDecision(approved=True, reason="Plan is fine.", correction="")
 
+    class _SimpleResearchResult:
+        is_complex = False
+        sources_found = 0
+        online_research_needed = False
+        complexity_reason = "Simple task."
+        usable_source_titles: list[str] = []
+        usable_source_locations: list[str] = []
+        usable_source_summaries: list[str] = []
+
     def fail_if_approval_interrupt_called(*_args, **_kwargs):
         raise AssertionError(
             "approval interrupt should be skipped when the army has already approved"
@@ -400,6 +422,10 @@ def test_already_approved_army_state_skips_approval_interrupt(monkeypatch) -> No
 
     monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.load_settings", fake_load_settings)
     monkeypatch.setattr("ai_tech_lead.risk_reviewer.load_settings", fake_load_settings)
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.check_research_requirements",
+        lambda _request, _settings: _SimpleResearchResult(),
+    )
     monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.review_plan", fake_review_plan)
     monkeypatch.setattr(
         "ai_tech_lead.coding_workflow_graph.run_coding_agent", lambda **_kw: _SuccessResult()
@@ -498,8 +524,21 @@ def test_rejected_graph_resumes_without_coding_agent_result_index_error(monkeypa
     def fake_load_settings():
         return settings
 
+    class _SimpleResearchResult:
+        is_complex = False
+        sources_found = 0
+        online_research_needed = False
+        complexity_reason = "Simple task."
+        usable_source_titles: list[str] = []
+        usable_source_locations: list[str] = []
+        usable_source_summaries: list[str] = []
+
     monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.load_settings", fake_load_settings)
     monkeypatch.setattr("ai_tech_lead.risk_reviewer.load_settings", fake_load_settings)
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.check_research_requirements",
+        lambda _request, _settings: _SimpleResearchResult(),
+    )
 
     app = build_graph(checkpointer_storage=MemorySaver(), execute_coding_agent_override=False)
     thread_config = {"configurable": {"thread_id": "test-reject-path"}}

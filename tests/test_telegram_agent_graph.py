@@ -354,6 +354,7 @@ def test_read_project_file_tool_reads_allowed_file(tmp_path: Path) -> None:
     raw_settings["project_root"] = str(tmp_path)
     raw_settings["backlog_path"] = str(backlog_path)
     raw_settings["allowed_directories"] = ["docs"]
+    raw_settings["army_allowed_project_roots"] = [str(tmp_path)]
     settings = parse_settings(raw_settings)
     tools = _build_backlog_tools(settings)
     read_tool = next(tool for tool in tools if tool.name == "read_project_file")
@@ -372,6 +373,7 @@ def test_read_project_file_tool_rejects_path_outside_project_root(tmp_path: Path
     raw_settings["project_root"] = str(tmp_path)
     raw_settings["backlog_path"] = str(backlog_path)
     raw_settings["allowed_directories"] = ["docs"]
+    raw_settings["army_allowed_project_roots"] = [str(tmp_path)]
     settings = parse_settings(raw_settings)
     tools = _build_backlog_tools(settings)
     read_tool = next(tool for tool in tools if tool.name == "read_project_file")
@@ -393,6 +395,7 @@ def test_read_project_file_tool_rejects_path_in_non_allowed_directory(tmp_path: 
     raw_settings["project_root"] = str(tmp_path)
     raw_settings["backlog_path"] = str(backlog_path)
     raw_settings["allowed_directories"] = ["docs"]
+    raw_settings["army_allowed_project_roots"] = [str(tmp_path)]
     settings = parse_settings(raw_settings)
     tools = _build_backlog_tools(settings)
     read_tool = next(tool for tool in tools if tool.name == "read_project_file")
@@ -412,6 +415,7 @@ def test_read_project_file_tool_returns_error_for_missing_file(tmp_path: Path) -
     raw_settings["project_root"] = str(tmp_path)
     raw_settings["backlog_path"] = str(backlog_path)
     raw_settings["allowed_directories"] = ["docs"]
+    raw_settings["army_allowed_project_roots"] = [str(tmp_path)]
     settings = parse_settings(raw_settings)
     tools = _build_backlog_tools(settings)
     read_tool = next(tool for tool in tools if tool.name == "read_project_file")
