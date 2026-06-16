@@ -2,26 +2,20 @@
 
 Purpose: minimal always-loaded repository instructions for AI agents working in this project.
 
-This file is a routing layer only. It is not the project manual, backlog process, architecture guide, skill catalogue, or test plan.
-
-## Canonical project standards
-
-Before structural, runtime, documentation, backlog, or automation changes, check the current project standards source of truth:
-
-- https://docs.google.com/document/d/1VDlwjmfUwGA-eveXeHD7rBJ4tRRBafloQwj62KWU3Q0/edit?tab=t.0
-
-If the standards document cannot be accessed, stop and ask the operator for the current exported text. Do not guess standards updates.
+This file is a routing layer only. It is not the project manual, backlog process, architecture guide, skill catalogue, standards document, or test plan.
 
 ## Default workflow
 
 1. Use `docs/INDEX.md` to find the smallest relevant project document.
 2. Use `.skills/INDEX.md` to choose one relevant task skill.
 3. Inspect the current files before giving code-specific advice or editing.
-4. Do not load the whole repository unless the task explicitly requires a broad audit.
+4. If changing project setup, architecture, runtime behaviour, documentation, backlog, automation, config, tests, environment examples, packaging, templates, AI model/provider defaults, cost logging, approval workflows, long-running workflows, `AGENTS.md`, or skills, read `docs/STANDARDS_INDEX.md` first.
+5. Do not load the whole repository unless the task explicitly requires a broad audit.
 
 ## Navigation
 
 - Project docs: `docs/INDEX.md`
+- Shared standards pointers: `docs/STANDARDS_INDEX.md`
 - Task skills: `.skills/INDEX.md`
 
 ## Universal rules
@@ -30,17 +24,18 @@ If the standards document cannot be accessed, stop and ask the operator for the 
 - Keep context bounded. Load the smallest file set that can answer the task.
 - Keep work bounded and small. Touch only files required for the task.
 - Do not add hidden autonomous behaviour, broad discovery loops, or silent self-improvement.
-- Do not add compatibility shims, duplicate implementations, unused code, or dead code unless explicitly requested.
-- Do not hardcode hidden choices. If a prototype hardcode is intentional, state why and where it should become configurable later.
-- Do not leave unused or legacy code.
-- Stop and ask before destructive, broad, risky, ambiguous, expensive, or code-executing actions unless the human has already approved them.
+- Do not add compatibility shims, duplicate implementations, unused code, dead code, or legacy code unless explicitly requested.
+- Do not hardcode hidden choices. If a prototype hardcode is explicitly approved, state why, where it lives, and what would make it configurable later.
+- Do not add fallback/default behaviour that changes the outcome unless explicitly approved.
+- On uncertainty, missing standards, failed validation, unavailable tools, invalid AI output, or ambiguous requirements, stop or escalate instead of silently choosing an alternate path.
+- Stop and ask before destructive, broad, risky, ambiguous, expensive, repo-changing, or code-executing actions unless the human has already approved them.
 - Runtime safety must be enforced in code/settings/admin, not only in instruction files.
 - Do not mask failures with broad fallback logic or silent defaults.
 - Do not claim completion without validation evidence or a clear reason validation was not applicable.
 
 ## Finish report
 
-Report only what matters when coding agent finishes a task:
+Report only what matters when the agent finishes a task:
 
 - Files changed
 - Behaviour changed
