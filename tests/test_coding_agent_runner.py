@@ -249,5 +249,5 @@ def test_run_coding_agent_emits_progress_heartbeats(
     )
 
     assert len(progress_messages) >= 1
-    assert any("agent output line" in m for m in progress_messages)
+    assert any("Coding agent running" in m for m in progress_messages)
     assert result.stdout == "agent output line"

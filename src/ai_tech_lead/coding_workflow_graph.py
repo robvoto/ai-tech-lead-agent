@@ -16,7 +16,6 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
 from .app_settings import load_settings
-from .clarification_checker import check_task_clarification
 from .coding_agent_runner import CodingAgentCancellationToken, run_coding_agent
 from .instruction_assembler import build_agent_instruction
 from .logging_setup import LOGGER_NAME
@@ -41,8 +40,6 @@ class NodeName(StrEnum):
     RESEARCH_INTERRUPT = "1c_research_interrupt"
     COLLECT_RESEARCH_EVIDENCE = "1d_collect_research_evidence"
     REVIEW_RISK = "2_review_risk"
-    CHECK_CLARIFICATION = "3_check_clarification"
-    CLARIFICATION_INTERRUPT = "3b_clarification_interrupt"
     TECH_LEAD_ANALYSE = "3c_tech_lead_analyse"
     APPROVAL_INTERRUPT = "4_approval_interrupt"
     REQUEST_PLAN = "5b_request_plan"
@@ -240,6 +237,14 @@ def collect_research_evidence_node(state: GraphState) -> dict[str, Any]:
         )
     )
     logger.info("[LEARN] Online sources saved to local cache: %d new", newly_cached)
+    logger.info(
+        "[LEARN] Research handoff summary: local_sources=%d online_sources=%d "
+        "new_cache_notes=%d reused_cache_sources=%d",
+        len(local_titles),
+        len(online_sources),
+        newly_cached,
+        len(online_sources) - newly_cached,
+    )
 
     logger.info(
         "[LEARN] Online research fetch result: fetched=%d configured_limit=%d",
@@ -302,54 +307,6 @@ def review_risk_node(state: GraphState) -> dict[str, Any]:
     return {"needs_approval": needs_approval, "approval_reason": approval_reason}
 
 
-def check_clarification_node(state: GraphState) -> dict[str, Any]:
-    """Ask the orchestrator LLM if clarification is needed before tech lead analysis."""
-
-    _log_node_start("3", "CHECK_CLARIFICATION", "Check if clarification is needed")
-    settings = load_settings()
-    logger.info("Feedback items so far: %d", len(state.get("task_feedback", [])))
-
-    decision = check_task_clarification(
-        request=state["request"],
-        task_feedback=list(state.get("task_feedback", [])),
-        settings=settings,
-    )
-
-    if decision.needs_clarification:
-        logger.info("Clarification needed: %s", decision.question)
-    else:
-        logger.info("Clarification not needed, proceeding to tech lead analysis.")
-
-    return {
-        "orchestrator_input_required": decision.needs_clarification,
-        "orchestrator_input_question": decision.question,
-        "orchestrator_input_reason": decision.reason,
-    }
-
-
-def clarification_interrupt_node(state: GraphState) -> dict[str, Any]:
-    """Pause and ask the human for clarification before tech lead analysis."""
-
-    _log_node_start("3b", "CLARIFICATION_INTERRUPT", "Pause for human clarification reply")
-    question = str(state.get("orchestrator_input_question", "")).strip()
-    logger.info("Clarification interrupt: awaiting reply. Question: %s", question[:120])
-    result = interrupt({"kind": "clarification", "question": question})
-    clarification = str(result) if not isinstance(result, dict) else str(result.get("text", result))
-    logger.info(
-        "Clarification interrupt resumed: length=%d preview=%s",
-        len(clarification),
-        clarification[:120],
-    )
-    return {
-        "task_feedback": [clarification],
-        "orchestrator_input_required": False,
-        "orchestrator_input_kind": "",
-        "orchestrator_input_reason": "",
-        "orchestrator_input_question": "",
-        "orchestrator_input_source_node": "",
-    }
-
-
 def tech_lead_analyse_node(state: GraphState) -> dict[str, Any]:
     """Tech lead analysis: formulate the task and produce high-level technical direction."""
 
@@ -383,19 +340,6 @@ def tech_lead_analyse_node(state: GraphState) -> dict[str, Any]:
         _single_line_preview(analysis.tech_direction),
     )
     return {"formulated_task": analysis.task_statement, "brief": analysis.tech_direction}
-
-
-def route_after_check_clarification(state: GraphState) -> str:
-    """Route after clarification check: interrupt if needed, otherwise proceed to analysis."""
-
-    _log_decision_start("3", "ROUTE_AFTER_CHECK_CLARIFICATION", "Route after clarification check")
-
-    if state["orchestrator_input_required"]:
-        logger.info("Decision: clarification needed -> CLARIFICATION_INTERRUPT")
-        return NodeName.CLARIFICATION_INTERRUPT
-
-    logger.info("Decision: clarification satisfied -> TECH_LEAD_ANALYSE")
-    return NodeName.TECH_LEAD_ANALYSE
 
 
 def route_after_tech_lead_analyse(state: GraphState) -> str:
@@ -793,6 +737,7 @@ def run_coding_agent_node(
         "settings": settings,
         "progress_callback": progress_callback,
         "use_pty": True,
+        "sandbox_override": "workspace-write",
     }
     if cancellation_token is not None:
         runner_kwargs["cancellation_token"] = cancellation_token
@@ -929,8 +874,6 @@ def build_graph(
     workflow.add_node(NodeName.RESEARCH_INTERRUPT, research_interrupt_node)
     workflow.add_node(NodeName.COLLECT_RESEARCH_EVIDENCE, collect_research_evidence_node)
     workflow.add_node(NodeName.REVIEW_RISK, review_risk_node)
-    workflow.add_node(NodeName.CHECK_CLARIFICATION, check_clarification_node)
-    workflow.add_node(NodeName.CLARIFICATION_INTERRUPT, clarification_interrupt_node)
     workflow.add_node(NodeName.TECH_LEAD_ANALYSE, tech_lead_analyse_node)
     workflow.add_node(NodeName.APPROVAL_INTERRUPT, approval_interrupt_node)
     workflow.add_node(
@@ -978,16 +921,7 @@ def build_graph(
         },
     )
     workflow.add_edge(NodeName.COLLECT_RESEARCH_EVIDENCE, NodeName.REVIEW_RISK)
-    workflow.add_edge(NodeName.REVIEW_RISK, NodeName.CHECK_CLARIFICATION)
-    workflow.add_conditional_edges(
-        NodeName.CHECK_CLARIFICATION,
-        route_after_check_clarification,
-        {
-            NodeName.CLARIFICATION_INTERRUPT: NodeName.CLARIFICATION_INTERRUPT,
-            NodeName.TECH_LEAD_ANALYSE: NodeName.TECH_LEAD_ANALYSE,
-        },
-    )
-    workflow.add_edge(NodeName.CLARIFICATION_INTERRUPT, NodeName.CHECK_CLARIFICATION)
+    workflow.add_edge(NodeName.REVIEW_RISK, NodeName.TECH_LEAD_ANALYSE)
     workflow.add_conditional_edges(
         NodeName.TECH_LEAD_ANALYSE,
         route_after_tech_lead_analyse,

@@ -1163,10 +1163,7 @@ class TelegramOperator:
         validation_note = " ".join(parts)
 
         try:
-            repository = MarkdownBacklogRepository(
-                Path(self._settings.backlog_path),
-                project_root=Path(self._settings.project_root),
-            )
+            repository = self._get_repository()
             repository.complete_item(backlog_item_id, validation_note)
             logger.info("Finalize: %s marked Done in backlog.", backlog_item_id)
             return True, None

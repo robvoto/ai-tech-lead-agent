@@ -18,12 +18,12 @@ from pathlib import Path
 
 from ai_tech_lead.app_settings import AppSettings
 from ai_tech_lead.config import CODING_AGENT_LOCK_FILE
-from ai_tech_lead.logging_setup import LOGGER_NAME
+from ai_tech_lead.logging_setup import AGENT_LOGGER_NAME, LOGGER_NAME
 
 logger = logging.getLogger(LOGGER_NAME)
+agent_logger = logging.getLogger(AGENT_LOGGER_NAME)
 
 _POLL_INTERVAL_SECONDS = 1.0
-_PROGRESS_PREVIEW_LINES = 5
 
 
 @dataclass
@@ -119,6 +119,7 @@ def run_coding_agent(
     progress_callback: Callable[[str], None] | None = None,
     cancellation_token: CodingAgentCancellationToken | None = None,
     use_pty: bool = False,
+    sandbox_override: str | None = None,
 ) -> CodingAgentResult:
     """Run the configured CLI agent.
 
@@ -139,11 +140,10 @@ def run_coding_agent(
     if not instruction:
         raise ValueError("Agent instruction cannot be empty.")
 
-    command = [
-        settings.coding_agent_command,
-        *settings.coding_agent_args,
-        instruction,
-    ]
+    command = [settings.coding_agent_command, *settings.coding_agent_args]
+    if sandbox_override:
+        command.extend(["-s", sandbox_override])
+    command.append(instruction)
     timeout_seconds = settings.max_runtime_minutes * 60
     progress_interval = settings.coding_agent_progress_interval_seconds
 
@@ -257,7 +257,7 @@ def _run_with_pty(
             line = raw_line.rstrip("\n")
             if line:
                 output_lines.append(line)
-                logger.info("[agent] %s", line)
+                agent_logger.info(line)
 
     reader = threading.Thread(target=_collect, daemon=True)
     reader.start()
@@ -287,7 +287,10 @@ def _run_with_pty(
                 new_lines = output_lines[last_reported_count:]
                 last_reported_count = len(output_lines)
                 _emit_progress_update(
-                    progress_callback, new_lines=new_lines, elapsed_seconds=elapsed
+                    progress_callback,
+                    new_lines=new_lines,
+                    elapsed_seconds=elapsed,
+                    total_lines=last_reported_count,
                 )
                 last_update_at = time.time()
 
@@ -347,7 +350,7 @@ def _run_with_pipes(
             line = raw_line.rstrip("\n")
             if line:
                 target.append(line)
-                logger.info("[agent] %s", line)
+                agent_logger.info(line)
 
     stdout_thread = threading.Thread(
         target=_collect, args=(process.stdout, stdout_lines), daemon=True
@@ -391,7 +394,10 @@ def _run_with_pipes(
                 last_reported_stderr = len(stderr_lines)
                 new_lines = new_stdout or [f"[stderr] {l}" for l in new_stderr]
                 _emit_progress_update(
-                    progress_callback, new_lines=new_lines, elapsed_seconds=elapsed
+                    progress_callback,
+                    new_lines=new_lines,
+                    elapsed_seconds=elapsed,
+                    total_lines=last_reported_stdout + last_reported_stderr,
                 )
                 last_update_at = time.time()
 
@@ -457,22 +463,23 @@ def _emit_progress_update(
     *,
     new_lines: list[str],
     elapsed_seconds: float,
+    total_lines: int,
 ) -> None:
     elapsed_text = _format_elapsed_seconds(elapsed_seconds)
     if new_lines:
-        preview = "\n".join(new_lines[-_PROGRESS_PREVIEW_LINES:])
-        message = f"[{elapsed_text}]\n{preview}"
-        logger.info(message)
+        agent_logger.debug("[%s] %d new lines", elapsed_text, len(new_lines))
         if progress_callback is not None:
             try:
-                progress_callback(message)
+                progress_callback(
+                    f"[{elapsed_text}] Coding agent running — {total_lines} lines of output so far"
+                )
             except Exception:
                 logger.exception("Coding agent progress callback failed.")
     else:
         logger.debug("[%s] Coding agent still running, no new output.", elapsed_text)
         if progress_callback is not None:
             try:
-                progress_callback(f"[{elapsed_text}] Still running...")
+                progress_callback(f"[{elapsed_text}] Still running... ({total_lines} lines so far)")
             except Exception:
                 logger.exception("Coding agent progress callback failed.")
 

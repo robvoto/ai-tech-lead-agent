@@ -8,7 +8,9 @@ from logging.handlers import RotatingFileHandler
 from ai_tech_lead.config import LOGS_DIR, ensure_project_dirs
 
 LOG_FILE = LOGS_DIR / "ai_tech_lead.log"
+AGENT_LOG_FILE = LOGS_DIR / "coding_agent.log"
 LOGGER_NAME = "ai_tech_lead"
+AGENT_LOGGER_NAME = f"{LOGGER_NAME}.agent"
 
 
 def configure_logging(*, debug: bool = False) -> logging.Logger:
@@ -41,5 +43,18 @@ def configure_logging(*, debug: bool = False) -> logging.Logger:
 
     logger.addHandler(file_handler)
     logger.addHandler(console_handler)
+
+    agent_logger = logging.getLogger(AGENT_LOGGER_NAME)
+    if not agent_logger.handlers:
+        agent_logger.setLevel(logging.DEBUG)
+        agent_logger.propagate = False
+        agent_file_handler = RotatingFileHandler(
+            AGENT_LOG_FILE,
+            maxBytes=5_000_000,
+            backupCount=5,
+            encoding="utf-8",
+        )
+        agent_file_handler.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
+        agent_logger.addHandler(agent_file_handler)
 
     return logger
