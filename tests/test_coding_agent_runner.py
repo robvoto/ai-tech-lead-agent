@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import subprocess
 from dataclasses import replace
 from io import StringIO
@@ -54,66 +53,6 @@ def _install_fake_pipe_popen(
     monkeypatch.setattr(subprocess, "Popen", FakePopen)
     return calls
 
-
-def _install_fake_pty_popen(
-    monkeypatch: pytest.MonkeyPatch,
-    *,
-    returncode: int = 0,
-    output: str = "done",
-    poll_calls_before_done: int = 0,
-) -> list[dict[str, object]]:
-    """Fake for PTY-mode runs (use_pty=True)."""
-    calls: list[dict[str, object]] = []
-
-    r_fd, w_fd = os.pipe()
-    if output:
-        os.write(w_fd, (output + "\n").encode())
-
-    monkeypatch.setattr("pty.openpty", lambda: (r_fd, -1))
-
-    original_os_close = os.close
-
-    def _safe_close(fd: int) -> None:
-        if fd == -1:
-            return
-        original_os_close(fd)
-
-    monkeypatch.setattr(os, "close", _safe_close)
-
-    class FakePopen:
-        def __init__(self, args: object, **kwargs: object) -> None:
-            calls.append({"args": args, "kwargs": kwargs})
-            self.args = args
-            self.returncode: int | None = None
-            self._poll_calls = 0
-            self._returncode = returncode
-            self._w_fd: int | None = w_fd
-
-        def poll(self) -> int | None:
-            if self._poll_calls < poll_calls_before_done:
-                self._poll_calls += 1
-                return None
-            if self._w_fd is not None:
-                try:
-                    original_os_close(self._w_fd)
-                except OSError:
-                    pass
-                self._w_fd = None
-            self.returncode = self._returncode
-            return self._returncode
-
-        def wait(self, timeout: float | None = None) -> int:
-            self.returncode = self._returncode
-            return self._returncode
-
-        def kill(self) -> None:
-            self.returncode = -9
-
-        def terminate(self) -> None:
-            self.returncode = self._returncode
-
-    monkeypatch.setattr(subprocess, "Popen", FakePopen)
-    return calls
 
 
 def test_run_coding_agent_returns_disabled_result_without_subprocess(
@@ -295,8 +234,8 @@ def test_run_coding_agent_emits_progress_heartbeats(
         "run",
         lambda *a, **kw: subprocess.CompletedProcess(args=a[0], returncode=0, stdout="", stderr=""),
     )
-    _install_fake_pty_popen(
-        monkeypatch, returncode=0, output="agent output line", poll_calls_before_done=2
+    _install_fake_pipe_popen(
+        monkeypatch, returncode=0, stdout="agent output line", poll_calls_before_done=2
     )
 
     progress_messages: list[str] = []

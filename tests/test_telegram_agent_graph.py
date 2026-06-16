@@ -7,7 +7,11 @@ from helpers import valid_settings_dict
 from langchain_core.messages import AIMessage
 
 from ai_tech_lead.app_settings import parse_settings
-from ai_tech_lead.telegram_agent_graph import _build_backlog_tools, run_telegram_agent_message
+from ai_tech_lead.telegram_agent_graph import (
+    TelegramAgentReply,
+    _build_backlog_tools,
+    run_telegram_agent_message,
+)
 from ai_tech_lead.telegram_operator import TelegramCommand, TelegramCommandName, TelegramOperator
 
 
@@ -25,10 +29,11 @@ def test_plain_text_uses_telegram_agent_graph_when_ai_enabled(monkeypatch, tmp_p
     operator = TelegramOperator("token", settings, client=client)
     captured: dict[str, object] = {}
 
-    def fake_run_telegram_agent_message(*, app, thread_id, text):
+    def fake_run_telegram_agent_message(*, app, thread_id, text, session_cost_total_usd):
         captured["app"] = app
         captured["thread_id"] = thread_id
         captured["text"] = text
+        captured["session_cost_total_usd"] = session_cost_total_usd
         return _Reply("Backlog has 1 item.")
 
     monkeypatch.setattr(
@@ -48,19 +53,62 @@ def test_plain_text_uses_telegram_agent_graph_when_ai_enabled(monkeypatch, tmp_p
     assert captured["app"] == "fake-app"
     assert captured["thread_id"] == f"telegram-agent-{operator._session_id}-chat-1"
     assert captured["text"] == "how many backlog items?"
+    assert captured["session_cost_total_usd"] == 0.0
     assert client.messages[-1] == ("chat-1", "Backlog has 1 item.")
 
 
-def test_new_resets_telegram_agent_memory() -> None:
+def test_new_resets_telegram_agent_app() -> None:
     settings = parse_settings(valid_settings_dict())
     operator = TelegramOperator("token", settings, client=_RecordingClient())
-    old_memory = operator._telegram_agent_memory
+    old_session_id = operator._session_id
     operator._telegram_agent_app = object()
 
     operator._handle_command("chat-1", TelegramCommand(name=TelegramCommandName.NEW), "demo-user")
 
-    assert operator._telegram_agent_memory is not old_memory
+    assert operator._session_id != old_session_id
     assert operator._telegram_agent_app is None
+
+
+def test_telegram_agent_session_cost_accumulates_and_resets_on_new(
+    monkeypatch,
+) -> None:
+    raw_settings = valid_settings_dict()
+    raw_settings["orchestrator_ai_enabled"] = True
+    settings = parse_settings(raw_settings)
+    operator = TelegramOperator("token", settings, client=_RecordingClient())
+    seen_session_costs: list[float] = []
+    replies = iter(
+        [
+            TelegramAgentReply(text="First reply.", usage_cost_usd=0.25),
+            TelegramAgentReply(text="Second reply.", usage_cost_usd=0.50),
+        ]
+    )
+
+    def fake_run_telegram_agent_message(*, app, thread_id, text, session_cost_total_usd):
+        seen_session_costs.append(session_cost_total_usd)
+        return next(replies)
+
+    monkeypatch.setattr(
+        "ai_tech_lead.telegram_operator.run_telegram_agent_message",
+        fake_run_telegram_agent_message,
+    )
+
+    operator._handle_command(
+        "chat-1",
+        TelegramCommand(name=TelegramCommandName.UNKNOWN, raw_text="first question"),
+        "demo-user",
+    )
+    assert operator._telegram_agent_session_cost_usd == 0.25
+    operator._handle_command(
+        "chat-1",
+        TelegramCommand(name=TelegramCommandName.UNKNOWN, raw_text="second question"),
+        "demo-user",
+    )
+    assert operator._telegram_agent_session_cost_usd == 0.75
+    operator._handle_command("chat-1", TelegramCommand(name=TelegramCommandName.NEW), "demo-user")
+
+    assert seen_session_costs == [0.0, 0.25]
+    assert operator._telegram_agent_session_cost_usd == 0.0
 
 
 def test_run_telegram_agent_message_logs_learner_steps(caplog) -> None:
@@ -106,11 +154,17 @@ def test_run_telegram_agent_message_logs_token_usage(caplog) -> None:
             }
 
     caplog.set_level(logging.INFO)
-    run_telegram_agent_message(app=_FakeApp(), thread_id="thread-1", text="test")
+    run_telegram_agent_message(
+        app=_FakeApp(),
+        thread_id="thread-1",
+        text="test",
+        session_cost_total_usd=1.0,
+    )
 
     assert "[LLM] telegram-chat" in caplog.text
     assert "tokens_total=120" in caplog.text
-    assert "cost_total=~$0.0001" in caplog.text
+    assert "session:" in caplog.text
+    assert "~$0.0001" in caplog.text
 
 
 def test_run_telegram_agent_message_falls_back_to_response_metadata_tokens(caplog) -> None:
@@ -138,7 +192,7 @@ def test_run_telegram_agent_message_falls_back_to_response_metadata_tokens(caplo
 
     assert "[LLM] telegram-chat" in caplog.text
     assert "tokens_total=95" in caplog.text
-    assert "cost_total=~$" in caplog.text
+    assert "session:" in caplog.text
 
 
 def test_run_telegram_agent_message_skips_usage_log_when_no_usage(caplog) -> None:
@@ -286,6 +340,85 @@ def test_set_backlog_item_status_tool_accepts_wont_do(tmp_path: Path) -> None:
 
     assert "Status is now 'Won't Do'" in result
     assert "Status: Won't Do" in backlog_path.read_text(encoding="utf-8")
+
+
+def test_read_project_file_tool_reads_allowed_file(tmp_path: Path) -> None:
+    backlog_path = tmp_path / "BACKLOG.md"
+    backlog_path.write_text("# Backlog\n", encoding="utf-8")
+    docs_dir = tmp_path / "docs"
+    docs_dir.mkdir()
+    arch_file = docs_dir / "ARCHITECTURE.md"
+    arch_file.write_text("# Architecture\n\nThis is the architecture.", encoding="utf-8")
+
+    raw_settings = valid_settings_dict()
+    raw_settings["project_root"] = str(tmp_path)
+    raw_settings["backlog_path"] = str(backlog_path)
+    raw_settings["allowed_directories"] = ["docs"]
+    settings = parse_settings(raw_settings)
+    tools = _build_backlog_tools(settings)
+    read_tool = next(tool for tool in tools if tool.name == "read_project_file")
+
+    result = read_tool.invoke({"path": "docs/ARCHITECTURE.md"})
+
+    assert "# Architecture" in result
+    assert "This is the architecture." in result
+
+
+def test_read_project_file_tool_rejects_path_outside_project_root(tmp_path: Path) -> None:
+    backlog_path = tmp_path / "BACKLOG.md"
+    backlog_path.write_text("# Backlog\n", encoding="utf-8")
+
+    raw_settings = valid_settings_dict()
+    raw_settings["project_root"] = str(tmp_path)
+    raw_settings["backlog_path"] = str(backlog_path)
+    raw_settings["allowed_directories"] = ["docs"]
+    settings = parse_settings(raw_settings)
+    tools = _build_backlog_tools(settings)
+    read_tool = next(tool for tool in tools if tool.name == "read_project_file")
+
+    result = read_tool.invoke({"path": "../../etc/passwd"})
+
+    assert "Access denied" in result
+    assert "outside the project root" in result
+
+
+def test_read_project_file_tool_rejects_path_in_non_allowed_directory(tmp_path: Path) -> None:
+    backlog_path = tmp_path / "BACKLOG.md"
+    backlog_path.write_text("# Backlog\n", encoding="utf-8")
+    secret_dir = tmp_path / "secrets"
+    secret_dir.mkdir()
+    (secret_dir / "creds.txt").write_text("secret", encoding="utf-8")
+
+    raw_settings = valid_settings_dict()
+    raw_settings["project_root"] = str(tmp_path)
+    raw_settings["backlog_path"] = str(backlog_path)
+    raw_settings["allowed_directories"] = ["docs"]
+    settings = parse_settings(raw_settings)
+    tools = _build_backlog_tools(settings)
+    read_tool = next(tool for tool in tools if tool.name == "read_project_file")
+
+    result = read_tool.invoke({"path": "secrets/creds.txt"})
+
+    assert "Access denied" in result
+    assert "not in an allowed directory" in result
+
+
+def test_read_project_file_tool_returns_error_for_missing_file(tmp_path: Path) -> None:
+    backlog_path = tmp_path / "BACKLOG.md"
+    backlog_path.write_text("# Backlog\n", encoding="utf-8")
+    (tmp_path / "docs").mkdir()
+
+    raw_settings = valid_settings_dict()
+    raw_settings["project_root"] = str(tmp_path)
+    raw_settings["backlog_path"] = str(backlog_path)
+    raw_settings["allowed_directories"] = ["docs"]
+    settings = parse_settings(raw_settings)
+    tools = _build_backlog_tools(settings)
+    read_tool = next(tool for tool in tools if tool.name == "read_project_file")
+
+    result = read_tool.invoke({"path": "docs/MISSING.md"})
+
+    assert "File not found" in result
 
 
 class _Reply:

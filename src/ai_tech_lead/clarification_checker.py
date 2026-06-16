@@ -28,17 +28,16 @@ class ClarificationDecision:
 
 def check_task_clarification(
     request: str,
-    brief: str,
     task_feedback: list[str],
     settings: AppSettings,
 ) -> ClarificationDecision:
-    """Decide whether more info is needed before writing the coding agent instruction."""
+    """Decide whether more info is needed before tech lead analysis."""
 
     if not settings.orchestrator_ai_enabled:
         return ClarificationDecision(needs_clarification=False, question="", reason="")
 
     try:
-        return _llm_clarification_decision(request, brief, task_feedback, settings)
+        return _llm_clarification_decision(request, task_feedback, settings)
     except OrchestratorLlmError as error:
         logger.warning("Clarification check LLM call failed: %s", error)
         return ClarificationDecision(needs_clarification=False, question="", reason="")
@@ -49,7 +48,6 @@ def check_task_clarification(
 
 def _llm_clarification_decision(
     request: str,
-    brief: str,
     task_feedback: list[str],
     settings: AppSettings,
 ) -> ClarificationDecision:
@@ -57,7 +55,6 @@ def _llm_clarification_decision(
     prompt = render_prompt(
         CLARIFICATION_CHECK_PROMPT_KEY,
         request=request,
-        brief=brief,
         task_feedback=feedback_text,
     )
     result = call_orchestrator_llm(

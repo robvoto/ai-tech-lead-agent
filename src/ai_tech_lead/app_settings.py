@@ -6,6 +6,7 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from ai_tech_lead.config import PROJECT_ROOT, SETTINGS_PATH
 
@@ -23,11 +24,20 @@ class AppSettings:
     coding_agent_args: list[str]
     execute_coding_agent: bool
     telegram_enabled: bool
+    project_context: list[str]
     allowed_directories: list[str]
     watched_directories: list[str]
     brief_constraints: list[str]
     acceptance_criteria: list[str]
     risk_notes: list[str]
+    research_local_index_paths: list[str]
+    research_min_local_sources: int
+    research_max_local_sources: int
+    research_allowed_domains: list[str]
+    research_online_source_urls: list[str]
+    research_max_online_source_urls: int
+    research_fetch_timeout_seconds: int
+    research_max_excerpt_chars: int
     telegram_transport: str
     telegram_api_base_url: str
     telegram_long_poll_timeout_seconds: int
@@ -45,6 +55,7 @@ class AppSettings:
     orchestrator_ai_max_output_tokens: int
     orchestrator_ai_timeout_seconds: int
     coding_agent_progress_interval_seconds: int
+    army_allowed_project_roots: list[str]
 
 
 def load_settings(settings_path: Path = SETTINGS_PATH) -> AppSettings:
@@ -98,11 +109,44 @@ def parse_settings(raw_settings: dict[str, Any]) -> AppSettings:
             "telegram_enabled",
             default=False,
         ),
+        project_context=_required_string_list(raw_settings, "project_context"),
         allowed_directories=_required_string_list(raw_settings, "allowed_directories"),
         watched_directories=_required_string_list(raw_settings, "watched_directories"),
         brief_constraints=_required_string_list(raw_settings, "brief_constraints"),
         acceptance_criteria=_required_string_list(raw_settings, "acceptance_criteria"),
         risk_notes=_required_string_list(raw_settings, "risk_notes"),
+        research_local_index_paths=_required_string_list(
+            raw_settings,
+            "research_local_index_paths",
+        ),
+        research_min_local_sources=_required_positive_int(
+            raw_settings,
+            "research_min_local_sources",
+        ),
+        research_max_local_sources=_required_positive_int(
+            raw_settings,
+            "research_max_local_sources",
+        ),
+        research_allowed_domains=_required_string_list(
+            raw_settings,
+            "research_allowed_domains",
+        ),
+        research_online_source_urls=_required_string_list(
+            raw_settings,
+            "research_online_source_urls",
+        ),
+        research_max_online_source_urls=_required_positive_int(
+            raw_settings,
+            "research_max_online_source_urls",
+        ),
+        research_fetch_timeout_seconds=_required_positive_int(
+            raw_settings,
+            "research_fetch_timeout_seconds",
+        ),
+        research_max_excerpt_chars=_required_positive_int(
+            raw_settings,
+            "research_max_excerpt_chars",
+        ),
         telegram_transport=_required_telegram_transport(raw_settings),
         telegram_api_base_url=_optional_url(
             raw_settings,
@@ -179,8 +223,13 @@ def parse_settings(raw_settings: dict[str, Any]) -> AppSettings:
             "coding_agent_progress_interval_seconds",
             default=10,
         ),
+        army_allowed_project_roots=_optional_string_list(
+            raw_settings,
+            "army_allowed_project_roots",
+        ),
     )
     _validate_telegram_settings(settings)
+    _validate_research_settings(settings)
     return settings
 
 
@@ -195,11 +244,20 @@ def settings_to_dict(settings: AppSettings) -> dict[str, Any]:
         "coding_agent_args": settings.coding_agent_args,
         "execute_coding_agent": settings.execute_coding_agent,
         "telegram_enabled": settings.telegram_enabled,
+        "project_context": settings.project_context,
         "allowed_directories": settings.allowed_directories,
         "watched_directories": settings.watched_directories,
         "brief_constraints": settings.brief_constraints,
         "acceptance_criteria": settings.acceptance_criteria,
         "risk_notes": settings.risk_notes,
+        "research_local_index_paths": settings.research_local_index_paths,
+        "research_min_local_sources": settings.research_min_local_sources,
+        "research_max_local_sources": settings.research_max_local_sources,
+        "research_allowed_domains": settings.research_allowed_domains,
+        "research_online_source_urls": settings.research_online_source_urls,
+        "research_max_online_source_urls": settings.research_max_online_source_urls,
+        "research_fetch_timeout_seconds": settings.research_fetch_timeout_seconds,
+        "research_max_excerpt_chars": settings.research_max_excerpt_chars,
         "telegram_transport": settings.telegram_transport,
         "telegram_api_base_url": settings.telegram_api_base_url,
         "telegram_long_poll_timeout_seconds": settings.telegram_long_poll_timeout_seconds,
@@ -217,6 +275,7 @@ def settings_to_dict(settings: AppSettings) -> dict[str, Any]:
         "orchestrator_ai_max_output_tokens": settings.orchestrator_ai_max_output_tokens,
         "orchestrator_ai_timeout_seconds": settings.orchestrator_ai_timeout_seconds,
         "coding_agent_progress_interval_seconds": settings.coding_agent_progress_interval_seconds,
+        "army_allowed_project_roots": settings.army_allowed_project_roots,
     }
 
 
@@ -248,6 +307,21 @@ def _required_string_list(
         raise ValueError(f"Setting '{key}' must contain non-empty strings.")
 
     return cleaned_values
+
+
+def _optional_string_list(
+    raw_settings: dict[str, Any],
+    key: str,
+) -> list[str]:
+    value = raw_settings.get(key)
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise ValueError(f"Setting '{key}' must be a list of strings.")
+    cleaned = [item.strip() for item in value if isinstance(item, str) and item.strip()]
+    if len(cleaned) != len(value):
+        raise ValueError(f"Setting '{key}' must contain non-empty strings.")
+    return cleaned
 
 
 def _required_bool(raw_settings: dict[str, Any], key: str) -> bool:
@@ -331,4 +405,39 @@ def _validate_telegram_settings(settings: AppSettings) -> None:
         if not settings.telegram_webhook_secret_token:
             raise ValueError(
                 "Setting 'telegram_webhook_secret_token' is required for webhook mode."
+            )
+
+
+def _validate_research_settings(settings: AppSettings) -> None:
+    if settings.research_min_local_sources > settings.research_max_local_sources:
+        raise ValueError(
+            "Setting 'research_min_local_sources' must be less than or equal to "
+            "'research_max_local_sources'."
+        )
+
+    if not settings.research_local_index_paths:
+        raise ValueError("Setting 'research_local_index_paths' must not be empty.")
+
+    if not settings.research_online_source_urls:
+        raise ValueError("Setting 'research_online_source_urls' must not be empty.")
+
+    if settings.research_max_online_source_urls <= 0:
+        raise ValueError("Setting 'research_max_online_source_urls' must be positive.")
+
+    if not settings.research_allowed_domains:
+        raise ValueError("Setting 'research_allowed_domains' must not be empty.")
+
+    allowed_domains = {domain.lower() for domain in settings.research_allowed_domains}
+    for url in settings.research_online_source_urls:
+        parsed = urlparse(url)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ValueError("Each entry in 'research_online_source_urls' must be an http(s) URL.")
+
+        hostname = (parsed.hostname or "").lower()
+        if hostname not in allowed_domains and not any(
+            hostname.endswith(f".{domain}") for domain in allowed_domains
+        ):
+            raise ValueError(
+                "Each entry in 'research_online_source_urls' must use one of the "
+                "allowed research domains."
             )

@@ -13,7 +13,7 @@ from typing import Callable, Sequence
 
 from ai_tech_lead.admin_server import run_admin_server
 from ai_tech_lead.app_settings import AppSettings, load_settings
-from ai_tech_lead.config import PROJECT_ROOT, SETTINGS_PATH
+from ai_tech_lead.config import CODING_AGENT_LOCK_FILE, PROJECT_ROOT, SETTINGS_PATH
 from ai_tech_lead.graph_diagrams import export_graph_diagrams
 from ai_tech_lead.logging_setup import LOGGER_NAME, configure_logging
 from ai_tech_lead.storage import initialize_database
@@ -23,6 +23,7 @@ logger = logging.getLogger(LOGGER_NAME)
 _RELOAD_WATCHED_DIRECTORIES: tuple[str, ...] = ("src", "config", "docs")
 _RELOAD_POLL_INTERVAL_SECONDS = 0.5
 _RELOAD_TERMINATE_TIMEOUT_SECONDS = 5.0
+_RELOAD_AGENT_LOCK_WAIT_SECONDS = 1800  # max seconds to defer reload while agent runs
 
 
 def main() -> int:
@@ -31,13 +32,21 @@ def main() -> int:
     args = _parse_args()
     configure_logging(debug=args.debug)
 
+    # Army entry point — non-interactive, no Telegram, no admin UI
+    if getattr(args, "command", None) == "run-agent-task":
+        from ai_tech_lead.agent_task_runner import run_agent_task
+        return run_agent_task(args.input_json, args.output_json)
+
     if args.reload:
         return _run_with_reload(_reload_command_args())
 
-    return _run_services(debug=args.debug)
+    if getattr(args, "admin", False):
+        return _run_admin_screen()
+
+    return _run_services()
 
 
-def _run_services(*, debug: bool) -> int:
+def _run_services() -> int:
     db_path = initialize_database()
 
     logger.info("AI Technical Lead Assistant started")
@@ -51,8 +60,7 @@ def _run_services(*, debug: bool) -> int:
             "Target project root from settings: %s (current default is hardcoded above)",
             settings.project_root,
         )
-    if debug and settings is not None:
-        export_graph_diagrams(settings=settings)
+    export_graph_diagrams(settings=settings)
     admin_host, admin_port = _admin_bind_address(settings)
     service_threads = [
         _start_service_thread(
@@ -75,20 +83,56 @@ def _run_services(*, debug: bool) -> int:
     return 0
 
 
+def _run_admin_screen() -> int:
+    """Start only the local admin screen for settings and prompt edits."""
+
+    logger.info("AI Technical Lead admin screen started")
+
+    settings = _load_settings_for_startup()
+    if settings is not None:
+        logger.info(
+            "Target project root from settings: %s (current default is hardcoded above)",
+            settings.project_root,
+        )
+    export_graph_diagrams(settings=settings)
+
+    admin_host, admin_port = _admin_bind_address(settings)
+
+    try:
+        run_admin_server(admin_host, admin_port, SETTINGS_PATH)
+    except KeyboardInterrupt:
+        logger.info("Shutdown requested.")
+
+    return 0
+
+
 def _parse_args() -> argparse.Namespace:
-    """Parse debug-only command-line options."""
+    """Parse command-line options."""
 
     parser = argparse.ArgumentParser(description="Run the AI Tech Lead prototype.")
-    parser.add_argument(
-        "--debug",
-        action="store_true",
-        help="Enable debug logging for local diagnostics.",
+    parser.add_argument("--debug", action="store_true", help="Enable debug logging.")
+    parser.add_argument("--reload", action="store_true", help="Hot-reload on source changes.")
+    parser.add_argument("--admin", action="store_true", help="Run only the admin UI.")
+
+    subparsers = parser.add_subparsers(dest="command")
+
+    army_parser = subparsers.add_parser(
+        "run-agent-task",
+        help="Army entry point: receive a coding task as JSON, return structured JSON output.",
     )
-    parser.add_argument(
-        "--reload",
-        action="store_true",
-        help="Restart the process when source, config, or prompt files change.",
+    army_parser.add_argument(
+        "--input-json",
+        required=True,
+        metavar="FILE",
+        help="Path to JSON file containing the task request.",
     )
+    army_parser.add_argument(
+        "--output-json",
+        required=True,
+        metavar="FILE",
+        help="Path to write the structured JSON result.",
+    )
+
     return parser.parse_args()
 
 
@@ -132,6 +176,18 @@ def _run_with_reload(command_args: Sequence[str]) -> int:
 
                 current_snapshot = _reload_snapshot(watched_paths)
                 if current_snapshot != previous_snapshot:
+                    if CODING_AGENT_LOCK_FILE.exists():
+                        logger.info(
+                            "Source change detected but coding agent is running; deferring restart."
+                        )
+                        deadline = time.time() + _RELOAD_AGENT_LOCK_WAIT_SECONDS
+                        while CODING_AGENT_LOCK_FILE.exists() and time.time() < deadline:
+                            time.sleep(_RELOAD_POLL_INTERVAL_SECONDS)
+                        if CODING_AGENT_LOCK_FILE.exists():
+                            logger.warning(
+                                "Timed out waiting for coding agent to finish; restarting now."
+                            )
+                        current_snapshot = _reload_snapshot(watched_paths)
                     logger.info("Source change detected; restarting the process.")
                     _terminate_process(process)
                     previous_snapshot = current_snapshot

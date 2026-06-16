@@ -7,6 +7,7 @@ Use this file for progressive disclosure. Start here, then open only the documen
 - `ARCHITECTURE.md` - system architecture, module boundaries, adapter strategy, persistence, and growth rules.
 - `GRAPH_WORKFLOW.md` - implemented LangGraph workflow, nodes, routes, interrupts, and execution boundary.
 - `RUNTIME_RUNBOOK.md` - local run, test, Studio, admin, and troubleshooting commands.
+- `ARMY_INTEGRATION.md` - Agent Army / agent-to-agent subprocess contract, JSON input/output shape, and Telegram boundary.
 - `CONTEXT_MANAGEMENT.md` - context allowed in graph state, prompts, Telegram messages, logs, and coding-agent handoffs.
 - `BACKLOG_MANAGEMENT.md` - current backlog location, Excel workbook rules, and migration notes.
 - `BACKLOG.md` - legacy Markdown backlog source/backup retained for history and comparison; the current workbook lives at `data/backlog/ai_tech_lead_backlog.xlsx`.

@@ -28,26 +28,39 @@ docs/plan/INITIAL_PLAN.md
 - Python: 3.13
 - Package manager: uv
 
+## Agent Army entry point
+
+AI Tech Lead can also be called by another local agent as a coding specialist through the non-interactive JSON subprocess contract. This path is for Agent Army / agent-to-agent routing and does not start Telegram or the admin UI.
+
+```bash
+cd /mnt/e/Programming/ai-tech-lead
+uv run python -m ai_tech_lead run-agent-task --input-json input.json --output-json output.json
+```
+
+See `docs/ARMY_INTEGRATION.md` for the contract and safety boundary.
+
 ## Normal project run
 
 Run from Ubuntu/WSL:
 
 ```bash
 cd /mnt/e/Programming/ai-tech-lead
-uv run python -m ai_tech_lead --task-id JH-001
+uv run python -m ai_tech_lead --debug
 ```
 
 For local development, add `--reload` to restart the process when `src/`, `config/`, or `docs/` change:
 
 ```bash
-uv run python -m ai_tech_lead --task-id JH-001 --reload
+uv run python -m ai_tech_lead --debug --reload
 ```
 
-Real coding-agent execution is disabled unless explicitly requested:
+Trigger backlog tasks through Telegram, for example:
 
-```bash
-uv run python -m ai_tech_lead --task-id JH-001 --execute-coding-agent
+```text
+/run JH-001
 ```
+
+Coding-agent execution is controlled by the local settings/admin toggle (`execute_coding_agent`); there is no `--execute-coding-agent` CLI flag.
 
 ## Tests
 
@@ -65,6 +78,12 @@ Run from Ubuntu/WSL:
 
 ```bash
 uv run python -m ai_tech_lead --admin
+```
+
+Or use the local helper script:
+
+```bash
+./run_admin.sh
 ```
 
 Telegram bot credentials are read from the local `TELEGRAM_BOT_TOKEN` environment variable. You can place it in the project `.env` file for local development.
@@ -105,10 +124,3 @@ uv run ruff check . --fix
 ```
 
 Use dev commands on changed files where possible. Do not reformat the whole repository unless a separate cleanup task asks for it.
-
-## Current focus
-
-Start with a small local prototype that can receive explicit local tasks, create
-controlled execution briefs, call one coding agent when explicitly enabled, and
-pause for approval when needed. Telegram or similar chat input should be added as
-an adapter around the core workflow, not baked into the graph.

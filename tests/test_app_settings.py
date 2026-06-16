@@ -4,6 +4,7 @@ import pytest
 from helpers import valid_settings_dict
 
 from ai_tech_lead.app_settings import parse_settings, settings_to_dict
+from ai_tech_lead.config import PROJECT_ROOT
 
 
 def test_parse_settings_round_trips_valid_config() -> None:
@@ -11,7 +12,7 @@ def test_parse_settings_round_trips_valid_config() -> None:
 
     settings = parse_settings(raw_settings)
 
-    assert settings.project_root == "/mnt/e/Programming/ai-tech-lead"
+    assert settings.project_root == str(PROJECT_ROOT)
     assert settings.backlog_path == "data/backlog/ai_tech_lead_backlog.xlsx"
     assert settings.coding_agent_command == "codex"
     assert settings.coding_agent_args == ["--ask-for-approval", "never", "exec"]
@@ -30,6 +31,17 @@ def test_parse_settings_round_trips_valid_config() -> None:
     assert settings.orchestrator_ai_model == "gpt-4.1-mini"
     assert settings.orchestrator_ai_max_output_tokens == 300
     assert settings.orchestrator_ai_timeout_seconds == 20
+    assert settings.research_local_index_paths == ["docs/INDEX.md", "docs/research/INDEX.md"]
+    assert settings.research_min_local_sources == 2
+    assert settings.research_max_local_sources == 4
+    assert settings.research_allowed_domains == ["docs.langchain.com"]
+    assert (
+        settings.research_online_source_urls[0]
+        == "https://docs.langchain.com/oss/python/langgraph/overview"
+    )
+    assert settings.research_max_online_source_urls == 4
+    assert settings.research_fetch_timeout_seconds == 10
+    assert settings.research_max_excerpt_chars == 800
     assert settings_to_dict(settings) == raw_settings
 
 
@@ -77,6 +89,19 @@ def test_parse_settings_rejects_invalid_coding_agent_fields() -> None:
     with pytest.raises(ValueError, match="telegram_api_base_url"):
         parse_settings(raw_settings)
 
+    raw_settings = valid_settings_dict()
+    raw_settings["research_min_local_sources"] = 5
+    raw_settings["research_max_local_sources"] = 4
+
+    with pytest.raises(ValueError, match="research_min_local_sources"):
+        parse_settings(raw_settings)
+
+    raw_settings = valid_settings_dict()
+    raw_settings["research_online_source_urls"] = ["https://example.com/"]
+
+    with pytest.raises(ValueError, match="allowed research domains"):
+        parse_settings(raw_settings)
+
 
 def test_parse_settings_defaults_project_root_when_missing() -> None:
     raw_settings = valid_settings_dict()
@@ -85,3 +110,25 @@ def test_parse_settings_defaults_project_root_when_missing() -> None:
     settings = parse_settings(raw_settings)
 
     assert settings.project_root.endswith("ai-tech-lead")
+
+
+def test_parse_settings_rejects_missing_project_context() -> None:
+    raw_settings = valid_settings_dict()
+    raw_settings.pop("project_context")
+
+    try:
+        parse_settings(raw_settings)
+        assert False, "Expected ValueError"
+    except ValueError as err:
+        assert "project_context" in str(err)
+
+
+def test_parse_settings_rejects_empty_project_context() -> None:
+    raw_settings = valid_settings_dict()
+    raw_settings["project_context"] = []
+
+    try:
+        parse_settings(raw_settings)
+        assert False, "Expected ValueError"
+    except ValueError as err:
+        assert "project_context" in str(err)

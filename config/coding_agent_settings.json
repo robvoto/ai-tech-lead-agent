@@ -1,5 +1,5 @@
 {
-  "backlog_path": "data/backlog/ai_tech_lead_backlog.xlsx",
+  "backlog_path": "data/backlog.sqlite3",
   "max_runtime_minutes": 20,
   "coding_agent_command": "codex",
   "coding_agent_args": [
@@ -33,6 +33,24 @@
   "risk_notes": [
     "Approval is controlled by the selected backlog item until the planned LLM review node exists."
   ],
+  "research_local_index_paths": [
+    "docs/INDEX.md",
+    "docs/research/INDEX.md"
+  ],
+  "research_min_local_sources": 2,
+  "research_max_local_sources": 4,
+  "research_allowed_domains": [
+    "docs.langchain.com"
+  ],
+  "research_online_source_urls": [
+    "https://docs.langchain.com/oss/python/langgraph/overview",
+    "https://docs.langchain.com/oss/python/langgraph/interrupts",
+    "https://docs.langchain.com/oss/python/langgraph/checkpointers",
+    "https://docs.langchain.com/oss/python/langgraph/application-structure"
+  ],
+  "research_max_online_source_urls": 4,
+  "research_fetch_timeout_seconds": 10,
+  "research_max_excerpt_chars": 800,
   "telegram_transport": "polling",
   "telegram_api_base_url": "https://api.telegram.org",
   "telegram_long_poll_timeout_seconds": 25,
@@ -40,6 +58,9 @@
   "telegram_max_message_chars": 3900,
   "telegram_allowed_chat_ids": [
     "8290927833"
+  ],
+  "army_allowed_project_roots": [
+    "/mnt/e/Programming/ai-tech-lead"
   ],
   "telegram_webhook_url": "",
   "telegram_webhook_bind_host": "127.0.0.1",

@@ -25,7 +25,6 @@ from urllib.parse import urlencode, urlparse
 from urllib.request import Request, urlopen
 
 from langchain_core.runnables import RunnableConfig
-from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import Command
 
 from .app_settings import AppSettings, load_settings
@@ -41,6 +40,7 @@ from .backlog_repository import (
     format_backlog_list_item,
 )
 from .backlog_status import backlog_status_choices, normalize_backlog_status
+from .checkpointer_store import get_checkpointer
 from .coding_agent_runner import CodingAgentCancellationToken
 from .coding_workflow_graph import GraphState, build_graph
 from .config import PROJECT_ROOT
@@ -351,8 +351,8 @@ class TelegramOperator:
         self._running = False
         self._active_tasks: dict[str, ActiveTelegramTask] = {}
         self._pending_backlog_drafts: dict[str, PendingBacklogDraft] = {}
-        self._telegram_agent_memory = MemorySaver()
         self._telegram_agent_app: Any | None = None
+        self._telegram_agent_session_cost_usd = 0.0
         self._session_id = uuid.uuid4().hex
         logger.warning(
             "TelegramOperator initialised (session=%s). "
@@ -396,10 +396,14 @@ class TelegramOperator:
         self._register_commands()
 
         while self._running:
-            updates = self._client.get_updates(
-                offset=offset,
-                timeout_seconds=self._settings.telegram_long_poll_timeout_seconds,
-            )
+            try:
+                updates = self._client.get_updates(
+                    offset=offset,
+                    timeout_seconds=self._settings.telegram_long_poll_timeout_seconds,
+                )
+            except (TimeoutError, OSError):
+                logger.debug("Telegram poll timed out or network error, retrying")
+                continue
             for update in updates:
                 offset = update.update_id + 1
                 threading.Thread(
@@ -474,9 +478,7 @@ class TelegramOperator:
             with self._get_chat_lock(update.chat_id):
                 self._dispatch_command(update.chat_id, command, update.sender)
 
-    def _dispatch_command(
-        self, chat_id: str, command: TelegramCommand, sender: str
-    ) -> None:
+    def _dispatch_command(self, chat_id: str, command: TelegramCommand, sender: str) -> None:
         try:
             self._handle_command(chat_id, command, sender)
         except ValueError as error:
@@ -677,7 +679,9 @@ class TelegramOperator:
                             app=self._get_telegram_agent_app(),
                             thread_id=self._telegram_agent_thread_id(chat_id),
                             text=context_text,
+                            session_cost_total_usd=self._telegram_agent_session_cost_usd,
                         )
+                        self._record_telegram_agent_usage(reply)
                         self._send_message(chat_id, reply.text)
                     except Exception:
                         logger.exception("Telegram agent graph failed for chat %s", chat_id)
@@ -699,7 +703,9 @@ class TelegramOperator:
                     app=self._get_telegram_agent_app(),
                     thread_id=self._telegram_agent_thread_id(chat_id),
                     text=text,
+                    session_cost_total_usd=self._telegram_agent_session_cost_usd,
                 )
+                self._record_telegram_agent_usage(reply)
             except Exception:
                 logger.exception("Telegram agent graph failed for chat %s", chat_id)
                 self._send_message(chat_id, "Error: Telegram agent graph failed. Check logs.")
@@ -726,7 +732,9 @@ class TelegramOperator:
                 app=self._get_telegram_agent_app(),
                 thread_id=self._telegram_agent_thread_id(chat_id),
                 text=text,
+                session_cost_total_usd=self._telegram_agent_session_cost_usd,
             )
+            self._record_telegram_agent_usage(reply)
         except Exception:
             logger.exception("Telegram agent graph failed for chat %s", chat_id)
             self._send_message(chat_id, "Error: Telegram agent graph failed. Check logs.")
@@ -748,10 +756,7 @@ class TelegramOperator:
             return
 
         logger.info("Telegram action: building backlog refinement draft for chat %s.", chat_id)
-        repository = MarkdownBacklogRepository(
-            Path(self._settings.backlog_path),
-            project_root=Path(self._settings.project_root),
-        )
+        repository = self._get_repository()
         try:
             result = build_backlog_refinement_from_text(
                 text=text,
@@ -786,10 +791,7 @@ class TelegramOperator:
             )
             return True
 
-        repository = MarkdownBacklogRepository(
-            Path(self._settings.backlog_path),
-            project_root=Path(self._settings.project_root),
-        )
+        repository = self._get_repository()
         item = repository.add_refined_item(pending_draft.draft)
         self._send_message(chat_id, f"Backlog item added: {item.item_id} - {item.title}")
         return True
@@ -855,10 +857,9 @@ class TelegramOperator:
             self._execute_coding_agent_override,
         )
         self._send_message(chat_id, f"Working on: {request_summary}")
-        memory = MemorySaver()
         cancellation_token = CodingAgentCancellationToken()
         app = build_graph(
-            checkpointer_storage=memory,
+            checkpointer_storage=get_checkpointer(),
             execute_coding_agent_override=self._execute_coding_agent_override,
             coding_agent_progress_callback=self._coding_agent_progress_callback(
                 chat_id=chat_id,
@@ -1005,10 +1006,7 @@ class TelegramOperator:
             self._send_message(chat_id, "No live coding-agent subprocess was found to stop.")
 
     def _handle_list(self, chat_id: str, limit_arg: str) -> None:
-        repository = MarkdownBacklogRepository(
-            Path(self._settings.backlog_path),
-            project_root=Path(self._settings.project_root),
-        )
+        repository = self._get_repository()
         limit = _parse_backlog_limit(limit_arg, default_limit=10, allow_all=True)
         if limit == "all":
             items = repository.list_items_sorted()
@@ -1019,10 +1017,7 @@ class TelegramOperator:
         self._send_backlog_list(chat_id, items, empty_message=empty_message)
 
     def _handle_next(self, chat_id: str, limit_arg: str) -> None:
-        repository = MarkdownBacklogRepository(
-            Path(self._settings.backlog_path),
-            project_root=Path(self._settings.project_root),
-        )
+        repository = self._get_repository()
         limit = _parse_backlog_limit(limit_arg, default_limit=3, allow_all=False)
         items = repository.list_open_items_sorted()[: min(max(limit, 1), 20)]
         self._send_backlog_list(
@@ -1055,10 +1050,7 @@ class TelegramOperator:
             self._send_message(chat_id, message)
 
     def _handle_count(self, chat_id: str) -> None:
-        repository = MarkdownBacklogRepository(
-            Path(self._settings.backlog_path),
-            project_root=Path(self._settings.project_root),
-        )
+        repository = self._get_repository()
         items = repository.list_open_items()
         if not items:
             self._send_message(chat_id, "No open backlog items.")
@@ -1069,10 +1061,7 @@ class TelegramOperator:
     def _handle_read(self, chat_id: str, item_id: str) -> None:
         from .telegram_agent_graph import _backlog_body_without_status, _truncate_text
 
-        repository = MarkdownBacklogRepository(
-            Path(self._settings.backlog_path),
-            project_root=Path(self._settings.project_root),
-        )
+        repository = self._get_repository()
         try:
             item = repository.get_item(item_id)
         except (ValueError, FileNotFoundError) as error:
@@ -1086,10 +1075,7 @@ class TelegramOperator:
 
     def _handle_set_status(self, chat_id: str, argument: str) -> None:
         item_id, new_status = argument.split(maxsplit=1)
-        repository = MarkdownBacklogRepository(
-            Path(self._settings.backlog_path),
-            project_root=Path(self._settings.project_root),
-        )
+        repository = self._get_repository()
         try:
             item = repository.update_item_status(item_id, new_status)
             self._send_message(
@@ -1128,32 +1114,35 @@ class TelegramOperator:
     ) -> None:
         success = bool(state_values.get("coding_agent_success", False))
         timed_out = bool(state_values.get("coding_agent_timed_out", False))
-        agent_ran = bool(state_values.get("coding_agent_performed_by", ""))
+        backlog_status_line = "not tracked"
+        backlog_update_alert: str | None = None
+
+        if backlog_item_id:
+            if success:
+                backlog_updated, backlog_update_alert = self._close_backlog_item(
+                    backlog_item_id,
+                    state_values,
+                )
+                backlog_status_line = "Done" if backlog_updated else "unchanged (update failed)"
+            else:
+                backlog_status_line = "unchanged"
 
         completion_msg = _completion_message(
             task_label,
             state_values=state_values,
+            backlog_status_line=backlog_status_line,
+            backlog_update_alert=backlog_update_alert,
+            timed_out=timed_out,
             limit=self._settings.telegram_max_message_chars,
         )
 
-        if agent_ran and not success:
-            outcome = "timed out" if timed_out else "failed"
-            alert = f"ALERT: Coding agent {outcome} for {task_label}. Backlog status not changed."
-            logger.warning("Finalize: %s", alert)
-            self._send_message(chat_id, f"{completion_msg}\n\n{alert}")
-            return
-
         self._send_message(chat_id, completion_msg)
-
-        if backlog_item_id and success:
-            self._close_backlog_item(chat_id, backlog_item_id, state_values)
 
     def _close_backlog_item(
         self,
-        chat_id: str,
         backlog_item_id: str,
         state_values: dict[str, Any],
-    ) -> None:
+    ) -> tuple[bool, str | None]:
         from datetime import date as _date
 
         changed_files: tuple[str, ...] = state_values.get("coding_agent_changed_files", ())
@@ -1180,11 +1169,11 @@ class TelegramOperator:
             )
             repository.complete_item(backlog_item_id, validation_note)
             logger.info("Finalize: %s marked Done in backlog.", backlog_item_id)
-            self._send_message(chat_id, f"{backlog_item_id} marked Done in backlog.")
+            return True, None
         except Exception as exc:
             alert = f"ALERT: Could not update backlog for {backlog_item_id}: {exc}"
             logger.error("Finalize: %s", alert)
-            self._send_message(chat_id, alert)
+            return False, alert
 
     def _orchestrator_input_expectation_message(
         self,
@@ -1468,6 +1457,7 @@ class TelegramOperator:
         pending_draft = self._pending_backlog_drafts.pop(chat_id, None)
         old_session_id = self._session_id
         self._reset_telegram_agent_memory()
+        self._telegram_agent_session_cost_usd = 0.0
         self._session_id = uuid.uuid4().hex
 
         cancellation_requested = False
@@ -1553,7 +1543,7 @@ class TelegramOperator:
         if self._telegram_agent_app is None:
             self._telegram_agent_app = build_telegram_agent_graph(
                 settings=self._settings,
-                checkpointer=self._telegram_agent_memory,
+                checkpointer=get_checkpointer(),
             )
         return self._telegram_agent_app
 
@@ -1561,8 +1551,25 @@ class TelegramOperator:
         return f"telegram-agent-{self._session_id}-{chat_id}"
 
     def _reset_telegram_agent_memory(self) -> None:
-        self._telegram_agent_memory = MemorySaver()
         self._telegram_agent_app = None
+
+    def _record_telegram_agent_usage(self, reply: TelegramAgentReply) -> None:
+        """Accumulate per-session Telegram agent LLM cost."""
+
+        usage_cost_usd = getattr(reply, "usage_cost_usd", None)
+        if usage_cost_usd is None:
+            return
+        self._telegram_agent_session_cost_usd += usage_cost_usd
+
+    def _get_repository(self):
+        from .backlog_store import SqliteBacklogRepository
+
+        path = Path(self._settings.backlog_path)
+        if not path.is_absolute():
+            path = Path(self._settings.project_root) / path
+        if path.suffix.lower() == ".sqlite3":
+            return SqliteBacklogRepository(path)
+        return MarkdownBacklogRepository(path)
 
     def _send_message(self, chat_id: str, text: str) -> None:
         self._client.send_message(
@@ -1926,6 +1933,9 @@ def _base_graph_state(request: str) -> GraphState:
         "research_evidence_required": False,
         "research_sources_found": 0,
         "research_source_titles": [],
+        "research_source_locations": [],
+        "research_source_summaries": [],
+        "research_online_sources_found": 0,
         "online_research_approved": False,
         "formulated_task": "",
         "plan_text": "",
@@ -1938,6 +1948,7 @@ def _base_graph_state(request: str) -> GraphState:
         "coding_agent_result": "",
         "coding_agent_success": False,
         "coding_agent_changed_files": (),
+        "restart_required": False,
         "coding_agent_command": "",
         "coding_agent_returncode": None,
         "coding_agent_timed_out": False,
@@ -2036,11 +2047,15 @@ def _completion_message(
     state_values: dict[str, Any],
     *,
     limit: int,
+    timed_out: bool = False,
+    backlog_status_line: str | None = None,
+    backlog_update_alert: str | None = None,
     extra_lines: list[str] | None = None,
 ) -> str:
     coding_agent_result = str(state_values.get("coding_agent_result", "")).strip()
+    header = f"Task timed out: {task_label}" if timed_out else f"Task complete: {task_label}"
     if not coding_agent_result:
-        return _truncate_text(f"Task complete: {task_label}", limit)
+        return _truncate_text(header, limit)
 
     # Completion summary rules live in data/prompts.json under completion_summary.
     # summary() format: friendly message, duration, changed files, token notice, then
@@ -2053,7 +2068,11 @@ def _completion_message(
         summary_lines.append(line)
 
     body = "\n".join(summary_lines).strip() or coding_agent_result.splitlines()[0]
-    lines = [f"Task complete: {task_label}", body]
+    lines = [header, body]
+    if backlog_status_line:
+        lines.append(f"Backlog: {backlog_status_line}")
+    if backlog_update_alert:
+        lines.append(backlog_update_alert)
     if extra_lines:
         lines.extend(extra_lines)
     return _truncate_text("\n".join(line for line in lines if line), limit)
@@ -2105,11 +2124,7 @@ def _backlog_start_message(item: BacklogItem, *, limit: int) -> str:
 
 def _backlog_request_summary(item: BacklogItem, *, limit: int = 120) -> str:
     """Single-line summary used for Telegram progress updates."""
-    summary = f"{item.item_id} - {item.title}"
-    goal = _extract_body_section(item.body, "Goal")
-    if goal:
-        summary = f"{summary} | Goal: {_summarize_text(goal, limit=80)}"
-    return _truncate_text(summary, limit)
+    return _truncate_text(f"{item.item_id} - {item.title}", limit)
 
 
 def _extract_body_section(body: str, section_name: str) -> str:

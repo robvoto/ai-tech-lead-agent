@@ -16,26 +16,53 @@ Use this document for local run, test, and troubleshooting commands. Keep archit
 
 ```bash
 cd /mnt/e/Programming/ai-tech-lead
-uv run python -m ai_tech_lead --task-id JH-001
+uv run python -m ai_tech_lead --debug
 ```
 
 For local development, use `--reload` to restart the process when source, config, or prompt files change:
 
 ```bash
-uv run python -m ai_tech_lead --task-id JH-001 --reload
+uv run python -m ai_tech_lead --debug --reload
 ```
 
-Real coding-agent execution is disabled unless explicitly enabled:
+Trigger backlog tasks through Telegram, for example:
+
+```text
+/run JH-001
+```
+
+Coding-agent execution is controlled by the local settings/admin toggle (`execute_coding_agent`); there is no `--execute-coding-agent` CLI flag.
+
+## Agent Army subprocess
+
+The Agent Army calls AI Tech Lead directly through the JSON subprocess entrypoint:
 
 ```bash
-uv run python -m ai_tech_lead --task-id JH-001 --execute-coding-agent
+cd /mnt/e/Programming/ai-tech-lead
+uv run python -m ai_tech_lead run-agent-task --input-json /tmp/army-task.json --output-json /tmp/army-result.json
 ```
+
+The input JSON must include `task`. Common optional fields are `request_id`, `source`,
+`project_root`, `execution_mode`, `human_approved`, and `approval_token`.
+
+- Safe default: omit `execution_mode` or set it to `instruction_only`.
+- Use `execution_mode: execute` only when the army explicitly wants coding-agent execution and
+  local settings allow it.
+- `project_root` is accepted only when it matches one of `settings.army_allowed_project_roots`.
+- If `human_approved` is true, the request must include the matching one-time `approval_token`
+  previously issued for the same `request_id` and task.
 
 ## Admin UI
 
 ```bash
 cd /mnt/e/Programming/ai-tech-lead
 uv run python -m ai_tech_lead --admin
+```
+
+Helper script:
+
+```bash
+./run_admin.sh
 ```
 
 Default local admin URL:

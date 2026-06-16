@@ -31,6 +31,7 @@ def test_assembled_instruction_includes_project_rules_and_selected_skill() -> No
 
     assert "# Coding-Agent Handoff" in instruction
     assert "## Orchestrator identity" not in instruction
+    assert "## Project context" in instruction
     assert "## Project rules" in instruction
     assert "## Universal rules" in instruction
     assert "## Selected skills" in instruction
@@ -111,16 +112,22 @@ def test_assembled_instruction_includes_evidence_sources_when_provided() -> None
         needs_approval=False,
         approved=False,
         settings=settings,
-        research_sources=[
-            "LangGraph hard rules for approval gates",
-            "Backlog refinement implementation patterns",
+        research_evidence=[
+            (
+                "local-doc: LangGraph hard rules for approval gates | "
+                "docs/research/langgraph-approval-hard-rules.md"
+            ),
+            (
+                "online-doc: LangGraph interrupts | "
+                "https://docs.langchain.com/oss/python/langgraph/interrupts"
+            ),
         ],
     )
 
-    assert "## Evidence Sources" in instruction
+    assert "## Research evidence" in instruction
     assert "LangGraph hard rules for approval gates" in instruction
-    assert "Backlog refinement implementation patterns" in instruction
-    assert "Local research notes consulted for this task:" in instruction
+    assert "https://docs.langchain.com/oss/python/langgraph/interrupts" in instruction
+    assert "Relevant local and official documentation consulted for this task:" in instruction
 
 
 def test_assembled_instruction_omits_evidence_sources_when_not_provided() -> None:
@@ -136,7 +143,7 @@ def test_assembled_instruction_omits_evidence_sources_when_not_provided() -> Non
         settings=settings,
     )
 
-    assert "## Evidence Sources" not in instruction
+    assert "## Research evidence" not in instruction
 
 
 def test_assembled_instruction_has_no_duplicate_request_in_brief() -> None:

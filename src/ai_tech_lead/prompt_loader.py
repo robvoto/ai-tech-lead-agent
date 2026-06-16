@@ -19,10 +19,9 @@ PLAN_REQUEST_INSTRUCTION_PROMPT_KEY = "plan_request_instruction"
 PLAN_REVIEW_PROMPT_KEY = "plan_review"
 RISK_REVIEW_PROMPT_KEY = "risk_review"
 RESEARCH_COMPLEXITY_PROMPT_KEY = "research_complexity"
-TASK_FORMULATION_PROMPT_KEY = "task_formulation"
+TECH_LEAD_ANALYSIS_PROMPT_KEY = "tech_lead_analysis"
 TELEGRAM_AGENT_SYSTEM_PROMPT_KEY = "telegram_agent_system"
 RISK_REVIEW_REASON_PROMPT_KEY = "risk_review_reason"
-EXECUTION_BRIEF_PROMPT_KEY = "execution_brief"
 
 
 @dataclass(frozen=True)

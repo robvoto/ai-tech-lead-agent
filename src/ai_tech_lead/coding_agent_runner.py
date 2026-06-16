@@ -9,10 +9,6 @@ code from those files.
 from __future__ import annotations
 
 import logging
-import os
-import pty
-import re
-import select as _select
 import subprocess
 import threading
 import time
@@ -21,29 +17,13 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ai_tech_lead.app_settings import AppSettings
+from ai_tech_lead.config import CODING_AGENT_LOCK_FILE
 from ai_tech_lead.logging_setup import LOGGER_NAME
 
 logger = logging.getLogger(LOGGER_NAME)
 
 _POLL_INTERVAL_SECONDS = 1.0
 _PROGRESS_PREVIEW_LINES = 5
-
-# Strips ANSI escape sequences (colours, cursor movement, screen control).
-_ANSI_RE = re.compile(
-    rb"\x1b(?:"
-    rb"\[[0-9;]*[mGKHJABCDnsuhl]"
-    rb"|\[[?][0-9;]*[hl]"
-    rb"|\][0-9]+;[^\x07]*\x07"
-    rb"|[@-_][0-9;]*[@-~]?"
-    rb"|[78M]"
-    rb")"
-)
-
-
-def _clean_pty_line(raw: bytes) -> str:
-    """Strip ANSI codes and handle \\r overwrites; return printable text."""
-    last = raw.split(b"\r")[-1]
-    return _ANSI_RE.sub(b"", last).decode("utf-8", errors="replace").strip()
 
 
 @dataclass
@@ -170,16 +150,20 @@ def run_coding_agent(
     changed_files_before = _get_git_changed_files(project_root)
     started_at = time.time()
 
-    run_fn = _run_with_pty if use_pty else _run_with_pipes
-    outcome = run_fn(
-        command=command,
-        project_root=project_root,
-        timeout_seconds=timeout_seconds,
-        progress_interval=progress_interval,
-        progress_callback=progress_callback,
-        cancellation_token=cancellation_token,
-        settings=settings,
-    )
+    CODING_AGENT_LOCK_FILE.touch()
+    try:
+        run_fn = _run_with_pty if use_pty else _run_with_pipes
+        outcome = run_fn(
+            command=command,
+            project_root=project_root,
+            timeout_seconds=timeout_seconds,
+            progress_interval=progress_interval,
+            progress_callback=progress_callback,
+            cancellation_token=cancellation_token,
+            settings=settings,
+        )
+    finally:
+        CODING_AGENT_LOCK_FILE.unlink(missing_ok=True)
 
     ended_at = time.time()
     changed_files_after = _get_git_changed_files(project_root)
@@ -234,38 +218,49 @@ def _run_with_pty(
     cancellation_token: CodingAgentCancellationToken | None,
     settings: AppSettings,
 ) -> _RunOutcome:
-    """Launch the agent with a PTY so TUI agents emit live terminal output."""
-    master_fd, slave_fd = pty.openpty()
+    """Launch the agent with pipes and stdin closed.
 
+    PTY was tried but codex enters TUI/fullscreen mode when stdout is a TTY,
+    emitting no newlines and producing no readable output. Pipes with
+    stdin=DEVNULL give codex an EOF on stdin so it proceeds, and plain text
+    output flows line-by-line through the pipe.
+    """
     try:
         process = subprocess.Popen(
             command,
             cwd=project_root,
-            stdin=slave_fd,
-            stdout=slave_fd,
-            stderr=slave_fd,
-            close_fds=True,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
             shell=False,
+            bufsize=1,
         )
     except FileNotFoundError as error:
-        os.close(master_fd)
-        os.close(slave_fd)
         raise RuntimeError(
             f"Coding agent command not found: {settings.coding_agent_command}"
         ) from error
-
-    os.close(slave_fd)
 
     if cancellation_token is not None:
         cancellation_token.attach_process(process)
 
     output_lines: list[str] = []
-    pty_buf = b""
     started = time.time()
     last_update_at = started
     last_reported_count = 0
     timed_out = False
     cancelled = False
+
+    def _collect() -> None:
+        assert process.stdout is not None
+        for raw_line in process.stdout:
+            line = raw_line.rstrip("\n")
+            if line:
+                output_lines.append(line)
+                logger.info("[agent] %s", line)
+
+    reader = threading.Thread(target=_collect, daemon=True)
+    reader.start()
 
     try:
         while process.poll() is None:
@@ -286,20 +281,7 @@ def _run_with_pty(
                 process.kill()
                 break
 
-            rlist, _, _ = _select.select([master_fd], [], [], _POLL_INTERVAL_SECONDS)
-            if rlist:
-                try:
-                    data = os.read(master_fd, 4096)
-                    if not data:
-                        break
-                    pty_buf += data
-                    while b"\n" in pty_buf:
-                        raw_line, pty_buf = pty_buf.split(b"\n", 1)
-                        line = _clean_pty_line(raw_line)
-                        if line:
-                            output_lines.append(line)
-                except OSError:
-                    break
+            time.sleep(_POLL_INTERVAL_SECONDS)
 
             if time.time() - last_update_at >= progress_interval:
                 new_lines = output_lines[last_reported_count:]
@@ -312,29 +294,11 @@ def _run_with_pty(
     except (KeyboardInterrupt, SystemExit):
         process.kill()
         raise
-    finally:
-        while True:
-            rlist, _, _ = _select.select([master_fd], [], [], 0)
-            if not rlist:
-                break
-            try:
-                data = os.read(master_fd, 4096)
-                if not data:
-                    break
-                pty_buf += data
-            except OSError:
-                break
-        if pty_buf:
-            line = _clean_pty_line(pty_buf)
-            if line:
-                output_lines.append(line)
-        try:
-            os.close(master_fd)
-        except OSError:
-            pass
 
     if not timed_out and not cancelled:
         process.wait()
+
+    reader.join(timeout=5)
 
     return _RunOutcome(
         stdout="\n".join(output_lines),
@@ -360,6 +324,7 @@ def _run_with_pipes(
         process = subprocess.Popen(
             ["stdbuf", "-oL", *command],
             cwd=project_root,
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
@@ -382,6 +347,7 @@ def _run_with_pipes(
             line = raw_line.rstrip("\n")
             if line:
                 target.append(line)
+                logger.info("[agent] %s", line)
 
     stdout_thread = threading.Thread(
         target=_collect, args=(process.stdout, stdout_lines), daemon=True

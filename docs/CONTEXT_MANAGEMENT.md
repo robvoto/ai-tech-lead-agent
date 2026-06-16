@@ -13,6 +13,7 @@ Graph state should store structured/raw facts:
 - user request
 - selected backlog item ID
 - risk-review result
+- research evidence source titles, locations, and summaries
 - approval status
 - conditional orchestrator-input request state
 - selected route
@@ -23,9 +24,9 @@ Graph state should not store large preformatted prompts, unbounded logs, secrets
 
 ## Conditional orchestrator input
 
-The workflow may track a pending orchestrator-input request in state when a node needs clarification, risk review, or confirmation later in the flow.
-
-That state should remain bounded and explicit, for example:
+The workflow may track a pending orchestrator-input request in state when a
+node needs clarification, risk review, or confirmation later in the flow. Keep
+that state bounded and explicit, for example:
 
 - whether orchestrator input is required
 - the kind of input needed
@@ -34,13 +35,14 @@ That state should remain bounded and explicit, for example:
 - which node requested it
 - any short task feedback already captured
 
-This is state for future interrupt/resume handling, not a signal to pause every task by default. Low-risk work should continue without interruption until the graph logic decides otherwise.
+Use this state for future interrupt/resume handling, not as a default pause signal. Low-risk work should continue until the graph logic decides otherwise.
 
 ## Prompt assembly
 
-Prompts should be assembled close to the node that uses them.
-
-The node should receive only the context it needs for that step. Avoid injecting full backlog files, full logs, full raw graph state, or unrelated docs into a prompt.
+Prompts should be assembled close to the node that uses them, and each node
+should receive only the context it needs for that step. Avoid injecting full
+backlog files, full logs, full raw graph state, or unrelated docs into a
+prompt.
 
 Any new context fragment over roughly 1,000 tokens needs an explicit reason in code comments, docs, or the finish report.
 
@@ -74,11 +76,13 @@ Coding-agent handoffs should be bounded and reviewable.
 A handoff may include:
 
 - project purpose
+- project context (documentation pointers, key source paths — supplied by `project_context` in settings)
 - relevant backlog item
 - specific files to inspect/change
 - constraints
 - validation command
 - safety/approval status
+- bounded research evidence from local docs or approved online docs
 
 A handoff should not include:
 
@@ -90,7 +94,8 @@ A handoff should not include:
 
 ## Logs
 
-Logs should help diagnose behaviour without becoming the primary context source for future prompts.
+Logs should help diagnose behaviour without becoming the primary context
+source for future prompts.
 
 Use logs for evidence and debugging. Do not feed unbounded logs back into the agent. When logs are needed for an LLM step, summarize or select the smallest relevant extract.
 

@@ -27,10 +27,9 @@ def test_prompt_registry_exposes_central_catalog() -> None:
         "plan_review",
         "risk_review",
         "research_complexity",
-        "task_formulation",
         "telegram_agent_system",
         "risk_review_reason",
-        "execution_brief",
+        "tech_lead_analysis",
     ]
 
 

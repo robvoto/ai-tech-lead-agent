@@ -69,7 +69,7 @@ Do not use PowerShell as the project runtime terminal.
 - LangGraph ecosystem
 - LangGraph Studio for visual/debug runs
 - SQLite
-- Later: Telegram Bot API, LiteLLM, Deep Agents, and provider-neutral coding-agent routing
+- Later: LiteLLM, Deep Agents, and provider-neutral coding-agent routing
 
 ## Normal project commands
 
@@ -240,64 +240,16 @@ LANGCHAIN_TRACING_V2=false
 
 ## Current graph status
 
-Core graph file:
+See `docs/GRAPH_WORKFLOW.md` for the live node flow, interrupts, and state fields.
+
+The implementation files remain:
 
 ```text
 src/ai_tech_lead/coding_workflow_graph.py
-```
-
-Normal CLI runner:
-
-```text
 src/ai_tech_lead/backlog_graph_runner.py
-```
-
-Backlog loader:
-
-```text
 src/ai_tech_lead/backlog_loader.py
-```
-
-Coding-agent subprocess runner:
-
-```text
 src/ai_tech_lead/coding_agent_runner.py
 ```
-
-Current graph flow:
-
-```text
-read_request
-→ check_approval
-→ create_brief
-→ if approval required: approval_required interrupt → route by approved flag
-    → approved=True: create_agent_instruction → run_coding_agent → end_node → END
-    → approved=False: end_node → END
-→ if approval not required: create_agent_instruction → run_coding_agent → end_node → END
-```
-
-Current state fields:
-
-```text
-request
-brief
-needs_approval
-approval_reason
-approved
-agent_instruction
-coding_agent_result
-```
-
-Current behaviour:
-- Reads backlog item by explicit `--task-id`.
-- Converts it into graph state.
-- Uses explicit backlog approval fields instead of keyword risk heuristics.
-- Creates a bounded execution brief.
-- Pauses before `approval_required` when the backlog item requires approval.
-- Stores the generated coding-agent instruction in `state["agent_instruction"]`.
-- Runs `run_coding_agent` node after instruction creation.
-- Coding-agent execution is controlled by settings and CLI override, and is currently safe when disabled.
-- Stores the coding-agent subprocess summary in `state["coding_agent_result"]`.
 
 ## Backlog rule
 
@@ -476,25 +428,3 @@ Use risk-based validation:
 - For instruction-only changes, check the file structure and avoid code validation unless required.
 
 Record the validation command/result before calling work done.
-
-## Current next step
-
-Next important implementation step:
-
-```text
-Inspect and harden the real coding-agent execution path before enabling real coding-agent execution.
-```
-
-Purpose:
-- Confirm `coding_agent_runner.py` uses `subprocess.run` safely.
-- Confirm `shell=False`.
-- Confirm execution is disabled by default.
-- Confirm real coding-agent execution is controlled by settings/admin, not by a normal CLI flag.
-- Confirm the graph records the result in `state["coding_agent_result"]`.
-- Add a `restart_required` state flag if the coding agent changes files under `src/ai_tech_lead`.
-
-After that:
-
-```text
-Run one small real coding-agent task from a safe backlog item and inspect the graph state/result.
-```

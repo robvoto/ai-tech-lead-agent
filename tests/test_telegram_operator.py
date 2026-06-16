@@ -11,6 +11,7 @@ from ai_tech_lead.app_settings import parse_settings
 from ai_tech_lead.backlog_draft_builder import BacklogRefinementBuildResult
 from ai_tech_lead.backlog_repository import BacklogItem, BacklogRefinementDraft
 from ai_tech_lead.backlog_status import BacklogStatus
+from ai_tech_lead.config import PROJECT_ROOT
 from ai_tech_lead.telegram_agent_graph import TelegramAgentReply
 from ai_tech_lead.telegram_operator import (
     CANONICAL_BOT_COMMANDS,
@@ -274,14 +275,12 @@ def test_command_handling_logs_action_details(caplog: pytest.LogCaptureFixture) 
     assert "Telegram action: showing status for chat chat-1." in caplog.text
     assert "Telegram action: showing help for chat chat-1." in caplog.text
     assert (
-        "Telegram action: resetting session in chat chat-1 for project root "
-        "/mnt/e/Programming/ai-tech-lead (hardcoded default for now)."
-        in caplog.text
+        f"Telegram action: resetting session in chat chat-1 for project root "
+        f"{PROJECT_ROOT} (hardcoded default for now)." in caplog.text
     )
     assert (
-        "Telegram action: fresh session started for chat chat-1. Project root "
-        "/mnt/e/Programming/ai-tech-lead (hardcoded default for now)."
-        in caplog.text
+        f"Telegram action: fresh session started for chat chat-1. Project root "
+        f"{PROJECT_ROOT} (hardcoded default for now)." in caplog.text
     )
 
 
@@ -408,7 +407,7 @@ def test_new_command_logs_discarded_cleanup_details(caplog: pytest.LogCaptureFix
     assert (
         "Telegram action: fresh session started for chat chat-1 after "
         "discarding active task JH-001 - Local placeholder, pending backlog "
-        "draft ATL-002. Project root /mnt/e/Programming/ai-tech-lead "
+        f"draft ATL-002. Project root {PROJECT_ROOT} "
         "(hardcoded default for now)."
         in caplog.text
     )
@@ -841,8 +840,9 @@ def test_plain_text_goes_to_telegram_agent_when_ai_enabled(monkeypatch: pytest.M
     operator = TelegramOperator("dummy", settings, client=client)
     agent_called_with: list[str] = []
 
-    def fake_run_telegram_agent_message(*, app, thread_id, text):
+    def fake_run_telegram_agent_message(*, app, thread_id, text, session_cost_total_usd):
         agent_called_with.append(text)
+        assert session_cost_total_usd == 0.0
         return TelegramAgentReply(text="There are 3 backlog items.")
 
     monkeypatch.setattr(
@@ -1326,7 +1326,7 @@ def test_list_all_splits_into_multiple_messages_when_needed(tmp_path) -> None:
     ]
 
 
-def test_backlog_request_summary_ignores_status_header() -> None:
+def test_backlog_request_summary_returns_id_and_title_only() -> None:
     item = BacklogItem(
         item_id="ATL-001",
         title="First item",
@@ -1342,8 +1342,7 @@ def test_backlog_request_summary_ignores_status_header() -> None:
 
     summary = _backlog_request_summary(item)
 
-    assert summary == "ATL-001 - First item | Goal: Do the thing."
-    assert "Status: Backlog" not in summary
+    assert summary == "ATL-001 - First item"
 
 
 def test_run_backlog_task_reports_done_items_to_the_user(monkeypatch: pytest.MonkeyPatch) -> None:

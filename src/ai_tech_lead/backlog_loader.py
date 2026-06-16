@@ -16,6 +16,7 @@ from pathlib import Path
 
 from ai_tech_lead.app_settings import load_settings
 from ai_tech_lead.backlog_repository import BacklogItem, MarkdownBacklogRepository
+from ai_tech_lead.backlog_store import SqliteBacklogRepository
 from ai_tech_lead.coding_workflow_graph import GraphState
 
 
@@ -67,6 +68,9 @@ Title: {item.title}
         "research_evidence_required": False,
         "research_sources_found": 0,
         "research_source_titles": [],
+        "research_source_locations": [],
+        "research_source_summaries": [],
+        "research_online_sources_found": 0,
         "online_research_approved": False,
         "orchestrator_input_required": False,
         "orchestrator_input_kind": "",
@@ -89,6 +93,7 @@ Title: {item.title}
         "coding_agent_result": "",
         "coding_agent_success": False,
         "coding_agent_changed_files": (),
+        "restart_required": False,
         "coding_agent_command": "",
         "coding_agent_returncode": None,
         "coding_agent_timed_out": False,
@@ -96,17 +101,10 @@ Title: {item.title}
     }
 
 
-def _repository(backlog_path: Path | None) -> MarkdownBacklogRepository:
+def _repository(backlog_path: Path | None) -> MarkdownBacklogRepository | SqliteBacklogRepository:
     if backlog_path is not None:
-        if backlog_path.is_absolute():
-            return MarkdownBacklogRepository(backlog_path)
-        settings = load_settings()
-        return MarkdownBacklogRepository(
-            backlog_path,
-            project_root=Path(settings.project_root),
-        )
-    settings = load_settings()
-    return MarkdownBacklogRepository(
-        Path(settings.backlog_path),
-        project_root=Path(settings.project_root),
-    )
+        resolved = backlog_path if backlog_path.is_absolute() else (Path(load_settings().project_root) / backlog_path)
+        if resolved.suffix.lower() == ".sqlite3":
+            return SqliteBacklogRepository(resolved)
+        return MarkdownBacklogRepository(resolved)
+    return SqliteBacklogRepository()

@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 import logging
 from dataclasses import dataclass
 from pathlib import Path
@@ -15,7 +13,6 @@ from .app_settings import AppSettings, load_settings
 from .coding_workflow_graph import build_graph
 from .config import (
     GRAPH_DIAGRAM_PATH,
-    GRAPH_DIAGRAM_SIGNATURES_PATH,
     TELEGRAM_AGENT_GRAPH_DIAGRAM_PATH,
     ensure_project_dirs,
 )
@@ -37,7 +34,7 @@ class GraphDiagramSpec:
 
 
 def export_graph_diagrams(*, settings: AppSettings | None = None) -> list[Path]:
-    """Export implemented graph diagrams into `data/`, skipping unchanged graphs."""
+    """Export implemented graph diagrams into `data/`."""
 
     ensure_project_dirs()
     resolved_settings = settings or _load_settings_if_needed()
@@ -47,37 +44,24 @@ def export_graph_diagrams(*, settings: AppSettings | None = None) -> list[Path]:
         GRAPH_DIAGRAM_PATH.parent,
     )
 
-    signature_state = _load_signature_state()
     updated_paths: list[Path] = []
-    next_signature_state = dict(signature_state)
 
     for spec in _graph_diagram_specs():
         if spec.requires_settings and resolved_settings is None:
             logger.info("Graph diagram skipped: %s requires settings.", spec.name)
             continue
         app = spec.build_app(resolved_settings)
-        graph_text = app.get_graph().draw_mermaid()
-        graph_signature = _graph_signature(graph_text)
-
-        if signature_state.get(spec.name) == graph_signature and spec.path.exists():
-            logger.info("Graph diagram unchanged: %s (%s)", spec.path, spec.name)
-            continue
-
         png_bytes = app.get_graph().draw_mermaid_png()
         spec.path.write_bytes(png_bytes)
-        next_signature_state[spec.name] = graph_signature
         updated_paths.append(spec.path)
         logger.info("Graph diagram refreshed: %s (%s)", spec.path, spec.name)
-
-    if next_signature_state != signature_state:
-        _save_signature_state(next_signature_state)
 
     if updated_paths:
         logger.info(
             "Graph diagram export complete: %s", ", ".join(str(path) for path in updated_paths)
         )
     else:
-        logger.info("Graph diagram export complete: no graph changes detected.")
+        logger.info("Graph diagram export complete: no diagrams were exported.")
     return updated_paths
 
 
@@ -95,31 +79,6 @@ def _require_settings(settings: AppSettings | None) -> AppSettings:
             "Graph diagram export requires loaded settings for the Telegram agent graph."
         )
     return settings
-
-
-def _graph_signature(graph_text: str) -> str:
-    return hashlib.sha256(graph_text.encode("utf-8")).hexdigest()
-
-
-def _load_signature_state() -> dict[str, str]:
-    if not GRAPH_DIAGRAM_SIGNATURES_PATH.exists():
-        return {}
-
-    try:
-        data = json.loads(GRAPH_DIAGRAM_SIGNATURES_PATH.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
-        logger.warning("Could not read graph diagram signature cache: %s", error)
-        return {}
-
-    signatures = data.get("signatures", {})
-    if not isinstance(signatures, dict):
-        return {}
-
-    result: dict[str, str] = {}
-    for name, value in signatures.items():
-        if isinstance(name, str) and isinstance(value, str) and value.strip():
-            result[name] = value.strip()
-    return result
 
 
 def _graph_diagram_specs() -> tuple[GraphDiagramSpec, ...]:
@@ -142,16 +101,6 @@ def _graph_diagram_specs() -> tuple[GraphDiagramSpec, ...]:
                 checkpointer=MemorySaver(),
             ),
         ),
-    )
-
-
-def _save_signature_state(signatures: dict[str, str]) -> None:
-    payload = {
-        "signatures": signatures,
-    }
-    GRAPH_DIAGRAM_SIGNATURES_PATH.write_text(
-        json.dumps(payload, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
     )
 
 

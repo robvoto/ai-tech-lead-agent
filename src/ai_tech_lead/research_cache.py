@@ -7,6 +7,7 @@ system.
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass
 from datetime import date
@@ -14,6 +15,9 @@ from pathlib import Path
 from typing import Any
 
 from .config import PROJECT_ROOT
+from .logging_setup import LOGGER_NAME
+
+logger = logging.getLogger(LOGGER_NAME)
 
 RESEARCH_INDEX_PATH = PROJECT_ROOT / "docs" / "research" / "INDEX.md"
 RESEARCH_NOTE_STALE_AFTER_DAYS = 90
@@ -107,6 +111,86 @@ def format_research_cache_for_prompt(
             blocks.append(_indent_text(_truncate_text(entry.body, 800), prefix="  "))
 
     return _truncate_text("\n".join(blocks), limit)
+
+
+def save_online_source_to_cache(
+    *,
+    title: str,
+    location: str,
+    summary: str,
+    excerpt: str,
+    project_root: Path,
+    today: date | None = None,
+) -> bool:
+    """Write an online research source as a local cache note.
+
+    Returns True if a new note was created, False if the URL was already cached.
+    Deduplicates by URL so the same page is never stored twice.
+    """
+    research_dir = project_root / "docs" / "research"
+    index_path = research_dir / "INDEX.md"
+
+    if index_path.exists():
+        try:
+            existing = load_research_cache_entries(index_path=index_path)
+            if any(location in entry.sources for entry in existing):
+                return False
+        except FileNotFoundError:
+            pass
+
+    current_day = today or date.today()
+    research_dir.mkdir(parents=True, exist_ok=True)
+
+    filename = _title_to_filename(title) + ".md"
+    note_path = research_dir / filename
+    if note_path.exists():
+        for i in range(2, 20):
+            candidate = research_dir / f"{_title_to_filename(title)}-{i}.md"
+            if not candidate.exists():
+                note_path = candidate
+                filename = note_path.name
+                break
+
+    write_research_cache_note(
+        note_path,
+        title=title,
+        location=location,
+        summary=summary,
+        excerpt=excerpt,
+        today=current_day,
+    )
+
+    logger.info("[LEARN] Cached online source: %s -> %s", location, filename)
+    return True
+
+
+def write_research_cache_note(
+    note_path: Path,
+    *,
+    title: str,
+    location: str,
+    summary: str,
+    excerpt: str,
+    today: date | None = None,
+) -> None:
+    """Write or overwrite one cached research note and keep the index in sync."""
+
+    current_day = today or date.today()
+    body_text = summary.strip() or excerpt.strip() or "No summary available."
+    note_content = (
+        f"---\ntopic: {title}\ndate: {current_day}\nsources:\n  - {location}\n---\n\n"
+        f"## Summary\n{body_text}\n"
+    )
+    note_path.write_text(note_content, encoding="utf-8")
+
+    index_path = note_path.parent / "INDEX.md"
+    index_summary = _truncate_text((summary or excerpt or title).replace("\n", " ").strip(), 100)
+    _upsert_index_entry(index_path, note_path.name, index_summary)
+
+
+def _title_to_filename(title: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", title.lower())
+    return slug.strip("-")[:60]
 
 
 def _parse_note(path: Path) -> dict[str, Any]:
@@ -222,3 +306,30 @@ def _truncate_text(text: str, limit: int) -> str:
     if limit <= 3:
         return text[:limit]
     return text[: limit - 3].rstrip() + "..."
+
+
+def _upsert_index_entry(index_path: Path, filename: str, summary: str) -> None:
+    entry_line = f"- [{filename}]({filename}) — {summary}"
+    if not index_path.exists():
+        index_path.write_text(f"# Research Cache Index\n\n{entry_line}\n", encoding="utf-8")
+        return
+
+    lines = index_path.read_text(encoding="utf-8").splitlines()
+    rewritten_lines: list[str] = []
+    replaced = False
+    prefix = f"- [{filename}]({filename}) —"
+
+    for line in lines:
+        if line.strip().startswith(prefix):
+            if not replaced:
+                rewritten_lines.append(entry_line)
+                replaced = True
+            continue
+        rewritten_lines.append(line)
+
+    if not replaced:
+        if rewritten_lines and rewritten_lines[-1].strip():
+            rewritten_lines.append("")
+        rewritten_lines.append(entry_line)
+
+    index_path.write_text("\n".join(rewritten_lines).rstrip() + "\n", encoding="utf-8")

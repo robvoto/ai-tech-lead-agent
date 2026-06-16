@@ -8,13 +8,14 @@ from helpers import valid_settings_dict
 
 from ai_tech_lead.app_settings import parse_settings
 from ai_tech_lead.research_cache import (
-    ResearchCacheEntry,
     format_research_cache_for_prompt,
     load_research_cache_entries,
+    save_online_source_to_cache,
 )
 from ai_tech_lead.research_checker import (
     check_research_requirements,
 )
+from ai_tech_lead.research_sources import ResearchSource
 
 
 def test_load_research_cache_entries_reads_index_and_note(tmp_path: Path) -> None:
@@ -50,15 +51,13 @@ def test_load_research_cache_entries_reads_index_and_note(tmp_path: Path) -> Non
     assert "Cache-first backlog refinement" in prompt_block
 
 
-def _make_fake_entry(title: str) -> ResearchCacheEntry:
-    return ResearchCacheEntry(
-        path=Path("/fake/path.md"),
+def _make_fake_source(title: str, location: str = "/fake/path.md") -> ResearchSource:
+    return ResearchSource(
         title=title,
+        location=location,
         summary="Fake summary.",
-        body="",
-        sources=[],
-        refreshed_on=date(2026, 6, 1),
-        freshness_risk="Low: recent.",
+        excerpt="",
+        source_kind="local-doc",
     )
 
 
@@ -85,8 +84,11 @@ def test_check_research_requirements_complex_with_two_sources_continues(monkeypa
         lambda _req, _settings: (True, "Involves LangGraph interrupt nodes."),
     )
     monkeypatch.setattr(
-        "ai_tech_lead.research_checker._load_cache_entries",
-        lambda: [_make_fake_entry("LangGraph approval"), _make_fake_entry("Backlog patterns")],
+        "ai_tech_lead.research_checker.collect_local_research_sources",
+        lambda _request, _settings: [
+            _make_fake_source("LangGraph approval"),
+            _make_fake_source("Backlog patterns"),
+        ],
     )
 
     result = check_research_requirements("Add CLARIFICATION_GATE to workflow", settings)
@@ -105,8 +107,8 @@ def test_check_research_requirements_complex_with_one_source_triggers_gate(monke
         lambda _req, _settings: (True, "Involves LangGraph interrupt nodes."),
     )
     monkeypatch.setattr(
-        "ai_tech_lead.research_checker._load_cache_entries",
-        lambda: [_make_fake_entry("LangGraph approval")],
+        "ai_tech_lead.research_checker.collect_local_research_sources",
+        lambda _request, _settings: [_make_fake_source("LangGraph approval")],
     )
 
     result = check_research_requirements("Add CLARIFICATION_GATE to workflow", settings)
@@ -133,8 +135,8 @@ def test_check_research_requirements_online_not_triggered_without_approval(monke
         lambda _req, _settings: (True, "Complex: LangGraph persistence."),
     )
     monkeypatch.setattr(
-        "ai_tech_lead.research_checker._load_cache_entries",
-        lambda: [],
+        "ai_tech_lead.research_checker.collect_local_research_sources",
+        lambda _request, _settings: [],
     )
 
     result = check_research_requirements("Add checkpointing to workflow", settings)
@@ -142,3 +144,74 @@ def test_check_research_requirements_online_not_triggered_without_approval(monke
     assert result.online_research_needed is True
     assert result.is_complex is True
     assert result.sources_found == 0
+
+
+def test_save_online_source_to_cache_writes_note_and_index(tmp_path: Path) -> None:
+    research_dir = tmp_path / "docs" / "research"
+
+    saved = save_online_source_to_cache(
+        title="LangGraph interrupts",
+        location="https://docs.langchain.com/oss/python/langgraph/interrupts",
+        summary="Interrupts pause graph execution and resume with Command.",
+        excerpt="",
+        project_root=tmp_path,
+        today=date(2026, 6, 15),
+    )
+
+    assert saved is True
+    note_path = research_dir / "langgraph-interrupts.md"
+    assert note_path.exists()
+    content = note_path.read_text(encoding="utf-8")
+    assert "topic: LangGraph interrupts" in content
+    assert "date: 2026-06-15" in content
+    assert "https://docs.langchain.com/oss/python/langgraph/interrupts" in content
+    assert "## Summary" in content
+    assert "Interrupts pause graph execution" in content
+
+    index_content = (research_dir / "INDEX.md").read_text(encoding="utf-8")
+    assert "langgraph-interrupts.md" in index_content
+    assert "Interrupts pause graph execution" in index_content
+
+
+def test_save_online_source_to_cache_skips_duplicate_url(tmp_path: Path) -> None:
+    kwargs = dict(
+        title="LangGraph interrupts",
+        location="https://docs.langchain.com/oss/python/langgraph/interrupts",
+        summary="Interrupts pause graph execution.",
+        excerpt="",
+        project_root=tmp_path,
+        today=date(2026, 6, 15),
+    )
+
+    first = save_online_source_to_cache(**kwargs)
+    second = save_online_source_to_cache(**kwargs)
+
+    assert first is True
+    assert second is False
+    research_dir = tmp_path / "docs" / "research"
+    note_files = list(research_dir.glob("*.md"))
+    assert len(note_files) == 2  # INDEX.md + one note
+
+
+def test_save_online_source_to_cache_handles_title_collision(tmp_path: Path) -> None:
+    save_online_source_to_cache(
+        title="LangGraph interrupts",
+        location="https://example.com/page-a",
+        summary="First source.",
+        excerpt="",
+        project_root=tmp_path,
+        today=date(2026, 6, 15),
+    )
+    save_online_source_to_cache(
+        title="LangGraph interrupts",
+        location="https://example.com/page-b",
+        summary="Second source.",
+        excerpt="",
+        project_root=tmp_path,
+        today=date(2026, 6, 15),
+    )
+
+    research_dir = tmp_path / "docs" / "research"
+    note_files = {f.name for f in research_dir.glob("langgraph-interrupts*.md")}
+    assert "langgraph-interrupts.md" in note_files
+    assert "langgraph-interrupts-2.md" in note_files

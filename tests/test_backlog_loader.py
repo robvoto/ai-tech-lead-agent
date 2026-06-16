@@ -98,6 +98,10 @@ Approval Reason: Safe local work.
     assert state["orchestrator_input_question"] == ""
     assert state["orchestrator_input_source_node"] == ""
     assert state["task_feedback"] == []
+    assert state["research_source_titles"] == []
+    assert state["research_source_locations"] == []
+    assert state["research_source_summaries"] == []
+    assert state["research_online_sources_found"] == 0
     assert state["needs_approval"] is False
     assert state["approval_reason"] == "Risk review has not run yet."
     assert state["approved"] is False

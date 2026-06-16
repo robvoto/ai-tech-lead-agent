@@ -8,7 +8,6 @@ from ai_tech_lead import graph_diagrams
 def test_export_graph_diagrams_writes_both_graphs(monkeypatch, tmp_path: Path) -> None:
     coding_path = tmp_path / "graph_diagram.png"
     telegram_path = tmp_path / "telegram_agent_graph.png"
-    signatures_path = tmp_path / "graph_diagram_signatures.json"
 
     class _FakeGraph:
         def __init__(self, mermaid: str, payload: bytes) -> None:
@@ -34,7 +33,6 @@ def test_export_graph_diagrams_writes_both_graphs(monkeypatch, tmp_path: Path) -
 
     monkeypatch.setattr(graph_diagrams, "GRAPH_DIAGRAM_PATH", coding_path)
     monkeypatch.setattr(graph_diagrams, "TELEGRAM_AGENT_GRAPH_DIAGRAM_PATH", telegram_path)
-    monkeypatch.setattr(graph_diagrams, "GRAPH_DIAGRAM_SIGNATURES_PATH", signatures_path)
     monkeypatch.setattr(graph_diagrams, "ensure_project_dirs", lambda: None)
     monkeypatch.setattr(
         graph_diagrams, "build_graph", lambda **_kw: _FakeApp("coding-mermaid", b"coding-png")
@@ -51,13 +49,11 @@ def test_export_graph_diagrams_writes_both_graphs(monkeypatch, tmp_path: Path) -
     assert paths == [coding_path, telegram_path]
     assert coding_path.read_bytes() == b"coding-png"
     assert telegram_path.read_bytes() == b"telegram-png"
-    assert signatures_path.exists()
 
 
-def test_export_graph_diagrams_skips_unchanged_graphs(monkeypatch, tmp_path: Path) -> None:
+def test_export_graph_diagrams_rewrites_diagrams_each_time(monkeypatch, tmp_path: Path) -> None:
     coding_path = tmp_path / "graph_diagram.png"
     telegram_path = tmp_path / "telegram_agent_graph.png"
-    signatures_path = tmp_path / "graph_diagram_signatures.json"
 
     class _FakeGraph:
         def __init__(self, mermaid: str, payload: bytes) -> None:
@@ -87,7 +83,6 @@ def test_export_graph_diagrams_skips_unchanged_graphs(monkeypatch, tmp_path: Pat
 
     monkeypatch.setattr(graph_diagrams, "GRAPH_DIAGRAM_PATH", coding_path)
     monkeypatch.setattr(graph_diagrams, "TELEGRAM_AGENT_GRAPH_DIAGRAM_PATH", telegram_path)
-    monkeypatch.setattr(graph_diagrams, "GRAPH_DIAGRAM_SIGNATURES_PATH", signatures_path)
     monkeypatch.setattr(graph_diagrams, "ensure_project_dirs", lambda: None)
     monkeypatch.setattr(
         graph_diagrams, "build_graph", lambda **_kw: build_calls.append("coding") or coding_app
@@ -103,7 +98,7 @@ def test_export_graph_diagrams_skips_unchanged_graphs(monkeypatch, tmp_path: Pat
     second_paths = graph_diagrams.export_graph_diagrams()
 
     assert first_paths == [coding_path, telegram_path]
-    assert second_paths == []
-    assert coding_app.get_graph().png_calls == 1
-    assert telegram_app.get_graph().png_calls == 1
-    assert signatures_path.exists()
+    assert second_paths == [coding_path, telegram_path]
+    assert coding_app.get_graph().png_calls == 2
+    assert telegram_app.get_graph().png_calls == 2
+    assert build_calls == ["coding", "telegram", "coding", "telegram"]

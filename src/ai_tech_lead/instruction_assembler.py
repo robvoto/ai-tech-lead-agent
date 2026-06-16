@@ -29,7 +29,8 @@ def build_agent_instruction(
     approved: bool,
     settings: AppSettings,
     project_root: Path | None = None,
-    research_sources: list[str] | None = None,
+    research_evidence: list[str] | None = None,
+    agent_correction: str | None = None,
 ) -> str:
     skills = select_skills(request)
     selected_skills = "\n\n".join(_render_skill(skill) for skill in skills)
@@ -50,17 +51,19 @@ def build_agent_instruction(
         "command and result."
     )
 
+    project_context = _format_bullets(settings.project_context)
     sections = [
         "# Coding-Agent Handoff",
         _section("Task", formulated_task or request),
         _section("Execution brief", brief),
+        _section("Project context", project_context),
     ]
-    if research_sources:
+    if research_evidence:
         sections.append(
             _section(
-                "Evidence Sources",
-                "Local research notes consulted for this task:\n"
-                + _format_bullets(research_sources),
+                "Research evidence",
+                "Relevant local and official documentation consulted for this task:\n"
+                + _format_bullets(research_evidence),
             )
         )
     if task_feedback:
@@ -68,6 +71,14 @@ def build_agent_instruction(
             _section(
                 "Task feedback",
                 "Apply this only to the current task.\n" + _format_bullets(task_feedback),
+            )
+        )
+    if agent_correction:
+        sections.append(
+            _section(
+                "Previous attempt failed",
+                "The previous coding agent run failed. Diagnose and resolve the issue before "
+                "proceeding:\n" + agent_correction,
             )
         )
     sections.extend(

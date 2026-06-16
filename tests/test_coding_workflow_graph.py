@@ -11,14 +11,16 @@ from ai_tech_lead.app_settings import parse_settings
 from ai_tech_lead.coding_workflow_graph import (
     NodeName,
     build_graph,
+    collect_research_evidence_node,
     request_plan_node,
     route_after_approval,
     route_after_check_research,
-    route_after_formulate_task,
+    route_after_tech_lead_analyse,
     route_after_research_interrupt,
     route_after_review_plan,
     run_coding_agent_node,
 )
+from ai_tech_lead.plan_reviewer import PlanReviewDecision
 
 
 def graph_state(**overrides: object) -> dict[str, object]:
@@ -29,6 +31,9 @@ def graph_state(**overrides: object) -> dict[str, object]:
         "research_evidence_required": False,
         "research_sources_found": 0,
         "research_source_titles": [],
+        "research_source_locations": [],
+        "research_source_summaries": [],
+        "research_online_sources_found": 0,
         "online_research_approved": False,
         "orchestrator_input_required": False,
         "orchestrator_input_kind": "",
@@ -48,6 +53,8 @@ def graph_state(**overrides: object) -> dict[str, object]:
         "plan_needs_human_review": False,
         "agent_instruction": "",
         "coding_agent_result": "",
+        "coding_agent_retry_count": 0,
+        "coding_agent_correction": "",
     }
     state.update(overrides)
     return state
@@ -62,6 +69,12 @@ def test_graph_state_defaults_do_not_require_human_input() -> None:
     assert state["orchestrator_input_question"] == ""
     assert state["orchestrator_input_source_node"] == ""
     assert state["task_feedback"] == []
+    assert state["research_source_titles"] == []
+    assert state["research_source_locations"] == []
+    assert state["research_source_summaries"] == []
+    assert state["research_online_sources_found"] == 0
+    assert state["coding_agent_retry_count"] == 0
+    assert state["coding_agent_correction"] == ""
 
 
 def test_graph_state_can_store_orchestrator_input_request_fields() -> None:
@@ -96,9 +109,14 @@ def test_graph_state_can_store_task_feedback_list() -> None:
 
 def test_routes_follow_explicit_approval_state() -> None:
     assert (
-        route_after_formulate_task(graph_state(needs_approval=True)) == NodeName.APPROVAL_INTERRUPT
+        route_after_tech_lead_analyse(graph_state(needs_approval=True))
+        == NodeName.APPROVAL_INTERRUPT
     )
-    assert route_after_formulate_task(graph_state(needs_approval=False)) == NodeName.REQUEST_PLAN
+    assert (
+        route_after_tech_lead_analyse(graph_state(needs_approval=True, approved=True))
+        == NodeName.REQUEST_PLAN
+    )
+    assert route_after_tech_lead_analyse(graph_state(needs_approval=False)) == NodeName.REQUEST_PLAN
     assert route_after_approval(graph_state(approved=True)) == NodeName.REQUEST_PLAN
     assert route_after_approval(graph_state(approved=False)) == NodeName.END_NODE
 
@@ -133,7 +151,53 @@ def test_route_after_research_interrupt_rejection_ends_workflow() -> None:
 
 def test_route_after_research_interrupt_approval_continues() -> None:
     state = graph_state(online_research_approved=True)
-    assert route_after_research_interrupt(state) == NodeName.REVIEW_RISK
+    assert route_after_research_interrupt(state) == NodeName.COLLECT_RESEARCH_EVIDENCE
+
+
+def test_collect_research_evidence_node_appends_online_docs(monkeypatch) -> None:
+    settings = replace(parse_settings(valid_settings_dict()), orchestrator_ai_enabled=True)
+
+    def fake_load_settings():
+        return settings
+
+    class _Source:
+        def __init__(self, title: str, location: str, summary: str) -> None:
+            self.title = title
+            self.location = location
+            self.summary = summary
+            self.excerpt = ""
+
+    monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.load_settings", fake_load_settings)
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.collect_online_research_sources",
+        lambda _request, _settings: [
+            _Source(
+                "LangGraph interrupts",
+                "https://docs.langchain.com/oss/python/langgraph/interrupts",
+                "Interrupts pause graph execution and resume with Command.",
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.save_online_source_to_cache",
+        lambda **_kwargs: False,
+    )
+
+    state = graph_state(
+        online_research_approved=True,
+        research_source_titles=["Local docs"],
+        research_source_locations=["docs/ARCHITECTURE.md"],
+        research_source_summaries=["Architecture and module map."],
+    )
+
+    result = collect_research_evidence_node(state)
+
+    assert result["research_source_titles"] == ["Local docs", "LangGraph interrupts"]
+    assert result["research_source_locations"] == [
+        "docs/ARCHITECTURE.md",
+        "https://docs.langchain.com/oss/python/langgraph/interrupts",
+    ]
+    assert result["research_online_sources_found"] == 1
 
 
 def test_run_coding_agent_node_override_can_disable_execution(monkeypatch) -> None:
@@ -199,6 +263,7 @@ def test_run_coding_agent_node_forwards_progress_updates(monkeypatch) -> None:
         class Result:
             message = "done"
             returncode = 0
+            success = True
             duration_seconds = 1.0
             changed_files_delta: tuple[str, ...] = ()
             command: list[str] = ["codex"]
@@ -223,6 +288,7 @@ def test_run_coding_agent_node_forwards_progress_updates(monkeypatch) -> None:
     assert progress_messages[0].startswith("Running coding agent (")
     assert "Coding agent still running (about 1m 0s elapsed)." in progress_messages
     assert state["coding_agent_result"] == "done"
+    assert state["coding_agent_retry_count"] == 0
 
 
 def test_request_plan_node_uses_generated_instruction_and_stores_stdout(monkeypatch) -> None:
@@ -236,11 +302,11 @@ def test_request_plan_node_uses_generated_instruction_and_stores_stdout(monkeypa
     def fake_render_prompt(prompt_key: str, **replacements: str) -> str:
         assert prompt_key == "plan_request_instruction"
         assert replacements["formulated_task"] == "Build the plan"
-        assert replacements["correction_feedback"] == "\nPrevious plan was rejected. Correction needed:\nKeep it small."
-        return (
-            f"Plan for {replacements['formulated_task']}\n"
-            f"{replacements['correction_feedback']}"
+        assert (
+            replacements["correction_feedback"]
+            == "\nPrevious plan was rejected. Correction needed:\nKeep it small."
         )
+        return f"Plan for {replacements['formulated_task']}\n{replacements['correction_feedback']}"
 
     def fake_run_coding_agent(*, agent_instruction, project_root, settings, **_kwargs):
         captured["agent_instruction"] = agent_instruction
@@ -268,8 +334,7 @@ def test_request_plan_node_uses_generated_instruction_and_stores_stdout(monkeypa
     result = request_plan_node(state, progress_callback=progress_messages.append)
 
     expected_instruction = (
-        "Plan for Build the plan\n\nPrevious plan was rejected. "
-        "Correction needed:\nKeep it small."
+        "Plan for Build the plan\n\nPrevious plan was rejected. Correction needed:\nKeep it small."
     )
     assert captured["agent_instruction"] == expected_instruction
     assert captured["project_root"] is not None
@@ -291,15 +356,10 @@ def test_graph_runs_to_disabled_coding_agent_result(monkeypatch) -> None:
 
     monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.load_settings", fake_load_settings)
     monkeypatch.setattr("ai_tech_lead.risk_reviewer.load_settings", fake_load_settings)
-    monkeypatch.setattr(
-        "ai_tech_lead.research_checker.load_research_cache_entries",
-        lambda **_kw: [],
-    )
     app = build_graph(execute_coding_agent_override=False)
 
     result = app.invoke(graph_state())
 
-    assert "Relevant files:" in result["brief"]
     assert result["needs_approval"] is True
     assert (
         "AI risk review is off, so I need your approval before continuing."
@@ -308,6 +368,96 @@ def test_graph_runs_to_disabled_coding_agent_result(monkeypatch) -> None:
     assert result["approved"] is False
     assert result["agent_instruction"] == ""
     assert result["coding_agent_result"] == ""
+    assert result["coding_agent_retry_count"] == 0
+
+
+def test_already_approved_army_state_skips_approval_interrupt(monkeypatch) -> None:
+    settings = parse_settings(valid_settings_dict())
+
+    class _SuccessResult:
+        stdout = "1. Do the thing\n2. Validate it"
+        stderr = ""
+        returncode = 0
+        success = True
+        duration_seconds = 0.1
+        changed_files_delta: tuple[str, ...] = ()
+        command = ["codex"]
+        message = "done"
+
+        def summary(self) -> str:
+            return "done"
+
+    def fake_load_settings():
+        return settings
+
+    def fake_review_plan(*_args, **_kwargs):
+        return PlanReviewDecision(approved=True, reason="Plan is fine.", correction="")
+
+    def fail_if_approval_interrupt_called(*_args, **_kwargs):
+        raise AssertionError(
+            "approval interrupt should be skipped when the army has already approved"
+        )
+
+    monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.load_settings", fake_load_settings)
+    monkeypatch.setattr("ai_tech_lead.risk_reviewer.load_settings", fake_load_settings)
+    monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.review_plan", fake_review_plan)
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.run_coding_agent", lambda **_kw: _SuccessResult()
+    )
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.approval_interrupt_node",
+        fail_if_approval_interrupt_called,
+    )
+
+    app = build_graph(checkpointer_storage=MemorySaver(), execute_coding_agent_override=False)
+    thread_config = {"configurable": {"thread_id": "test-already-approved-army"}}
+    result = app.invoke(
+        graph_state(
+            request="Update README wording.",
+            approved=True,
+            approved_by="human-via-army",
+            force_approval=False,
+        ),
+        config=thread_config,
+    )
+
+    assert result["approved"] is True
+    assert result["approved_by"] == "human-via-army"
+    assert result["coding_agent_result"] == "done"
+
+
+def test_run_coding_agent_node_marks_restart_required_for_app_changes(monkeypatch) -> None:
+    settings = replace(parse_settings(valid_settings_dict()), execute_coding_agent=True)
+
+    def fake_load_settings():
+        return settings
+
+    class _ChangedResult:
+        message = "done"
+        returncode = 0
+        duration_seconds = 0.5
+        changed_files_delta = (
+            "src/ai_tech_lead/coding_workflow_graph.py",
+            "tests/test_coding_workflow_graph.py",
+        )
+        command = ["codex"]
+
+        def summary(self) -> str:
+            return self.message
+
+    monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.load_settings", fake_load_settings)
+    monkeypatch.setattr("ai_tech_lead.risk_reviewer.load_settings", fake_load_settings)
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.run_coding_agent", lambda **_kw: _ChangedResult()
+    )
+
+    state = run_coding_agent_node(
+        graph_state(agent_instruction="Do the task"),
+        execute_coding_agent_override=True,
+    )
+
+    assert state["coding_agent_changed_files"] == _ChangedResult.changed_files_delta
+    assert state["coding_agent_retry_count"] == 1  # no success attr → treated as failure
 
 
 def test_run_coding_agent_node_logs_approval_context(monkeypatch, caplog) -> None:
@@ -339,6 +489,7 @@ def test_run_coding_agent_node_logs_approval_context(monkeypatch, caplog) -> Non
     assert "approved=True" in caplog.text
     assert "configured coding-agent backend" in caplog.text
     assert "Codex" not in caplog.text
+    assert "Coding agent success=" in caplog.text
 
 
 def test_rejected_graph_resumes_without_coding_agent_result_index_error(monkeypatch) -> None:
@@ -349,10 +500,6 @@ def test_rejected_graph_resumes_without_coding_agent_result_index_error(monkeypa
 
     monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.load_settings", fake_load_settings)
     monkeypatch.setattr("ai_tech_lead.risk_reviewer.load_settings", fake_load_settings)
-    monkeypatch.setattr(
-        "ai_tech_lead.research_checker.load_research_cache_entries",
-        lambda **_kw: [],
-    )
 
     app = build_graph(checkpointer_storage=MemorySaver(), execute_coding_agent_override=False)
     thread_config = {"configurable": {"thread_id": "test-reject-path"}}
@@ -382,6 +529,8 @@ def test_rejected_research_interrupt_ends_graph(monkeypatch) -> None:
         online_research_needed = True
         complexity_reason = "Needs sources."
         usable_source_titles: list[str] = []
+        usable_source_locations: list[str] = []
+        usable_source_summaries: list[str] = []
 
     def fake_check_research_requirements(_request, _settings):
         return _ResearchResult()

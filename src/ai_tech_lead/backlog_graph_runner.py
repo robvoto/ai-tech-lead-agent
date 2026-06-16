@@ -13,9 +13,9 @@ from __future__ import annotations
 import logging
 
 from langchain_core.runnables import RunnableConfig
-from langgraph.checkpoint.memory import MemorySaver
 
 from .backlog_loader import backlog_item_to_graph_state, load_backlog_item_by_id
+from .checkpointer_store import get_checkpointer
 from .coding_workflow_graph import build_graph
 from .config import GRAPH_DIAGRAM_PATH, ensure_project_dirs
 from .logging_setup import LOGGER_NAME
@@ -29,9 +29,8 @@ def run_backlog_graph(
 ) -> None:
     """Run one explicit backlog task through the local graph."""
 
-    memory = MemorySaver()
     app = build_graph(
-        checkpointer_storage=memory,
+        checkpointer_storage=get_checkpointer(),
         execute_coding_agent_override=execute_coding_agent_override,
     )
     save_graph_diagram(app)

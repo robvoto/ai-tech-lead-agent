@@ -27,8 +27,8 @@
       </label>
       <label>
         Backlog path
-        <span class="field-help">Relative path to the backlog workbook. Example: <code>data/backlog/ai_tech_lead_backlog.xlsx</code>.</span>
-        <input name="backlog_path" placeholder="data/backlog/ai_tech_lead_backlog.xlsx">
+        <span class="field-help">Relative path to the backlog database. Example: <code>data/backlog.sqlite3</code>.</span>
+        <input name="backlog_path" placeholder="data/backlog.sqlite3">
       </label>
       <label>
         Max runtime minutes
@@ -94,6 +94,52 @@
       </label>
     </fieldset>
     <fieldset>
+      <legend>Research</legend>
+      <div class="field-group">
+        <div class="field-heading">Local research index paths</div>
+        <span class="field-help">One index path per line. These files are checked first before any online research.</span>
+        <div class="list-editor" data-list-editor="research_local_index_paths"></div>
+        <button type="button" class="list-add" data-list-add="research_local_index_paths">+ Add index path</button>
+      </div>
+      <label>
+        Minimum local sources
+        <span class="field-help">How many relevant local sources are needed before the graph asks to fetch approved online docs.</span>
+        <input name="research_min_local_sources" type="number" min="1" placeholder="2">
+      </label>
+      <label>
+        Maximum local sources
+        <span class="field-help">How many local sources to keep in the evidence handoff. This keeps prompts bounded.</span>
+        <input name="research_max_local_sources" type="number" min="1" placeholder="4">
+      </label>
+      <div class="field-group">
+        <div class="field-heading">Allowed research domains</div>
+        <span class="field-help">Only these domains may be used for approved online research. One domain per line.</span>
+        <div class="list-editor" data-list-editor="research_allowed_domains"></div>
+        <button type="button" class="list-add" data-list-add="research_allowed_domains">+ Add domain</button>
+      </div>
+      <div class="field-group">
+        <div class="field-heading">Approved online docs URLs</div>
+        <span class="field-help">One official documentation page per line. The graph only fetches these URLs after approval.</span>
+        <div class="list-editor" data-list-editor="research_online_source_urls"></div>
+        <button type="button" class="list-add" data-list-add="research_online_source_urls">+ Add docs URL</button>
+      </div>
+      <label>
+        Max approved online URLs
+        <span class="field-help">Safety limit for how many approved docs pages the graph will fetch in one run.</span>
+        <input name="research_max_online_source_urls" type="number" min="1" placeholder="4">
+      </label>
+      <label>
+        Research fetch timeout seconds
+        <span class="field-help">Timeout for each approved online docs fetch. Keep this short so the gate stays bounded.</span>
+        <input name="research_fetch_timeout_seconds" type="number" min="1" placeholder="10">
+      </label>
+      <label>
+        Max evidence excerpt chars
+        <span class="field-help">Maximum excerpt length kept from each evidence source.</span>
+        <input name="research_max_excerpt_chars" type="number" min="1" placeholder="800">
+      </label>
+    </fieldset>
+    <fieldset>
       <legend>Telegram</legend>
       <label>
         Telegram transport
@@ -151,6 +197,15 @@
       </label>
     </fieldset>
     <fieldset>
+      <legend>Project Context</legend>
+      <div class="field-group">
+        <div class="field-heading">Project context</div>
+        <span class="field-help">One entry per line. Describe key docs and source paths for this project. The coding agent reads these entries to know where to navigate. Example: <code>Architecture and module map: docs/ARCHITECTURE.md</code>. Required — the coding agent cannot start without this.</span>
+        <div class="list-editor" data-list-editor="project_context"></div>
+        <button type="button" class="list-add" data-list-add="project_context">+ Add context entry</button>
+      </div>
+    </fieldset>
+    <fieldset>
       <legend>Directories</legend>
       <div class="field-group">
         <div class="field-heading">Allowed directories</div>
@@ -189,13 +244,10 @@
     <fieldset>
       <legend>Prompt Registry</legend>
       <p class="field-help">
-        The full prompt registry lives in <code>data/prompts.json</code>. Each entry shows the prompt key, class, purpose, usage, and editable template text in one place.
+        The prompt registry still lives in <code>data/prompts.json</code>. The linkage fields are read-only,
+        and only the prompt text stays editable.
       </p>
-      <label>
-        Prompt registry JSON
-        <span class="field-help">Edit the registry directly if you want to change prompt text or metadata. Keep the file as a JSON object with a <code>prompts</code> array.</span>
-        <textarea name="prompts_json" class="prompt-json" spellcheck="false"></textarea>
-      </label>
+      <div class="prompt-editor" data-prompt-editor></div>
     </fieldset>
   </form>
 </main>

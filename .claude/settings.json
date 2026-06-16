@@ -1,12 +1,7 @@
 {
   "permissions": {
     "allow": [
-      "Bash(find /mnt/e/Programming -maxdepth 2 -name \"pages.py\" 2>/dev/null | grep -i job)",
-      "Read(//mnt/e/Programming/**)",
-      "WebFetch(domain:langchain-ai.github.io)",
-      "WebFetch(domain:cposkitt.github.io)",
-      "WebFetch(domain:labs.reversec.com)",
-      "WebFetch(domain:growwstacks.com)"
+      "Bash(*)"
     ]
   }
 }
