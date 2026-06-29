@@ -13,7 +13,7 @@ def test_parse_settings_round_trips_valid_config() -> None:
     settings = parse_settings(raw_settings)
 
     assert settings.project_root == str(PROJECT_ROOT)
-    assert settings.backlog_path == "data/backlog/ai_tech_lead_backlog.xlsx"
+    assert settings.backlog_path == raw_settings["backlog_path"]
     assert settings.coding_agent_command == "codex"
     assert settings.coding_agent_args == ["--ask-for-approval", "never", "exec"]
     assert settings.execute_coding_agent is False
