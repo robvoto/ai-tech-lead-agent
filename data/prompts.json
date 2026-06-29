@@ -1,0 +1,90 @@
+{
+  "prompts": [
+    {
+      "key": "backlog_ownership_rules",
+      "prompt_class": "instruction",
+      "purpose": "Rules injected into coding-agent handoffs for safe backlog ownership.",
+      "used_by": [
+        "src/ai_tech_lead/instruction_assembler.py"
+      ],
+      "template": "Backlog ownership rules:\n- Follow docs/BACKLOG_MANAGEMENT.md before changing backlog structure or status.\n- Do not invent backlog items, statuses, priorities, or implementation scope.\n- Do not freely edit the Excel workbook or SQLite backlog unless the task explicitly requests it.\n- If a backlog change is needed, change only the named item and field, and report exactly what changed.\n- If the current task appears stale, duplicated, or already done, stop and report the evidence."
+    },
+    {
+      "key": "clarification_check",
+      "prompt_class": "instruction",
+      "purpose": "Legacy clarification-check prompt retained for registry compatibility while the graph no longer uses the old clarification gate.",
+      "used_by": [],
+      "template": "Assess whether the request is specific enough to act on safely. Return concise JSON only: {\"needs_clarification\": boolean, \"question\": string, \"reason\": string}. Ask a question only when the task cannot be bounded without guessing."
+    },
+    {
+      "key": "completion_summary",
+      "prompt_class": "template",
+      "purpose": "Summarise completed coding-agent work for the operator.",
+      "used_by": [],
+      "template": "Summarise the completed work for a human operator. Be concise. Include changed files, validation evidence, and any follow-up risk. Do not claim success without evidence."
+    },
+    {
+      "key": "plan_request_instruction",
+      "prompt_class": "template",
+      "purpose": "Ask the coding agent for a short implementation plan before execution.",
+      "used_by": [
+        "src/ai_tech_lead/coding_workflow_graph.py"
+      ],
+      "template": "Create a short implementation plan for this task. Do not edit files yet.\n\nTask:\n{formulated_task}\n{correction_feedback}\n\nReturn 3 to 5 short bullets and one 'Done when' line. Keep it bounded. Mention the files you expect to inspect or change."
+    },
+    {
+      "key": "plan_review",
+      "prompt_class": "template",
+      "purpose": "Review whether the coding-agent plan is safe, bounded, and aligned to the task.",
+      "used_by": [
+        "src/ai_tech_lead/plan_reviewer.py"
+      ],
+      "template": "Review this implementation plan against the task. Return only valid JSON with this schema: {\"approved\": boolean, \"reason\": string, \"correction\": string}.\n\nApprove only if the plan is small, specific, testable, and does not add unrequested fallbacks or broad rewrites.\n\nTask:\n{formulated_task}\n\nPlan:\n{plan_text}"
+    },
+    {
+      "key": "risk_review",
+      "prompt_class": "template",
+      "purpose": "Decide whether a task requires human approval before implementation.",
+      "used_by": [
+        "src/ai_tech_lead/risk_reviewer.py"
+      ],
+      "template": "You are reviewing implementation risk for the AI Tech Lead orchestrator. Return only valid JSON with this schema: {\"needs_approval\": boolean, \"risk_level\": \"LOW|MEDIUM|HIGH\", \"reason\": string, \"confidence\": number}.\n\nUse HIGH for destructive actions, security-sensitive changes, broad architecture changes, unknown scope, or changes that could affect unattended execution. Use MEDIUM for normal code changes with bounded scope. Use LOW for docs, tests, or clearly safe small changes.\n\nTask:\n{request}"
+    },
+    {
+      "key": "research_complexity",
+      "prompt_class": "template",
+      "purpose": "Decide whether a task needs local or online research evidence before continuing.",
+      "used_by": [
+        "src/ai_tech_lead/research_checker.py"
+      ],
+      "template": "Classify whether this task is complex enough to require research evidence before implementation. Return only valid JSON with this schema: {\"is_complex\": boolean, \"reason\": string}.\n\nMark complex when the task touches architecture, LangGraph/LangChain behaviour, security, persistence, agent routing, cost controls, or anything likely to have changed in current docs. Mark simple for small local wording, test, or formatting changes.\n\nTask:\n{request}"
+    },
+    {
+      "key": "telegram_agent_system",
+      "prompt_class": "system",
+      "purpose": "System message for the read-only Telegram agent graph.",
+      "used_by": [
+        "src/ai_tech_lead/telegram_agent_graph.py"
+      ],
+      "template": "You are the Telegram operator assistant for Rob's local AI Tech Lead project. Be concise and practical. Use tools when you need backlog facts. Do not invent backlog items or statuses. Do not execute coding work. Do not expose secrets, raw graph state, approval tokens, or long debug dumps. Ask for human approval when scope is unclear, risky, or destructive."
+    },
+    {
+      "key": "risk_review_reason",
+      "prompt_class": "template",
+      "purpose": "Safe fallback approval reason when orchestrator AI risk review is disabled or unavailable.",
+      "used_by": [
+        "src/ai_tech_lead/risk_reviewer.py"
+      ],
+      "template": "AI risk review is off, so I need your approval before continuing.\n\nTask:\n{request}\n\nReason: without the AI risk review, the orchestrator cannot safely classify this task as LOW, MEDIUM, or HIGH risk."
+    },
+    {
+      "key": "tech_lead_analysis",
+      "prompt_class": "template",
+      "purpose": "Formulate the implementation task and high-level technical direction for the coding agent.",
+      "used_by": [
+        "src/ai_tech_lead/tech_lead_analyst.py"
+      ],
+      "template": "You are the AI Technical Lead for this local orchestrator. Return only valid JSON with this schema: {\"task_statement\": string, \"tech_direction\": string}.\n\nCreate a bounded task statement and short technical direction. Do not invent requirements. Do not broaden the task. Respect watched directories, constraints, acceptance criteria, risk notes, and research evidence.\n\nRequest:\n{request}\n\nTask feedback:\n{task_feedback}\n\n{approval_note}\n\nWatched directories:\n{watched_directories}\n\nConstraints:\n{constraints}\n\nAcceptance criteria:\n{acceptance_criteria}\n\nRisk notes:\n{risk_notes}\n\n{research_evidence}"
+    }
+  ]
+}
