@@ -8,68 +8,67 @@ Before changing backlog structure, workflow rules, documentation, runtime behavi
 
 If that document cannot be accessed, stop and ask the operator for the current exported text. Do not guess standards updates.
 
+## Current backlog sources
 
-## Current backlog location
+Operator-facing AI agents backlog:
 
-The current runtime backlog source is SQLite:
+```text
+https://docs.google.com/spreadsheets/d/1-e2lQ6vLUD8A5t3cuLhrjRvdTbs3hfs4ptdEE2yDaEc/edit
+```
+
+This Google Sheet is the current human planning backlog for AI-agent / AI Tech Lead data, setup, production, and knowledge-store work.
+
+Runtime backlog source:
 
 ```text
 data/backlog.sqlite3
 ```
 
-The structured Excel workbook is still maintained as the human-review/planning workbook:
+The running app reads runtime backlog items from SQLite through `SqliteBacklogRepository`. Do not assume that editing the Google Sheet or a local workbook changes the running app.
+
+Local Excel workbook path:
 
 ```text
 data/backlog/ai_tech_lead_backlog.xlsx
 ```
 
-From WSL, the same workbook is available at:
+WSL path:
 
 ```text
 /home/robvoto/projects/ai-tech-lead/data/backlog/ai_tech_lead_backlog.xlsx
 ```
 
-Important: do not edit the Excel workbook alone when the running app must see the change. Runtime currently reads SQLite through `SqliteBacklogRepository`; Excel is not automatically re-synced after the SQLite database already exists. Until a dedicated sync/reconcile workflow exists, any manual Excel update must be mirrored into SQLite or applied through the runtime repository path.
-
-The workbook was created from the previous Markdown backlog and contains structured sheets for backlog items, quality checks, dashboard summaries, and schema guidance.
-
-## Archived Markdown backlog
-
-`data/backlog/archive/BACKLOG.md` is now a historical/source backup, not the preferred working format.
-
-It is still useful for:
-
-- tracing original backlog wording;
-- recovering from spreadsheet mistakes;
-- comparing migration results;
-- keeping git-readable history while the Excel-backed backlog is being evaluated.
-
-Do not add new backlog items to `data/backlog/archive/BACKLOG.md` unless the task is explicitly about migration, repair, or historical documentation.
+The local Excel workbook must not be treated as current unless it has been checked against the Google Sheet and runtime SQLite backlog. The backlog item `ATL-DATA-002 - Reconcile ai_tech_lead_backlog.xlsx, Google Sheet, and runtime SQLite` exists for that work. Do not claim the workbook is up to date without evidence from WSL.
 
 ## Current editing rule
 
-The SQLite-backed runtime repository is implemented, and the Excel workbook remains the human-review workbook. Backlog changes must still be handled carefully:
-
 - The human operator owns backlog decisions.
-- The orchestrator may propose or apply backlog edits only when explicitly asked.
-- Worker coding agents must not freely edit the workbook.
-- If a coding-agent handoff needs a backlog update, the instruction must say exactly which row/field is allowed to change.
+- New planning items for AI agents should be added to the Google Sheet above.
+- Runtime execution still depends on SQLite until a proper sync/reconcile workflow is implemented.
+- Worker coding agents must not freely edit the workbook, SQLite database, or Google Sheet.
+- If a coding-agent handoff needs a backlog update, the instruction must say exactly which source, row/item, and field is allowed to change.
 - Status changes should remain human-approved unless the task is explicitly documentation/backlog maintenance.
+
+## Archived Markdown backlog
+
+`data/backlog/archive/BACKLOG.md` is historical only, not the working backlog.
+
+It may be used only for:
+
+- tracing original wording;
+- comparing migration results;
+- recovering historical context.
+
+Do not add new backlog items to `data/backlog/archive/BACKLOG.md` unless the task is explicitly about archive repair or historical documentation.
+
+## No hidden alternate paths
+
+Do not add hidden alternate backlog sources, hidden compatibility paths, or silent source switching.
+
+If the intended backlog source is missing, stale, inaccessible, or inconsistent, stop and ask the operator. Report the exact source that was checked and the evidence found.
 
 ## Tooling state
 
-The SQLite database and workbook can be seen by this environment at the project paths above.
+Routine runtime edits must go through the backlog repository boundary. Planning edits go into the Google Sheet. Local workbook changes require explicit reconciliation with SQLite before they can affect runtime execution.
 
-Use the backlog repository boundary for routine edits. If that layer is not appropriate, use an explicitly approved alternative editing method.
-
-Do not assume spreadsheet or database editing is a free-form bulk-edit operation. Use the repository boundary and approved workflows.
-
-## Future direction
-
-Google Sheets remains a possible future backlog source.
-
-Before Google Sheets, the next safer step is to remove ambiguity between the SQLite runtime backlog and the Excel review workbook. The graph, Telegram operator, and coding-agent handoff logic should depend on the backlog repository interface, not on the file format.
-
-## Migration note
-
-The Excel workbook exposed quality issues in the Markdown backlog, including missing `Status`, inconsistent metadata, and uneven detail across items. The workbook is now the working structure, while `data/backlog/archive/BACKLOG.md` remains a historical/source backup.
+Do not assume spreadsheet or database editing is a free-form bulk-edit operation. Use the approved source and approved workflow for the task.
