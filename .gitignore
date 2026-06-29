@@ -7,12 +7,30 @@ __pycache__/
 .venv/
 
 # Local runtime data and databases
-data/
+# Keep data/ mostly local, but allow small source-of-truth text assets needed by tests/runtime.
+data/*
+!data/prompts.json
+!data/backlog/
+data/backlog/*
+!data/backlog/archive/
+!data/backlog/archive/BACKLOG.md
 *.sqlite3
+*.sqlite
+*.db
 .langgraph_api/
 
 # Generated diagrams and local outputs
 graph_diagram.png
+data/*.png
+data/*.hash
+data/**/*.png
+data/**/*.hash
+
+# Local settings and secrets
+data/coding_agent_settings.json
+.env
+.env.*
+!.env.example
 
 # Personal local helper scripts, not project workflow
 run
@@ -21,9 +39,7 @@ uv_run.sh
 
 # Logs
 logs/
-
-# Environment variables and secrets
-.env
+*.log
 
 # Distribution / packaging
 build/
