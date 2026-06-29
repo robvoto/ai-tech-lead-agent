@@ -10,6 +10,7 @@ __pycache__/
 # Keep data/ mostly local, but allow small source-of-truth text assets needed by tests/runtime.
 data/*
 !data/prompts.json
+!data/coding_agent_settings.example.json
 !data/backlog/
 data/backlog/*
 !data/backlog/archive/
