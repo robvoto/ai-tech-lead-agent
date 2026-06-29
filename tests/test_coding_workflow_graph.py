@@ -321,6 +321,7 @@ def test_request_plan_node_uses_generated_instruction_and_stores_stdout(monkeypa
 
         class Result:
             stdout = "1. Do the thing\n2. Validate it"
+            stderr = ""
             returncode = 0
             changed_files_delta: tuple[str, ...] = ()
 
@@ -350,8 +351,39 @@ def test_request_plan_node_uses_generated_instruction_and_stores_stdout(monkeypa
         "Plan from coding agent:\n1. Do the thing\n2. Validate it",
     ]
     assert result["plan_text"] == "1. Do the thing\n2. Validate it"
+    assert result["plan_agent_stderr"] == ""
     assert result["plan_approved"] is False
     assert result["plan_correction"] == ""
+
+
+def test_request_plan_node_captures_stderr_when_stdout_empty(monkeypatch) -> None:
+    settings = replace(parse_settings(valid_settings_dict()), execute_coding_agent=False)
+
+    def fake_load_settings():
+        return settings
+
+    def fake_render_prompt(prompt_key: str, **replacements: str) -> str:
+        return "some instruction"
+
+    def fake_run_coding_agent(*, agent_instruction, project_root, settings, **_kwargs):
+        class Result:
+            stdout = ""
+            stderr = "ERROR: You've hit your usage limit."
+            returncode = 1
+            changed_files_delta: tuple[str, ...] = ()
+
+        return Result()
+
+    monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.load_settings", fake_load_settings)
+    monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.render_prompt", fake_render_prompt)
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.run_coding_agent", fake_run_coding_agent
+    )
+
+    result = request_plan_node(graph_state(), progress_callback=None)
+
+    assert result["plan_text"] == ""
+    assert result["plan_agent_stderr"] == "ERROR: You've hit your usage limit."
 
 
 def test_graph_runs_to_disabled_coding_agent_result(monkeypatch) -> None:

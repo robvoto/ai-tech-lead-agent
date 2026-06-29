@@ -241,6 +241,7 @@ def test_help_text_shows_identity_and_model() -> None:
         "  /cancel_code - stop the running coding-agent subprocess",
         "  /approve - approve the waiting task/decision",
         "  /reject - reject the waiting task/decision",
+        "  /sleep on|off - sleep mode: auto-run LOW/MEDIUM risk tasks",
         "Backlog:",
         "  /propose <text> - create/refine a backlog draft from an idea",
         "  /run <backlog-id> - run backlog item, e.g. /run ATL-001",

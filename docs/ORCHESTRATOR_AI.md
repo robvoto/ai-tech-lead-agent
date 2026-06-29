@@ -6,7 +6,7 @@ The orchestrator AI is used for bounded workflow decisions, starting with risk r
 
 ## Current Use
 
-The first supported use is task risk review. When enabled, the graph asks the orchestrator AI whether a task needs human approval before the workflow continues.
+The first supported use is task risk review. When enabled, the graph asks the orchestrator AI whether a task needs human approval before the workflow continues. The LLM returns structured JSON: `needs_approval`, `risk_level` (LOW/MEDIUM/HIGH), `reason`, and `confidence`. An unrecognised or missing `risk_level` is treated as UNKNOWN.
 
 ## Secret Handling
 
@@ -26,6 +26,7 @@ The local settings include:
 - `orchestrator_ai_model`
 - `orchestrator_ai_max_output_tokens`
 - `orchestrator_ai_timeout_seconds`
+- `sleep_mode` — when true, LOW and MEDIUM risk tasks proceed automatically without a human interrupt. HIGH risk, UNKNOWN risk, and `force_approval` tasks still pause. Toggled at runtime via `/sleep on` or `/sleep off` in Telegram.
 
 These settings are also exposed in the admin UI.
 

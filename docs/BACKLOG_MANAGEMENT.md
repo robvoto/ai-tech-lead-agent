@@ -26,7 +26,7 @@ data/backlog/ai_tech_lead_backlog.xlsx
 From WSL, the same workbook is available at:
 
 ```text
-/mnt/e/Programming/ai-tech-lead/data/backlog/ai_tech_lead_backlog.xlsx
+/home/robvoto/projects/ai-tech-lead/data/backlog/ai_tech_lead_backlog.xlsx
 ```
 
 Important: do not edit the Excel workbook alone when the running app must see the change. Runtime currently reads SQLite through `SqliteBacklogRepository`; Excel is not automatically re-synced after the SQLite database already exists. Until a dedicated sync/reconcile workflow exists, any manual Excel update must be mirrored into SQLite or applied through the runtime repository path.

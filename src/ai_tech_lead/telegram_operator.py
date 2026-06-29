@@ -15,7 +15,7 @@ import re
 import threading
 import uuid
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace as dc_replace
 from enum import StrEnum
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -27,7 +27,7 @@ from urllib.request import Request, urlopen
 from langchain_core.runnables import RunnableConfig
 from langgraph.types import Command
 
-from .app_settings import AppSettings, load_settings
+from .app_settings import AppSettings, load_settings, save_settings
 from .backlog_draft_builder import (
     BacklogRefinementBuildError,
     build_backlog_refinement_from_text,
@@ -85,6 +85,7 @@ CANONICAL_BOT_COMMAND_SECTIONS: tuple[tuple[str, tuple[_BotCommand, ...]], ...] 
             _BotCommand("cancel_code", "", "stop the running coding-agent subprocess"),
             _BotCommand("approve", "", "approve the waiting task/decision"),
             _BotCommand("reject", "", "reject the waiting task/decision"),
+            _BotCommand("sleep", "on|off", "sleep mode: auto-run LOW/MEDIUM risk tasks"),
         ),
     ),
     (
@@ -132,6 +133,7 @@ class TelegramCommandName(StrEnum):
     APPROVE = "approve"
     REJECT = "reject"
     CANCEL_CODE = "cancel_code"
+    SLEEP = "sleep"
     LIST = "list"
     COUNT = "count"
     READ = "read"
@@ -571,6 +573,11 @@ class TelegramOperator:
             self._handle_cancel_code(chat_id)
             return
 
+        if command.name == TelegramCommandName.SLEEP:
+            logger.info("Telegram action: /sleep %s in chat %s.", command.argument, chat_id)
+            self._handle_sleep(chat_id, command.argument)
+            return
+
         if command.name == TelegramCommandName.LIST:
             logger.info("Telegram action: /list in chat %s.", chat_id)
             self._handle_list(chat_id, command.argument)
@@ -957,6 +964,26 @@ class TelegramOperator:
         logger.info("Telegram run: graph completed for chat %s; clearing active task.", chat_id)
         self._active_tasks.pop(chat_id, None)
         self._finalize_completed_task(chat_id, task_label, state_snapshot.values, backlog_item_id)
+
+    def _handle_sleep(self, chat_id: str, argument: str) -> None:
+        arg = argument.strip().lower()
+        if arg not in ("on", "off"):
+            self._send_message(chat_id, "Usage: /sleep on  or  /sleep off")
+            return
+        enable = arg == "on"
+        new_settings = dc_replace(self._settings, sleep_mode=enable)
+        save_settings(new_settings)
+        self._settings = new_settings
+        logger.info("[SLEEP] Sleep mode set to %s.", "ON" if enable else "OFF")
+        if enable:
+            self._send_message(
+                chat_id,
+                "Sleep mode ON.\n"
+                "LOW and MEDIUM risk tasks will run automatically.\n"
+                "HIGH risk and force-approval tasks will pause and notify you.",
+            )
+        else:
+            self._send_message(chat_id, "Sleep mode OFF. All tasks will wait for your approval.")
 
     def _handle_cancel_code(self, chat_id: str) -> None:
         logger.info(
@@ -1433,10 +1460,12 @@ class TelegramOperator:
         active_chat_count = len(self._active_tasks)
         pending_backlog_count = len(self._pending_backlog_drafts)
 
+        sleep_state = "ON" if self._settings.sleep_mode else "OFF"
         lines = [
             (f"Bot is alive. Telegram: {telegram_state}. "),
             f"Transport: {transport_state}.",
             f"Coding-agent execution: {execution_state}.",
+            f"Sleep mode: {sleep_state}.",
             f"Orchestrator AI model: {self._settings.orchestrator_ai_model}.",
             f"Active coding tasks: {active_chat_count}.",
             f"Pending backlog refinements: {pending_backlog_count}.",

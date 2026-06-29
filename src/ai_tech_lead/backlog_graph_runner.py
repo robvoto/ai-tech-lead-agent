@@ -17,7 +17,6 @@ from langchain_core.runnables import RunnableConfig
 from .backlog_loader import backlog_item_to_graph_state, load_backlog_item_by_id
 from .checkpointer_store import get_checkpointer
 from .coding_workflow_graph import build_graph
-from .config import GRAPH_DIAGRAM_PATH, ensure_project_dirs
 from .logging_setup import LOGGER_NAME
 
 logger = logging.getLogger(LOGGER_NAME)
@@ -33,7 +32,6 @@ def run_backlog_graph(
         checkpointer_storage=get_checkpointer(),
         execute_coding_agent_override=execute_coding_agent_override,
     )
-    save_graph_diagram(app)
 
     try:
         backlog_item = load_backlog_item_by_id(task_id)
@@ -75,12 +73,3 @@ def run_backlog_graph(
         None,
         config=thread_config,
     )
-
-
-def save_graph_diagram(app) -> None:
-    """Save a generated PNG diagram of the compiled LangGraph workflow."""
-
-    ensure_project_dirs()
-    png_bytes = app.get_graph().draw_mermaid_png()
-    GRAPH_DIAGRAM_PATH.write_bytes(png_bytes)
-    logger.info("Graph diagram: %s", GRAPH_DIAGRAM_PATH)

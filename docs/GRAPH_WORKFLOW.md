@@ -22,9 +22,7 @@ START
 -> 1b_check_research
 -> [1c_research_interrupt, if complex task needs online sources]
 -> 1d_collect_research_evidence  (if online research approved)
--> 2_review_risk
--> 3_check_clarification
--> [3b_clarification_interrupt, if task is ambiguous]
+-> 2_review_risk                 (sets risk_level: LOW/MEDIUM/HIGH/UNKNOWN; sleep mode applied here)
 -> 3c_tech_lead_analyse          (formulate task + high-level tech direction)
 -> [4_approval_interrupt, if approval is needed]
 -> 5b_request_plan
@@ -63,7 +61,7 @@ After `6_run_coding_agent`:
 
 | Step | Module | Prompt key |
 |---|---|---|
-| Clarification check | `clarification_checker.py` | `clarification_check` |
+| Risk review | `risk_reviewer.py` | `risk_review` |
 | Tech lead analysis | `tech_lead_analyst.py` | `tech_lead_analysis` |
 | Plan request | `coding_workflow_graph.py` | `plan_request_instruction` |
 | Plan review | `plan_reviewer.py` | `plan_review` |
@@ -75,8 +73,8 @@ These nodes call `interrupt(value)` (LangGraph dynamic breakpoint pattern) to pa
 - `1c_research_interrupt` — emits `{"kind": "research_approval", "question": "..."}`. Resume with `{"approved": True/False}`.
   - `approved: True` continues to `1d_collect_research_evidence`.
   - `approved: False` ends the workflow.
-- `3b_clarification_interrupt` — emits `{"kind": "clarification", "question": "..."}`. Resume with a plain text string. Appends to `task_feedback` (Annotated reducer, items accumulate across loops). Loops back to `3_check_clarification`.
 - `4_approval_interrupt` — emits `{"kind": "approval", "reason": "...", "formulated_task": "..."}`. Resume with `{"approved": True/False, "approved_by": "..."}`.
+  - In sleep mode, this node is only reached for HIGH risk or `force_approval=True` tasks.
 - `5d_plan_interrupt` — emits `{"kind": "plan_guidance", "plan_text": "...", "reason": "...", "rejection_count": N}`. Resume with a plain text guidance string. Appends to `task_feedback` and resets plan rejection count.
 - `6b_failure_interrupt` — emits `{"kind": "failure_guidance", "coding_agent_result": "...", "retry_count": N}`. Resume with a plain text guidance string. Appends to `task_feedback` and resets retry count to 0.
 
@@ -84,10 +82,24 @@ These nodes call `interrupt(value)` (LangGraph dynamic breakpoint pattern) to pa
 
 Read the interrupt value from `state_snapshot.tasks[0].interrupts[0].value`. The `kind` field identifies which interrupt is active.
 
+## Sleep mode (risk-based auto-proceed)
+
+`sleep_mode` is a runtime setting toggled via `/sleep on` or `/sleep off` in Telegram.
+
+When sleep mode is active, the `2_review_risk` node applies these rules instead of always routing to an interrupt:
+
+| risk_level | force_approval | Outcome |
+|---|---|---|
+| LOW or MEDIUM | false | Proceeds automatically, no interrupt |
+| HIGH | any | Routes to `4_approval_interrupt` |
+| UNKNOWN | any | Routes to `4_approval_interrupt` (safe default) |
+| any | true | Routes to `4_approval_interrupt` |
+
+`risk_level` (LOW/MEDIUM/HIGH/UNKNOWN) is returned by the orchestrator LLM as part of the risk review JSON. UNKNOWN is used when the LLM is disabled, fails, returns low confidence, or returns an unrecognised value.
+
 ## Looping behaviour
 
-- Clarification interrupt loops back to `3_check_clarification` after the human replies. The `task_feedback` Annotated reducer accumulates all replies.
-- If the research complexity check is disabled, unavailable, or returns invalid output, the workflow now fails closed and routes to the research approval path instead of silently treating the task as simple.
+- If the research complexity check is disabled, unavailable, or returns invalid output, the workflow fails closed and routes to the research approval path instead of silently treating the task as simple.
 - Research approval rejection ends the workflow before risk review.
 - Approved research resumes into bounded evidence collection, then continues to risk review.
 - Rejected plans loop back to `5b_request_plan` with LLM correction feedback.

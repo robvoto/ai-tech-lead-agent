@@ -84,6 +84,7 @@ Title: {item.title}
         "approved_by": "",
         "formulated_task": "",
         "plan_text": "",
+        "plan_agent_stderr": "",
         "plan_approved": False,
         "plan_review_reason": "",
         "plan_correction": "",

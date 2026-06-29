@@ -8,7 +8,7 @@ description: Launch the AI Tech Lead bot for manual testing or verification.
 ## Launch command
 
 ```bash
-cd /mnt/e/Programming/ai-tech-lead
+cd /home/robvoto/projects/ai-tech-lead
 uv run python -m ai_tech_lead --debug
 ```
 

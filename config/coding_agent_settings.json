@@ -60,7 +60,7 @@
     "8290927833"
   ],
   "army_allowed_project_roots": [
-    "/mnt/e/Programming/ai-tech-lead"
+    "/home/robvoto/projects/ai-tech-lead"
   ],
   "telegram_webhook_url": "",
   "telegram_webhook_bind_host": "127.0.0.1",

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from dataclasses import dataclass
 from pathlib import Path
@@ -51,8 +52,16 @@ def export_graph_diagrams(*, settings: AppSettings | None = None) -> list[Path]:
             logger.info("Graph diagram skipped: %s requires settings.", spec.name)
             continue
         app = spec.build_app(resolved_settings)
-        png_bytes = app.get_graph().draw_mermaid_png()
+        graph = app.get_graph()
+        mermaid_source = graph.draw_mermaid()
+        current_hash = hashlib.sha256(mermaid_source.encode()).hexdigest()
+        hash_path = spec.path.with_suffix(".hash")
+        if hash_path.exists() and hash_path.read_text().strip() == current_hash:
+            logger.info("Graph diagram unchanged, skipping: %s (%s)", spec.path, spec.name)
+            continue
+        png_bytes = graph.draw_mermaid_png()
         spec.path.write_bytes(png_bytes)
+        hash_path.write_text(current_hash)
         updated_paths.append(spec.path)
         logger.info("Graph diagram refreshed: %s (%s)", spec.path, spec.name)
 

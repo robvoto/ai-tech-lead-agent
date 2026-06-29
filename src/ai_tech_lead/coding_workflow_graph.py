@@ -66,6 +66,7 @@ class GraphState(TypedDict):
     task_feedback: Annotated[list[str], operator.add]
     needs_approval: bool
     approval_reason: str
+    risk_level: str
     approved: bool
     approved_by: str
     research_evidence_required: bool
@@ -77,6 +78,7 @@ class GraphState(TypedDict):
     online_research_approved: bool
     formulated_task: str
     plan_text: str
+    plan_agent_stderr: str
     plan_approved: bool
     plan_review_reason: str
     plan_correction: str
@@ -289,6 +291,9 @@ def review_risk_node(state: GraphState) -> dict[str, Any]:
     decision = review_task_risk(state["request"])
     needs_approval = decision.needs_approval
     approval_reason = decision.approval_reason
+    risk_level = decision.risk_level
+
+    logger.info("Risk level: %s", risk_level)
 
     if state.get("force_approval"):
         needs_approval = True
@@ -298,13 +303,25 @@ def review_risk_node(state: GraphState) -> dict[str, Any]:
             "[LEARN] Force approval: Interrupt Before Implementation flag is set "
             "— overriding to needs_approval=True."
         )
+    elif settings.sleep_mode and risk_level in ("LOW", "MEDIUM"):
+        needs_approval = False
+        logger.info(
+            "[SLEEP] Sleep mode active: risk_level=%s — proceeding without approval.", risk_level
+        )
+    elif settings.sleep_mode and risk_level == "UNKNOWN":
+        needs_approval = True
+        logger.info("[SLEEP] Sleep mode active: risk_level=UNKNOWN — pausing for safety.")
+    elif settings.sleep_mode:
+        logger.info(
+            "[SLEEP] Sleep mode active: risk_level=%s — approval required.", risk_level
+        )
 
     logger.info(
         "Approval: %s (%s)",
         "required" if needs_approval else "not required",
         approval_reason,
     )
-    return {"needs_approval": needs_approval, "approval_reason": approval_reason}
+    return {"needs_approval": needs_approval, "approval_reason": approval_reason, "risk_level": risk_level}
 
 
 def tech_lead_analyse_node(state: GraphState) -> dict[str, Any]:
@@ -420,6 +437,7 @@ def request_plan_node(
         settings=settings,
     )
     plan_text = result.stdout.strip()
+    plan_stderr = result.stderr.strip()
     logger.info(
         "Plan received (%d chars): %s",
         len(plan_text),
@@ -427,12 +445,14 @@ def request_plan_node(
     )
     logger.info("Plan full text:\n%s", plan_text or "<empty>")
     logger.info("Plan request exit code: %s", result.returncode)
+    if plan_stderr:
+        logger.info("Plan request stderr (%d chars): %s", len(plan_stderr), _single_line_preview(plan_stderr, limit=360))
     if result.changed_files_delta:
         logger.warning("Plan request unexpectedly changed files: %s", result.changed_files_delta)
     if progress_callback is not None:
         progress_callback(_plan_share_message(plan_text))
 
-    return {"plan_text": plan_text, "plan_approved": False, "plan_correction": ""}
+    return {"plan_text": plan_text, "plan_agent_stderr": plan_stderr, "plan_approved": False, "plan_correction": ""}
 
 
 def review_plan_node(
@@ -448,6 +468,7 @@ def review_plan_node(
         progress_callback("Plan received. Reviewing...")
 
     plan_text = state.get("plan_text", "").strip()
+    plan_agent_stderr = state.get("plan_agent_stderr", "").strip()
     formulated_task = state.get("formulated_task", "") or state["request"]
     rejection_count = state.get("plan_rejection_count", 0)
 
@@ -458,6 +479,7 @@ def review_plan_node(
         decision = review_plan(
             formulated_task=formulated_task,
             plan_text=plan_text,
+            agent_error=plan_agent_stderr,
             settings=settings,
         )
     except PlanReviewUnavailable as exc:

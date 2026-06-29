@@ -21,10 +21,8 @@ docs/plan/INITIAL_PLAN.md
 
 ## Environment
 
-- VS Code app: Windows
 - Runtime/backend: WSL Ubuntu
-- Windows path: `E:\Programming\ai-tech-lead`
-- WSL path: `/mnt/e/Programming/ai-tech-lead`
+- Project root: `/home/robvoto/projects/ai-tech-lead`
 - Python: 3.13
 - Package manager: uv
 
@@ -33,7 +31,7 @@ docs/plan/INITIAL_PLAN.md
 AI Tech Lead can also be called by another local agent as a coding specialist through the non-interactive JSON subprocess contract. This path is for Agent Army / agent-to-agent routing and does not start Telegram or the admin UI.
 
 ```bash
-cd /mnt/e/Programming/ai-tech-lead
+cd /home/robvoto/projects/ai-tech-lead
 uv run python -m ai_tech_lead run-agent-task --input-json input.json --output-json output.json
 ```
 
@@ -44,7 +42,7 @@ See `docs/ARMY_INTEGRATION.md` for the contract and safety boundary.
 Run from Ubuntu/WSL:
 
 ```bash
-cd /mnt/e/Programming/ai-tech-lead
+cd /home/robvoto/projects/ai-tech-lead
 uv run python -m ai_tech_lead --debug
 ```
 
@@ -93,7 +91,7 @@ Telegram bot credentials are read from the local `TELEGRAM_BOT_TOKEN` environmen
 Run from Ubuntu/WSL and leave the terminal running:
 
 ```bash
-cd /mnt/e/Programming/ai-tech-lead
+cd /home/robvoto/projects/ai-tech-lead
 ./run_langsmith.sh
 ```
 

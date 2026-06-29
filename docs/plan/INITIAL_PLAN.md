@@ -5,7 +5,7 @@
 This file captures the current project plan and setup context:
 
 ```text
-E:\Programming\ai-tech-lead\docs\plan\INITIAL_PLAN.md
+/home/robvoto/projects/ai-tech-lead/docs/plan/INITIAL_PLAN.md
 ```
 
 Future project sessions should read this file before proposing architecture, setup, or implementation steps.
@@ -37,25 +37,25 @@ The system should prevent common coding-agent failure modes:
 Windows path:
 
 ```text
-E:\Programming\ai-tech-lead
+/home/robvoto/projects/ai-tech-lead
 ```
 
 WSL runtime path:
 
 ```text
-/mnt/e/Programming/ai-tech-lead
+/home/robvoto/projects/ai-tech-lead
 ```
 
 Correct runtime terminal:
 
 ```text
-robvoto@LAPOTENTE:/mnt/e/Programming/ai-tech-lead$
+robvoto@LAPOTENTE:~/projects/ai-tech-lead$
 ```
 
 Wrong runtime terminal:
 
 ```text
-PS E:\Programming\ai-tech-lead>
+PowerShell runtime prompt
 ```
 
 Do not use PowerShell as the project runtime terminal.
@@ -76,7 +76,7 @@ Do not use PowerShell as the project runtime terminal.
 From WSL:
 
 ```bash
-cd /mnt/e/Programming/ai-tech-lead
+cd /home/robvoto/projects/ai-tech-lead
 uv run python -m ai_tech_lead
 ```
 
@@ -111,7 +111,7 @@ Use `uv run ...` for project commands. Do not rely on plain `python3`, because t
 Run the local admin screen from WSL:
 
 ```bash
-cd /mnt/e/Programming/ai-tech-lead
+cd /home/robvoto/projects/ai-tech-lead
 uv run python -m ai_tech_lead
 ```
 
@@ -160,7 +160,7 @@ small, and do not hide product behaviour behind undocumented local state.
 Open the project from WSL:
 
 ```bash
-cd /mnt/e/Programming/ai-tech-lead
+cd /home/robvoto/projects/ai-tech-lead
 code .
 ```
 
@@ -173,7 +173,7 @@ AI-TECH-LEAD [WSL: UBUNTU]
 Select interpreter:
 
 ```text
-/mnt/e/Programming/ai-tech-lead/.venv/bin/python
+/home/robvoto/projects/ai-tech-lead/.venv/bin/python
 ```
 
 If VS Code shows Windows Python paths, the project is not open in WSL mode.
@@ -201,7 +201,7 @@ Studio is a visual debugging UI. It does not replace VS Code.
 Run local server:
 
 ```bash
-cd /mnt/e/Programming/ai-tech-lead
+cd /home/robvoto/projects/ai-tech-lead
 ./run_langsmith.sh
 ```
 

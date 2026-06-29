@@ -23,12 +23,16 @@ from .prompt_loader import (
 logger = logging.getLogger(LOGGER_NAME)
 
 
+RISK_LEVELS = frozenset({"LOW", "MEDIUM", "HIGH"})
+
+
 @dataclass(frozen=True)
 class RiskReviewDecision:
     """Structured decision written back into LangGraph state."""
 
     needs_approval: bool
     approval_reason: str
+    risk_level: str = "UNKNOWN"  # LOW, MEDIUM, HIGH, UNKNOWN
 
 
 def review_task_risk(request: str) -> RiskReviewDecision:
@@ -78,6 +82,8 @@ def _parse_risk_payload(payload: dict[str, Any]) -> RiskReviewDecision:
     needs_approval = payload["needs_approval"]
     reason = str(payload["reason"]).strip()
     confidence = float(payload.get("confidence", 0))
+    raw_level = str(payload.get("risk_level", "")).strip().upper()
+    risk_level = raw_level if raw_level in RISK_LEVELS else "UNKNOWN"
 
     if not isinstance(needs_approval, bool):
         raise ValueError("needs_approval must be boolean")
@@ -90,11 +96,13 @@ def _parse_risk_payload(payload: dict[str, Any]) -> RiskReviewDecision:
                 f"Low confidence orchestrator AI risk review ({confidence:.2f}); "
                 f"approval required. Reason: {reason}"
             ),
+            risk_level="UNKNOWN",
         )
 
     return RiskReviewDecision(
         needs_approval=needs_approval,
         approval_reason=f"Orchestrator AI risk review: {reason}",
+        risk_level=risk_level,
     )
 
 
@@ -107,7 +115,7 @@ def _safe_default_decision(
     reason = render_prompt(RISK_REVIEW_REASON_PROMPT_KEY, request=request)
     if prefix:
         reason = f"{prefix}\n\n{reason}"
-    return RiskReviewDecision(needs_approval=True, approval_reason=reason)
+    return RiskReviewDecision(needs_approval=True, approval_reason=reason, risk_level="UNKNOWN")
 
 
 def _risk_review_prompt(request: str) -> str:

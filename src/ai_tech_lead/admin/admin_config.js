@@ -63,7 +63,7 @@ export const LIST_FIELD_CONFIG = {
 };
 
 export const FIELD_PLACEHOLDERS = {
-  project_root: "/mnt/e/Programming/ai-tech-lead",
+  project_root: "/home/robvoto/projects/ai-tech-lead",
   backlog_path: "data/backlog.sqlite3",
   max_runtime_minutes: "20",
   coding_agent_command: "codex",

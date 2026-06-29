@@ -56,6 +56,7 @@ class AppSettings:
     orchestrator_ai_timeout_seconds: int
     coding_agent_progress_interval_seconds: int
     army_allowed_project_roots: list[str]
+    sleep_mode: bool
 
 
 def load_settings(settings_path: Path = SETTINGS_PATH) -> AppSettings:
@@ -227,6 +228,11 @@ def parse_settings(raw_settings: dict[str, Any]) -> AppSettings:
             raw_settings,
             "army_allowed_project_roots",
         ),
+        sleep_mode=_optional_bool(
+            raw_settings,
+            "sleep_mode",
+            default=False,
+        ),
     )
     _validate_telegram_settings(settings)
     _validate_research_settings(settings)
@@ -277,6 +283,7 @@ def settings_to_dict(settings: AppSettings) -> dict[str, Any]:
         "orchestrator_ai_timeout_seconds": settings.orchestrator_ai_timeout_seconds,
         "coding_agent_progress_interval_seconds": settings.coding_agent_progress_interval_seconds,
         "army_allowed_project_roots": settings.army_allowed_project_roots,
+        "sleep_mode": settings.sleep_mode,
     }
 
 

@@ -8,6 +8,25 @@ from ai_tech_lead.app_settings import parse_settings
 from ai_tech_lead.plan_reviewer import review_plan
 
 
+def test_review_plan_empty_plan_includes_agent_error_in_reason() -> None:
+    settings = replace(parse_settings(valid_settings_dict()), orchestrator_ai_enabled=True)
+
+    decision = review_plan("Build the feature", "", settings, agent_error="ERROR: usage limit exceeded")
+
+    assert decision.approved is False
+    assert "empty plan" in decision.reason.lower()
+    assert "usage limit exceeded" in decision.reason
+
+
+def test_review_plan_empty_plan_without_agent_error() -> None:
+    settings = replace(parse_settings(valid_settings_dict()), orchestrator_ai_enabled=True)
+
+    decision = review_plan("Build the feature", "", settings)
+
+    assert decision.approved is False
+    assert decision.reason == "The coding agent returned an empty plan."
+
+
 def test_review_plan_rejects_verbose_plan_without_calling_llm(monkeypatch) -> None:
     settings = replace(parse_settings(valid_settings_dict()), orchestrator_ai_enabled=True)
 

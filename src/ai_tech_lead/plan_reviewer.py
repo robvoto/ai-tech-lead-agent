@@ -36,6 +36,7 @@ def review_plan(
     formulated_task: str,
     plan_text: str,
     settings: AppSettings,
+    agent_error: str = "",
 ) -> PlanReviewDecision:
     """Decide whether the coding agent's plan correctly addresses the task."""
 
@@ -45,9 +46,13 @@ def review_plan(
 
     if not plan_text.strip():
         logger.warning("Plan review: plan text is empty, rejecting.")
+        reason = "The coding agent returned an empty plan."
+        if agent_error:
+            preview = agent_error[:300].strip()
+            reason = f"{reason} Agent output: {preview}"
         return PlanReviewDecision(
             approved=False,
-            reason="The coding agent returned an empty plan.",
+            reason=reason,
             correction="Please output a brief implementation plan as described.",
         )
 
