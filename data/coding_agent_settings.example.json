@@ -1,0 +1,74 @@
+{
+  "project_root": "/home/robvoto/projects/ai-tech-lead",
+  "backlog_path": "data/backlog.sqlite3",
+  "max_runtime_minutes": 20,
+  "coding_agent_command": "codex",
+  "coding_agent_args": [
+    "--ask-for-approval",
+    "never",
+    "exec"
+  ],
+  "execute_coding_agent": false,
+  "telegram_enabled": false,
+  "admin_bind_host": "127.0.0.1",
+  "admin_bind_port": 8766,
+  "allowed_directories": [
+    "src/ai_tech_lead",
+    "docs",
+    "tests"
+  ],
+  "watched_directories": [
+    "src/ai_tech_lead",
+    "docs"
+  ],
+  "brief_constraints": [
+    "Keep the change small",
+    "Stay within the selected backlog item",
+    "Report validation evidence"
+  ],
+  "acceptance_criteria": [
+    "Code runs successfully",
+    "Changed files are listed",
+    "Validation command and result are reported"
+  ],
+  "risk_notes": [
+    "Approval is controlled by the graph risk review and human approval path."
+  ],
+  "research_local_index_paths": [
+    "docs/INDEX.md",
+    "docs/research/INDEX.md"
+  ],
+  "research_min_local_sources": 2,
+  "research_max_local_sources": 4,
+  "research_allowed_domains": [
+    "docs.langchain.com"
+  ],
+  "research_online_source_urls": [
+    "https://docs.langchain.com/oss/python/langgraph/overview",
+    "https://docs.langchain.com/oss/python/langgraph/interrupts",
+    "https://docs.langchain.com/oss/python/langgraph/persistence",
+    "https://docs.langchain.com/oss/python/langgraph/application-structure"
+  ],
+  "research_max_online_source_urls": 4,
+  "research_fetch_timeout_seconds": 10,
+  "research_max_excerpt_chars": 800,
+  "telegram_transport": "polling",
+  "telegram_api_base_url": "https://api.telegram.org",
+  "telegram_long_poll_timeout_seconds": 25,
+  "telegram_max_code_request_chars": 3000,
+  "telegram_max_message_chars": 3900,
+  "telegram_allowed_chat_ids": [],
+  "telegram_webhook_url": "",
+  "telegram_webhook_bind_host": "127.0.0.1",
+  "telegram_webhook_bind_port": 8080,
+  "telegram_webhook_secret_token": "",
+  "orchestrator_ai_enabled": false,
+  "orchestrator_ai_model": "gpt-4.1-mini",
+  "orchestrator_ai_max_output_tokens": 300,
+  "orchestrator_ai_timeout_seconds": 20,
+  "coding_agent_progress_interval_seconds": 10,
+  "army_allowed_project_roots": [
+    "/home/robvoto/projects/ai-tech-lead"
+  ],
+  "sleep_mode": false
+}
