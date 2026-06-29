@@ -11,6 +11,23 @@ Use this document for local run, test, and troubleshooting commands. Keep archit
 - Supported WSL distro for Codex sandboxing: Ubuntu with `apt` available.
 - Codex sandboxing in WSL requires `bubblewrap` (`bwrap`) to be on `PATH`.
 
+## Local settings bootstrap
+
+Runtime settings are local machine state and are loaded from:
+
+```text
+data/coding_agent_settings.json
+```
+
+That real file is intentionally ignored by Git because it can contain local paths, Telegram chat IDs, and operator toggles. To create it in WSL on a fresh clone:
+
+```bash
+cd /home/robvoto/projects/ai-tech-lead
+cp data/coding_agent_settings.example.json data/coding_agent_settings.json
+```
+
+Then edit `data/coding_agent_settings.json` locally if Telegram, execution mode, allowed project roots, or model settings need to change.
+
 ## Normal CLI run
 
 ```bash
@@ -18,7 +35,7 @@ cd /home/robvoto/projects/ai-tech-lead
 uv run python -m ai_tech_lead --debug
 ```
 
-For local development, use `--reload` to restart the process when source, config, or prompt files change:
+For local development, use `--reload` to restart the process when source, config, docs, or prompt files change:
 
 ```bash
 uv run python -m ai_tech_lead --debug --reload
@@ -111,6 +128,7 @@ uv run ruff format <file-or-folder>
 
 ## Troubleshooting notes
 
+- If startup says `Settings file not found`, create `data/coding_agent_settings.json` from `data/coding_agent_settings.example.json`.
 - If a command works in WSL but not PowerShell, prefer WSL. This project runtime is WSL-first.
 - If LangGraph Studio fails to import the graph, check `langgraph.json` and the exported `graph` object in `src/ai_tech_lead/coding_workflow_graph.py`.
 - If coding-agent execution warns that Bubblewrap is missing or hangs during startup, verify `command -v bwrap` and `bwrap --version` in WSL before retrying Codex.
