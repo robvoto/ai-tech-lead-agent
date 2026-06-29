@@ -1,11 +1,39 @@
 # Documentation Index
 
-Use this file for progressive disclosure. Start here, then open only the document needed for the current task.
+Use this file as the single documentation entry point. Start here, then open only the document needed for the current task.
 
 ## Canonical project standards
 
 - External standards source of truth: https://docs.google.com/document/d/1VDlwjmfUwGA-eveXeHD7rBJ4tRRBafloQwj62KWU3Q0/edit?tab=t.0
 - If the standards document cannot be accessed, stop and ask the operator for the current exported text. Do not guess standards updates.
+
+## Backlog source of truth
+
+Human planning backlog for AI agents / AI Tech Lead data, setup, production, and knowledge-store work:
+
+```text
+https://docs.google.com/spreadsheets/d/1-e2lQ6vLUD8A5t3cuLhrjRvdTbs3hfs4ptdEE2yDaEc/edit
+```
+
+Runtime backlog source:
+
+```text
+data/backlog.sqlite3
+```
+
+Local workbook path:
+
+```text
+data/backlog/ai_tech_lead_backlog.xlsx
+```
+
+Rules:
+
+- The Google Sheet is the human planning backlog.
+- The running app reads runtime backlog items from SQLite.
+- The local workbook must not be treated as current unless checked against the Google Sheet and SQLite.
+- Do not add hidden alternate backlog sources or silent source switching.
+- If a backlog source is missing, stale, inaccessible, or inconsistent, stop and ask the operator.
 
 ## Core project documents
 
@@ -14,8 +42,7 @@ Use this file for progressive disclosure. Start here, then open only the documen
 - `RUNTIME_RUNBOOK.md` - local run, test, Studio, admin, and troubleshooting commands.
 - `ARMY_INTEGRATION.md` - Agent Army / agent-to-agent subprocess contract, JSON input/output shape, and Telegram boundary.
 - `CONTEXT_MANAGEMENT.md` - context allowed in graph state, prompts, Telegram messages, logs, and coding-agent handoffs.
-- `BACKLOG_MANAGEMENT.md` - current backlog location, Excel workbook rules, and migration notes.
-- `BACKLOG.md` - archived Markdown backlog source/backup retained for history and comparison at `data/backlog/archive/BACKLOG.md`; the current workbook lives at `data/backlog/ai_tech_lead_backlog.xlsx`.
+- `BACKLOG.md` - archived Markdown backlog retained only for history and comparison at `data/backlog/archive/BACKLOG.md`.
 - `UI_ADMIN_DESIGN.md` - admin UI design notes and browser-side ownership rules.
 
 ## Entry points
@@ -27,7 +54,7 @@ Use this file for progressive disclosure. Start here, then open only the documen
 ## Orchestrator product documents
 
 - `ORCHESTRATOR_IDENTITY.md` - runtime-loaded product identity and operating role.
-- `ORCHESTRATOR_AI.md` - AI risk-review behaviour, settings, safety fallback, and logging rules.
+- `ORCHESTRATOR_AI.md` - AI risk-review behaviour, settings, approval gating, and logging rules.
 
 ## Sub-indexes
 
