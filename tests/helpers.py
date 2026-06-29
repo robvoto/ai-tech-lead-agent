@@ -8,7 +8,7 @@ from ai_tech_lead.config import PROJECT_ROOT
 def valid_settings_dict() -> dict[str, Any]:
     return {
         "project_root": str(PROJECT_ROOT),
-        "backlog_path": "data/backlog/ai_tech_lead_backlog.xlsx",
+        "backlog_path": "tests/fixtures/BACKLOG.md",
         "max_runtime_minutes": 20,
         "coding_agent_command": "codex",
         "coding_agent_args": ["--ask-for-approval", "never", "exec"],
