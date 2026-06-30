@@ -52,6 +52,7 @@
   "research_max_online_source_urls": 4,
   "research_fetch_timeout_seconds": 10,
   "research_max_excerpt_chars": 800,
+  "knowledge_store_path": "data/knowledge_store.sqlite3",
   "telegram_transport": "polling",
   "telegram_api_base_url": "https://api.telegram.org",
   "telegram_long_poll_timeout_seconds": 25,

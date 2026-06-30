@@ -27,3 +27,6 @@ jobs:
 
       - name: Run tests
         run: uv run pytest
+
+      - name: Run workspace doctor
+        run: uv run python -m ai_tech_lead doctor

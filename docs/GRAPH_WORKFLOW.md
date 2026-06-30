@@ -6,6 +6,10 @@ This document describes the implemented coding workflow graph in `src/ai_tech_le
 
 The graph turns an explicit human request or backlog item into a bounded coding-agent handoff. It orchestrates the tech lead thinking — clarification, analysis, planning, and execution — while keeping the human in control.
 
+Visual preview: [data/graph_diagram.png](../data/graph_diagram.png)
+
+
+
 ## Studio entrypoint
 
 `langgraph.json` exports:

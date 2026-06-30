@@ -1,14 +1,14 @@
-"""Shared SQLite knowledge store — reads from the agent-factory shared store.
+"""SQLite knowledge store used by AI Tech Lead.
 
-All agents in the army read from and write to the same knowledge store.
-The store lives in the agent-factory data directory so knowledge is shared
-across projects without duplication.
+The knowledge store path is explicit and configurable. The Telegram agent
+passes the validated path from settings so there is no hidden cross-repo
+fallback or alternate path selection.
 
 Namespaces:
-    ("shared", "docs")      — indexed local documentation (agent-factory indexed)
-    ("shared", "trusted")   — ingested trusted online sources
-    ("coding", "learnings") — ai-tech-lead specific learnings and patterns
-    ("user", <id>, ...)     — per-user preferences
+    ("shared", "docs")      - indexed local documentation
+    ("shared", "trusted")    - ingested trusted online sources
+    ("coding", "learnings")  - ai-tech-lead specific learnings and patterns
+    ("user", <id>, ...)      - per-user preferences
 """
 
 from __future__ import annotations
@@ -16,21 +16,36 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+import shutil
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Generator, Iterable
 
-from langgraph.store.base import BaseStore, GetOp, Item, ListNamespacesOp, Op, PutOp, Result, SearchItem, SearchOp
+from langgraph.store.base import (
+    BaseStore,
+    GetOp,
+    Item,
+    ListNamespacesOp,
+    Op,
+    PutOp,
+    Result,
+    SearchItem,
+    SearchOp,
+)
 
 logger = logging.getLogger(__name__)
 
-# Prefer the shared agent-factory store. Fall back to local if it doesn't exist.
-_AGENT_FACTORY_STORE = Path("/mnt/e/programming/agent-factory/data/knowledge_store.sqlite3")
 _LOCAL_STORE = Path(__file__).parents[2] / "data" / "knowledge_store.sqlite3"
-_DEFAULT_STORE_PATH = _AGENT_FACTORY_STORE if _AGENT_FACTORY_STORE.parent.exists() else _LOCAL_STORE
+_DEFAULT_STORE_PATH = _LOCAL_STORE
+_SCHEMA_VERSION = 1
+_MAX_KNOWLEDGE_ITEM_BYTES = 50_000
 
 _SCHEMA = """
+CREATE TABLE IF NOT EXISTS schema_meta (
+    key TEXT PRIMARY KEY,
+    value INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS knowledge_items (
     namespace TEXT NOT NULL,
     key       TEXT NOT NULL,
@@ -50,11 +65,28 @@ def _connect(db_path: Path) -> Generator[sqlite3.Connection, None, None]:
     conn.row_factory = sqlite3.Row
     try:
         conn.executescript(_SCHEMA)
+        _ensure_schema_version(conn)
         conn.commit()
         yield conn
         conn.commit()
     finally:
         conn.close()
+
+
+def _ensure_schema_version(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS schema_meta (key TEXT PRIMARY KEY, value INTEGER NOT NULL)"
+    )
+    row = conn.execute("SELECT value FROM schema_meta WHERE key='schema_version'").fetchone()
+    if row is None:
+        conn.execute(
+            "INSERT INTO schema_meta (key, value) VALUES (?, ?)",
+            ("schema_version", _SCHEMA_VERSION),
+        )
+        return
+
+    if int(row["value"]) != _SCHEMA_VERSION:
+        raise RuntimeError(f"Unsupported knowledge store schema version: {row['value']}")
 
 
 def _ns_key(namespace: tuple[str, ...]) -> str:
@@ -102,19 +134,37 @@ class SqliteStore(BaseStore):
         now = datetime.now(timezone.utc).isoformat()
         if op.value is None:
             conn.execute("DELETE FROM knowledge_items WHERE namespace=? AND key=?", (ns, op.key))
-        else:
-            conn.execute(
-                """INSERT INTO knowledge_items (namespace, key, value, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?)
-                   ON CONFLICT(namespace, key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at""",
-                (ns, op.key, json.dumps(op.value), now, now),
+            return None
+
+        serialized = json.dumps(op.value, sort_keys=True)
+        if len(serialized.encode("utf-8")) > _MAX_KNOWLEDGE_ITEM_BYTES:
+            raise ValueError("Knowledge item is too large for the bounded store.")
+
+        existing = conn.execute(
+            "SELECT value FROM knowledge_items WHERE namespace=? AND key=?",
+            (ns, op.key),
+        ).fetchone()
+        if existing is not None and existing["value"] == serialized:
+            logger.info(
+                "[LEARN] Knowledge store skipped duplicate item namespace=%s key=%s",
+                ns,
+                op.key,
             )
+            return None
+
+        conn.execute(
+            """INSERT INTO knowledge_items (namespace, key, value, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT(namespace, key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at""",
+            (ns, op.key, serialized, now, now),
+        )
         return None
 
     def _get(self, conn: sqlite3.Connection, op: GetOp) -> Item | None:
         ns = _ns_key(op.namespace)
         row = conn.execute(
-            "SELECT * FROM knowledge_items WHERE namespace=? AND key=?", (ns, op.key)
+            "SELECT * FROM knowledge_items WHERE namespace=? AND key=?",
+            (ns, op.key),
         ).fetchone()
         return _row_to_item(row) if row else None
 
@@ -152,8 +202,70 @@ _store: SqliteStore | None = None
 
 
 def get_knowledge_store(db_path: Path | None = None) -> SqliteStore:
+    """Return the module-level store singleton, creating it on first call."""
+
     global _store
     if _store is None:
         _store = SqliteStore(db_path)
         logger.info("Knowledge store initialised at %s", _store._db_path)
     return _store
+
+
+def get_knowledge_store_statistics(db_path: Path | None = None) -> dict[str, Any]:
+    """Return a compact health summary for the local knowledge store."""
+
+    store = SqliteStore(db_path)
+    if not store._db_path.exists():
+        return {
+            "path": str(store._db_path),
+            "exists": False,
+            "size_bytes": 0,
+            "item_count": 0,
+            "namespace_count": 0,
+        }
+
+    with sqlite3.connect(str(store._db_path), uri=False) as conn:
+        conn.row_factory = sqlite3.Row
+        item_count = conn.execute("SELECT COUNT(*) FROM knowledge_items").fetchone()[0]
+        namespace_count = conn.execute(
+            "SELECT COUNT(DISTINCT namespace) FROM knowledge_items"
+        ).fetchone()[0]
+
+    size_bytes = store._db_path.stat().st_size
+    return {
+        "path": str(store._db_path),
+        "exists": store._db_path.exists(),
+        "size_bytes": size_bytes,
+        "item_count": int(item_count),
+        "namespace_count": int(namespace_count),
+    }
+
+
+def backup_knowledge_store(source_path: Path, backup_path: Path) -> Path:
+    """Copy the knowledge store to a backup file."""
+
+    if not source_path.exists():
+        raise FileNotFoundError(f"Knowledge store not found: {source_path}")
+    backup_path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source_path, backup_path)
+    return backup_path
+
+
+def restore_knowledge_store(backup_path: Path, target_path: Path) -> Path:
+    """Restore the knowledge store from a backup file."""
+
+    if not backup_path.exists():
+        raise FileNotFoundError(f"Backup not found: {backup_path}")
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(backup_path, target_path)
+    return target_path
+
+
+def compact_knowledge_store(db_path: Path) -> Path:
+    """Compact the knowledge store in place using SQLite VACUUM."""
+
+    if not db_path.exists():
+        raise FileNotFoundError(f"Knowledge store not found: {db_path}")
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.execute("VACUUM")
+    return db_path

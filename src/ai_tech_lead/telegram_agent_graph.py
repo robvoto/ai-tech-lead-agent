@@ -57,7 +57,10 @@ def build_telegram_agent_graph(*, settings: AppSettings, checkpointer: Any):
 
         from .knowledge_store import get_knowledge_store
 
-        store = get_knowledge_store()
+        knowledge_store_path = Path(settings.knowledge_store_path)
+        if not knowledge_store_path.is_absolute():
+            knowledge_store_path = Path(settings.project_root) / knowledge_store_path
+        store = get_knowledge_store(knowledge_store_path)
         memory_tools = [
             create_manage_memory_tool(
                 ("coding", "learnings"),

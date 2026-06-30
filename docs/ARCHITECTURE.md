@@ -67,7 +67,7 @@ The codebase currently implements two LangGraph workflows:
    - Purpose: turn an explicit human request into a bounded coding-agent execution. See `GRAPH_WORKFLOW.md` for the node-by-node route.
    - Main responsibilities: research gating, risk review, clarification handling, planning, approval routing, agent-instruction creation, and controlled coding-agent execution.
    - Studio registration: this is the only graph currently listed in `langgraph.json`.
-   - Local PNG export: `data/graph_diagram.png`
+   - Local PNG export: [data/graph_diagram.png](../data/graph_diagram.png)
 
 2. `src/ai_tech_lead/telegram_agent_graph.py`
    - Exported entrypoint: `build_telegram_agent_graph(...)`
@@ -85,7 +85,8 @@ Supporting modules such as `src/ai_tech_lead/backlog_graph_runner.py` call the c
 - Input adapters turn external messages into explicit local tasks.
   Current adapters: Telegram long polling, the local admin UI, and the Agent Army JSON subprocess.
   The CLI starts the process, but it does not select backlog tasks.
-  Telegram is an operator surface only; it must call the bounded workflow and must not become a second agent brain.
+  Telegram is the human-facing bot for AI Tech Lead: use it directly when you want to talk to the coding agent from chat.
+  It must call the bounded workflow and must not become a second agent brain.
   Agent Army enters through `run-agent-task`, which validates the JSON contract before handing the task to the graph.
   Future adapters may include web or other chat surfaces.
 - Backlog storage must stay behind a repository boundary. The current runtime backlog is `data/backlog.sqlite3`; the Excel workbook `data/backlog/ai_tech_lead_backlog.xlsx` is the human-review/planning workbook; the archived Markdown source/backup lives at `data/backlog/archive/BACKLOG.md`.
@@ -108,10 +109,24 @@ Supporting modules such as `src/ai_tech_lead/backlog_graph_runner.py` call the c
 - The coding-agent runner owns subprocess execution. It receives a complete
   instruction, project root, and validated settings, then captures stdout and
   stderr without using `shell=True`.
+- Other agents should call `uv run python -m ai_tech_lead manifest`, cache the
+  returned JSON by `manifest_hash`, and refresh only when the hash changes.
 - LangChain/LangGraph tools, when added, are executable capabilities exposed to an LLM or graph. They are different from this repository's `.skills`, which are reusable coding-agent instructions.
 - Admin UI is optional local tooling for editing settings. Browser code keeps HTML, CSS, and JavaScript separated. HTML owns structure, CSS owns presentation, and JavaScript owns behaviour. Browser JavaScript uses ES modules.
 - UI field schemas, API paths, labels, and other UI configuration should move to JSON or API-provided configuration when they become shared, large, or reused. Small local constants are acceptable only when they are explicit and easy to replace.
 - Placeholder/demo adapters should be removed once a real adapter replaces them, unless the human explicitly wants to keep them for teaching or tests.
+
+## Agent Army Contract
+
+This section replaces the standalone `ARMY_INTEGRATION.md` page. Keep the Army handoff contract here so the agent-to-agent boundary has one canonical home.
+
+- Army calls AI Tech Lead through `run-agent-task`.
+- Input is JSON with a task string plus bounded metadata such as `request_id`, `source`, `project_root`, `execution_mode`, `human_approved`, and `approval_token`.
+- `execution_mode` is a request, not a grant. `instruction_only` is the safe default.
+- `human_approved=true` must carry a matching one-time token issued for the same request and task.
+- Output is structured JSON with status, summary, formulated task, brief, coding-agent instruction, backend used, execution flag, logs, evidence, next action, and a tiny `agent_manifest` reference.
+- Army should rely on that bounded JSON contract rather than reading the full codebase.
+- Telegram is only a relay and operator surface; it does not replace the Army contract.
 
 ## Persistence
 
@@ -136,12 +151,11 @@ surface becomes important enough to protect.
 
 ## Current Telegram Operating Model
 
-Telegram is the primary operator channel for the prototype and the normal way
-to communicate with the app when the human is away from the PC. Normal text
-goes through a Telegram intent router first; the router may classify the
-message, but it must not execute the configured coding agent or mutate the
-backlog by itself. Explicit `/run JH-###` selects a backlog task. Explicit
-`/code` starts the bounded coding workflow.
+Telegram is the human-facing bot for AI Tech Lead and the normal way to talk
+to the coding agent from a phone. Normal text goes through a Telegram intent
+router first; the router may classify the message, but it must not execute the
+configured coding agent or mutate the backlog by itself. Explicit `/run JH-###`
+selects a backlog task. Explicit `/code` starts the bounded coding workflow.
 
 Current Telegram constraints:
 

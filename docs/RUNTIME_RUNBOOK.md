@@ -28,6 +28,8 @@ cp data/coding_agent_settings.example.json data/coding_agent_settings.json
 
 Then edit `data/coding_agent_settings.json` locally if Telegram, execution mode, allowed project roots, or model settings need to change.
 
+The settings file now also carries the explicit knowledge-store path. The current default keeps that store inside the project `data/` directory so the path is visible and easy to validate.
+
 ## Normal CLI run
 
 ```bash
@@ -45,6 +47,20 @@ Trigger backlog tasks through Telegram, for example:
 
 ```text
 /run JH-001
+```
+
+Telegram is the human-facing bot for the AI Tech Lead coding agent. Use it when you want to interact with the coding workflow directly from chat.
+
+Workspace bootstrap and local health checks:
+
+```bash
+cd /home/robvoto/projects/ai-tech-lead
+uv run python -m ai_tech_lead setup
+uv run python -m ai_tech_lead doctor
+uv run python -m ai_tech_lead knowledge-store stats
+uv run python -m ai_tech_lead knowledge-store backup /tmp/knowledge_store.sqlite3.bak
+uv run python -m ai_tech_lead knowledge-store restore /tmp/knowledge_store.sqlite3.bak
+uv run python -m ai_tech_lead knowledge-store compact
 ```
 
 Coding-agent execution is controlled by the local settings/admin toggle (`execute_coding_agent`); there is no `--execute-coding-agent` CLI flag.

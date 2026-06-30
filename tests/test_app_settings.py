@@ -42,6 +42,7 @@ def test_parse_settings_round_trips_valid_config() -> None:
     assert settings.research_max_online_source_urls == 4
     assert settings.research_fetch_timeout_seconds == 10
     assert settings.research_max_excerpt_chars == 800
+    assert settings.knowledge_store_path == "data/knowledge_store.sqlite3"
     assert settings.army_allowed_project_roots == [str(PROJECT_ROOT)]
     assert settings_to_dict(settings) == raw_settings
 

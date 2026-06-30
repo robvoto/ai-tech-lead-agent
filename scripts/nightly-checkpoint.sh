@@ -39,6 +39,9 @@ log "Running tests before checkpoint commit"
 
 uv run pytest 2>&1 | tee -a "$LOG_FILE"
 
+log "Running workspace doctor before checkpoint commit"
+uv run python -m ai_tech_lead doctor 2>&1 | tee -a "$LOG_FILE"
+
 CHECKPOINT_BRANCH="nightly-checkpoints"
 log "Switching to checkpoint branch: $CHECKPOINT_BRANCH"
 git checkout -B "$CHECKPOINT_BRANCH"

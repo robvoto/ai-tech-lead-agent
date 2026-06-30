@@ -34,8 +34,13 @@ from .config import DATA_DIR, ensure_project_dirs
 logger = logging.getLogger(__name__)
 
 BACKLOG_DB_PATH = DATA_DIR / "backlog.sqlite3"
+_SCHEMA_VERSION = 1
 
 _SCHEMA = """
+CREATE TABLE IF NOT EXISTS schema_meta (
+    key TEXT PRIMARY KEY,
+    value INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS backlog_items (
     item_id TEXT PRIMARY KEY,
     title TEXT NOT NULL DEFAULT '',
@@ -56,6 +61,7 @@ def _connect(db_path: Path) -> Generator[sqlite3.Connection, None, None]:
     conn.row_factory = sqlite3.Row
     try:
         conn.executescript(_SCHEMA)
+        _ensure_schema_version(conn)
         conn.commit()
         yield conn
         conn.commit()
@@ -87,6 +93,19 @@ def _item_to_row(item: BacklogItem) -> dict:
         "interrupt_before_implementation": int(item.interrupt_before_implementation),
         "status": item.status.value,
     }
+
+
+def _ensure_schema_version(conn: sqlite3.Connection) -> None:
+    row = conn.execute("SELECT value FROM schema_meta WHERE key='schema_version'").fetchone()
+    if row is None:
+        conn.execute(
+            "INSERT INTO schema_meta (key, value) VALUES (?, ?)",
+            ("schema_version", _SCHEMA_VERSION),
+        )
+        return
+
+    if int(row["value"]) != _SCHEMA_VERSION:
+        raise RuntimeError(f"Unsupported backlog schema version: {row['value']}")
 
 
 class SqliteBacklogRepository:

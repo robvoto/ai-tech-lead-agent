@@ -35,7 +35,17 @@ cd /home/robvoto/projects/ai-tech-lead
 uv run python -m ai_tech_lead run-agent-task --input-json input.json --output-json output.json
 ```
 
-See `docs/ARMY_INTEGRATION.md` for the contract and safety boundary.
+See `docs/ARCHITECTURE.md` for the Army contract and safety boundary.
+
+## Telegram bot
+
+AI Tech Lead also has a human-facing Telegram bot for direct use by you. When Telegram is enabled in local settings, the bot runs the coding-agent workflow interactively from chat:
+
+- use it for direct coding requests from Telegram
+- use `/run JH-###` to trigger a backlog item
+- use `/code` for an explicit coding workflow
+
+The Telegram bot is the direct human entry point; Agent Army is the non-interactive subprocess entry point.
 
 ## Normal project run
 
@@ -56,6 +66,14 @@ Trigger backlog tasks through Telegram, for example:
 
 ```text
 /run JH-001
+```
+
+Bootstrap a fresh workspace or inspect local health:
+
+```bash
+uv run python -m ai_tech_lead setup
+uv run python -m ai_tech_lead doctor
+uv run python -m ai_tech_lead knowledge-store stats
 ```
 
 Coding-agent execution is controlled by the local settings/admin toggle (`execute_coding_agent`); there is no `--execute-coding-agent` CLI flag.

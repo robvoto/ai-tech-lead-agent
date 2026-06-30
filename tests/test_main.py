@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import replace
 
@@ -176,6 +177,114 @@ def test_main_refreshes_graph_diagrams_in_debug_mode(monkeypatch) -> None:
 
     assert exported_settings == [settings]
     assert started_threads == ["admin-server", "telegram-operator"]
+
+
+def test_main_setup_mode_bootstraps_workspace(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(main_module, "configure_logging", lambda *, debug=False: None)
+    monkeypatch.setattr(main_module, "initialize_database", lambda: "db.sqlite")
+    monkeypatch.setattr(main_module, "bootstrap_workspace", lambda: ["setup complete"])
+    monkeypatch.setattr(
+        main_module,
+        "_parse_args",
+        lambda: type("Args", (), {"debug": False, "reload": False, "command": "setup"})(),
+    )
+
+    exit_code = main_module.main()
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert "setup complete" in captured.out
+
+
+def test_main_doctor_mode_reports_workspace_health(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(main_module, "configure_logging", lambda *, debug=False: None)
+    monkeypatch.setattr(main_module, "doctor_workspace", lambda: type("Report", (), {"ok": True, "lines": ["OK: healthy"]})())
+    monkeypatch.setattr(
+        main_module,
+        "_parse_args",
+        lambda: type("Args", (), {"debug": False, "reload": False, "command": "doctor"})(),
+    )
+
+    exit_code = main_module.main()
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert "OK: healthy" in captured.out
+
+
+def test_main_knowledge_store_stats_reports_summary(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(main_module, "configure_logging", lambda *, debug=False: None)
+    monkeypatch.setattr(
+        main_module,
+        "_load_settings_for_startup",
+        lambda: type(
+            "Settings",
+            (),
+            {
+                "project_root": str(main_module.PROJECT_ROOT),
+                "knowledge_store_path": "data/knowledge_store.sqlite3",
+            },
+        )(),
+    )
+    monkeypatch.setattr(
+        main_module,
+        "get_knowledge_store_statistics",
+        lambda _path: {
+            "path": "/tmp/knowledge_store.sqlite3",
+            "exists": True,
+            "item_count": 7,
+            "namespace_count": 3,
+            "size_bytes": 1234,
+        },
+    )
+    monkeypatch.setattr(
+        main_module,
+        "_parse_args",
+        lambda: type(
+            "Args",
+            (),
+            {"debug": False, "reload": False, "command": "knowledge-store", "knowledge_command": "stats"},
+        )(),
+    )
+
+    exit_code = main_module.main()
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert "Path: /tmp/knowledge_store.sqlite3" in captured.out
+    assert "Items: 7" in captured.out
+
+
+def test_main_manifest_mode_prints_compact_handshake(monkeypatch, capsys) -> None:
+    def fail_if_called(*, debug: bool = False) -> None:
+        raise AssertionError("configure_logging should not run for manifest")
+
+    monkeypatch.setattr(main_module, "configure_logging", fail_if_called)
+    monkeypatch.setattr(
+        main_module,
+        "_load_settings_for_startup",
+        lambda: parse_settings(valid_settings_dict()),
+    )
+    monkeypatch.setattr(
+        main_module,
+        "_parse_args",
+        lambda: type(
+            "Args",
+            (),
+            {"debug": False, "reload": False, "command": "manifest"},
+        )(),
+    )
+
+    exit_code = main_module.main()
+
+    captured = capsys.readouterr()
+    manifest = json.loads(captured.out)
+
+    assert exit_code == 0
+    assert "\n" not in captured.out.strip()
+    assert manifest["agent_id"] == "ai-tech-lead"
+    assert manifest["entrypoints"]["manifest"] == "manifest"
+    assert manifest["manifest_hash"]
 
 
 def test_admin_bind_address_prefers_settings_values() -> None:

@@ -29,9 +29,9 @@ data/backlog/ai_tech_lead_backlog.xlsx
 
 Rules:
 
-- The Google Sheet is the human planning backlog.
+- The Google Sheet is the human planning backlog and the source of truth for backlog decisions.
 - The running app reads runtime backlog items from SQLite.
-- The local workbook must not be treated as current unless checked against the Google Sheet and SQLite.
+- The local workbook is a historical comparison copy only. It must not be treated as current unless checked against the Google Sheet and SQLite.
 - Do not add hidden alternate backlog sources or silent source switching.
 - If a backlog source is missing, stale, inaccessible, or inconsistent, stop and ask the operator.
 
@@ -40,7 +40,7 @@ Rules:
 - `ARCHITECTURE.md` - system architecture, module boundaries, adapter strategy, persistence, and growth rules.
 - `GRAPH_WORKFLOW.md` - implemented LangGraph workflow, nodes, routes, interrupts, and execution boundary.
 - `RUNTIME_RUNBOOK.md` - local run, test, Studio, admin, and troubleshooting commands.
-- `ARMY_INTEGRATION.md` - Agent Army / agent-to-agent subprocess contract, JSON input/output shape, and Telegram boundary.
+- `ARCHITECTURE.md` also contains the Agent Army / agent-to-agent subprocess contract, JSON input/output shape, and Telegram boundary.
 - `CONTEXT_MANAGEMENT.md` - context allowed in graph state, prompts, Telegram messages, logs, and coding-agent handoffs.
 - `BACKLOG.md` - archived Markdown backlog retained only for history and comparison at `data/backlog/archive/BACKLOG.md`.
 - `UI_ADMIN_DESIGN.md` - admin UI design notes and browser-side ownership rules.

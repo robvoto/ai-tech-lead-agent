@@ -38,6 +38,7 @@ class AppSettings:
     research_max_online_source_urls: int
     research_fetch_timeout_seconds: int
     research_max_excerpt_chars: int
+    knowledge_store_path: str
     telegram_transport: str
     telegram_api_base_url: str
     telegram_long_poll_timeout_seconds: int
@@ -147,6 +148,11 @@ def parse_settings(raw_settings: dict[str, Any]) -> AppSettings:
         research_max_excerpt_chars=_required_positive_int(
             raw_settings,
             "research_max_excerpt_chars",
+        ),
+        knowledge_store_path=_optional_string(
+            raw_settings,
+            "knowledge_store_path",
+            default="data/knowledge_store.sqlite3",
         ),
         telegram_transport=_required_telegram_transport(raw_settings),
         telegram_api_base_url=_optional_url(
@@ -265,6 +271,7 @@ def settings_to_dict(settings: AppSettings) -> dict[str, Any]:
         "research_max_online_source_urls": settings.research_max_online_source_urls,
         "research_fetch_timeout_seconds": settings.research_fetch_timeout_seconds,
         "research_max_excerpt_chars": settings.research_max_excerpt_chars,
+        "knowledge_store_path": settings.knowledge_store_path,
         "telegram_transport": settings.telegram_transport,
         "telegram_api_base_url": settings.telegram_api_base_url,
         "telegram_long_poll_timeout_seconds": settings.telegram_long_poll_timeout_seconds,

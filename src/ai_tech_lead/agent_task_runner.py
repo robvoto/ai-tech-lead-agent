@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any
 
 from .app_settings import load_settings
+from .agent_manifest import agent_manifest_reference
 from .logging_setup import LOGGER_NAME
 
 logger = logging.getLogger(LOGGER_NAME)
@@ -49,7 +50,11 @@ def run_agent_task(input_path: str | Path, output_path: str | Path) -> int:
     try:
         task_input = json.loads(input_file.read_text(encoding="utf-8"))
     except Exception as exc:
-        _write_output(output_file, _error_response("", f"Could not read input file: {exc}"))
+        _write_output(
+            output_file,
+            _error_response("", f"Could not read input file: {exc}"),
+            settings=None,
+        )
         return 1
 
     request_id = task_input.get("request_id") or str(uuid.uuid4())
@@ -59,6 +64,7 @@ def run_agent_task(input_path: str | Path, output_path: str | Path) -> int:
         _write_output(
             output_file,
             _error_response(request_id, "task field is required and must not be empty."),
+            settings=None,
         )
         return 1
 
@@ -66,7 +72,11 @@ def run_agent_task(input_path: str | Path, output_path: str | Path) -> int:
     try:
         settings = load_settings()
     except Exception as exc:
-        _write_output(output_file, _error_response(request_id, f"Failed to load settings: {exc}"))
+        _write_output(
+            output_file,
+            _error_response(request_id, f"Failed to load settings: {exc}"),
+            settings=None,
+        )
         return 1
 
     # Validate project_root against the local allowlist.
@@ -77,7 +87,7 @@ def run_agent_task(input_path: str | Path, output_path: str | Path) -> int:
             f"project_root '{project_root_raw}' is not in the army_allowed_project_roots allowlist. "
             "Add it to data/coding_agent_settings.json to permit this path."
         )
-        _write_output(output_file, _error_response(request_id, msg))
+        _write_output(output_file, _error_response(request_id, msg), settings=settings)
         return 1
 
     # Execution gate: local settings decide, not the caller.
@@ -91,6 +101,7 @@ def run_agent_task(input_path: str | Path, output_path: str | Path) -> int:
                 request_id,
                 "execution_mode must be one of: instruction_only, execute.",
             ),
+            settings=settings,
         )
         return 1
     execute_coding_agent = execution_mode == "execute" and settings.execute_coding_agent
@@ -103,7 +114,7 @@ def run_agent_task(input_path: str | Path, output_path: str | Path) -> int:
         token = task_input.get("approval_token", "")
         if not consume_approval_token(token, request_id, task_text):
             msg = "human_approved=true requires a valid, unconsumed approval_token."
-            _write_output(output_file, _error_response(request_id, msg))
+            _write_output(output_file, _error_response(request_id, msg), settings=settings)
             return 1
         human_approved = True
 
@@ -122,6 +133,7 @@ def run_agent_task(input_path: str | Path, output_path: str | Path) -> int:
         _write_output(
             output_file,
             _error_response(request_id, f"Unexpected error: {exc}", traceback.format_exc()),
+            settings=settings,
         )
         return 1
 
@@ -133,7 +145,7 @@ def run_agent_task(input_path: str | Path, output_path: str | Path) -> int:
         result["approval_token"] = token
         logger.info("[ARMY] approval_required — issued token for request_id=%s", request_id)
 
-    _write_output(output_file, result)
+    _write_output(output_file, result, settings=settings)
     return (
         0
         if result.get("status")
@@ -290,7 +302,15 @@ def _error_response(request_id: str, message: str, detail: str = "") -> dict[str
     }
 
 
-def _write_output(output_file: Path, data: dict[str, Any]) -> None:
+def _write_output(
+    output_file: Path,
+    data: dict[str, Any],
+    *,
+    settings: Any | None = None,
+) -> None:
+    if "agent_manifest" not in data:
+        data = dict(data)
+        data["agent_manifest"] = agent_manifest_reference(settings)
     output_file.parent.mkdir(parents=True, exist_ok=True)
     output_file.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
     logger.info("[ARMY] Output written to %s (status=%s)", output_file, data.get("status"))

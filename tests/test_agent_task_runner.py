@@ -125,6 +125,8 @@ def test_missing_task_returns_failed_without_running_workflow(
     assert rc == 1
     assert result["status"] == STATUS_FAILED
     assert "task" in result["summary"].lower()
+    assert result["agent_manifest"]["agent_id"] == "ai-tech-lead"
+    assert result["agent_manifest"]["manifest_command"] == "uv run python -m ai_tech_lead manifest"
     assert calls == [], "workflow must not be invoked when task is missing"
 
 
@@ -575,6 +577,9 @@ def test_successful_response_includes_all_required_fields(
         "logs",
         "evidence",
         "next_action",
+        "agent_manifest",
     }
     assert required_keys.issubset(result.keys())
     assert result["status"] == STATUS_SUCCESS
+    assert result["agent_manifest"]["agent_id"] == "ai-tech-lead"
+    assert result["agent_manifest"]["manifest_command"] == "uv run python -m ai_tech_lead manifest"

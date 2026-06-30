@@ -12,12 +12,20 @@ from threading import Thread
 from typing import Callable, Sequence
 
 from ai_tech_lead.admin_server import run_admin_server
+from ai_tech_lead.agent_manifest import render_agent_manifest
 from ai_tech_lead.app_settings import AppSettings, load_settings
 from ai_tech_lead.config import CODING_AGENT_LOCK_FILE, PROJECT_ROOT, SETTINGS_PATH
 from ai_tech_lead.graph_diagrams import export_graph_diagrams
+from ai_tech_lead.knowledge_store import (
+    backup_knowledge_store,
+    compact_knowledge_store,
+    get_knowledge_store_statistics,
+    restore_knowledge_store,
+)
 from ai_tech_lead.logging_setup import LOGGER_NAME, configure_logging
 from ai_tech_lead.storage import initialize_database
 from ai_tech_lead.telegram_operator import run_telegram_operator
+from ai_tech_lead.workspace_ops import bootstrap_workspace, doctor_workspace
 
 logger = logging.getLogger(LOGGER_NAME)
 _RELOAD_WATCHED_DIRECTORIES: tuple[str, ...] = ("src", "config", "docs")
@@ -30,12 +38,29 @@ def main() -> int:
     """Initialize local storage and start the configured local services."""
 
     args = _parse_args()
-    configure_logging(debug=args.debug)
 
     # Army entry point — non-interactive, no Telegram, no admin UI
     if getattr(args, "command", None) == "run-agent-task":
+        configure_logging(debug=args.debug)
         from ai_tech_lead.agent_task_runner import run_agent_task
         return run_agent_task(args.input_json, args.output_json)
+
+    if getattr(args, "command", None) == "setup":
+        configure_logging(debug=args.debug)
+        return _run_setup()
+
+    if getattr(args, "command", None) == "doctor":
+        configure_logging(debug=args.debug)
+        return _run_doctor()
+
+    if getattr(args, "command", None) == "manifest":
+        return _run_manifest()
+
+    if getattr(args, "command", None) == "knowledge-store":
+        configure_logging(debug=args.debug)
+        return _run_knowledge_store(args)
+
+    configure_logging(debug=args.debug)
 
     if args.reload:
         return _run_with_reload(_reload_command_args())
@@ -131,6 +156,56 @@ def _parse_args() -> argparse.Namespace:
         required=True,
         metavar="FILE",
         help="Path to write the structured JSON result.",
+    )
+
+    subparsers.add_parser(
+        "setup",
+        help="Bootstrap the local workspace, settings, and runtime stores.",
+    )
+    subparsers.add_parser(
+        "doctor",
+        help="Report local workspace health and tracked runtime-file issues.",
+    )
+    subparsers.add_parser(
+        "manifest",
+        help="Print the machine-readable capability handshake for other agents.",
+    )
+
+    knowledge_parser = subparsers.add_parser(
+        "knowledge-store",
+        help="Inspect or maintain the configured local knowledge store.",
+    )
+    knowledge_subparsers = knowledge_parser.add_subparsers(dest="knowledge_command")
+    knowledge_subparsers.required = True
+
+    knowledge_subparsers.add_parser(
+        "stats",
+        help="Show a compact knowledge-store health summary.",
+    )
+
+    backup_parser = knowledge_subparsers.add_parser(
+        "backup",
+        help="Copy the knowledge store to a backup file.",
+    )
+    backup_parser.add_argument(
+        "backup_path",
+        metavar="BACKUP_PATH",
+        help="Where to write the backup copy.",
+    )
+
+    restore_parser = knowledge_subparsers.add_parser(
+        "restore",
+        help="Restore the knowledge store from a backup file.",
+    )
+    restore_parser.add_argument(
+        "backup_path",
+        metavar="BACKUP_PATH",
+        help="Backup file to restore from.",
+    )
+
+    knowledge_subparsers.add_parser(
+        "compact",
+        help="Compact the knowledge store in place.",
     )
 
     return parser.parse_args()
@@ -240,6 +315,86 @@ def _admin_bind_address(settings: AppSettings | None) -> tuple[str, int]:
         return settings.admin_bind_host, settings.admin_bind_port
 
     return "127.0.0.1", 8766
+
+
+def _run_setup() -> int:
+    """Bootstrap the local runtime workspace."""
+
+    try:
+        for line in bootstrap_workspace():
+            print(line)
+    except Exception as error:
+        logger.error("Workspace setup failed: %s", error)
+        return 1
+    return 0
+
+
+def _run_doctor() -> int:
+    """Print a compact workspace health report."""
+
+    report = doctor_workspace()
+    for line in report.lines:
+        print(line)
+    return 0 if report.ok else 1
+
+
+def _run_manifest() -> int:
+    """Print the machine-readable capability handshake."""
+
+    settings = _load_settings_for_startup()
+    print(render_agent_manifest(settings, compact=True))
+    return 0
+
+
+def _run_knowledge_store(args: argparse.Namespace) -> int:
+    """Run a knowledge-store maintenance subcommand."""
+
+    settings = _load_settings_for_startup()
+    if settings is None:
+        return 1
+
+    knowledge_store_path = _resolve_project_path(settings.project_root, settings.knowledge_store_path)
+    command = getattr(args, "knowledge_command", "")
+
+    try:
+        if command == "stats":
+            stats = get_knowledge_store_statistics(knowledge_store_path)
+            print(f"Path: {stats['path']}")
+            print(f"Exists: {stats['exists']}")
+            print(f"Items: {stats['item_count']}")
+            print(f"Namespaces: {stats['namespace_count']}")
+            print(f"Size bytes: {stats['size_bytes']}")
+            return 0
+
+        if command == "backup":
+            backup_path = _resolve_project_path(settings.project_root, args.backup_path)
+            result = backup_knowledge_store(knowledge_store_path, backup_path)
+            print(f"Backed up knowledge store to {result}")
+            return 0
+
+        if command == "restore":
+            backup_path = _resolve_project_path(settings.project_root, args.backup_path)
+            result = restore_knowledge_store(backup_path, knowledge_store_path)
+            print(f"Restored knowledge store from {backup_path} to {result}")
+            return 0
+
+        if command == "compact":
+            result = compact_knowledge_store(knowledge_store_path)
+            print(f"Compacted knowledge store: {result}")
+            return 0
+
+        logger.error("Unknown knowledge-store command: %s", command)
+        return 1
+    except Exception as error:
+        logger.error("Knowledge-store command failed: %s", error)
+        return 1
+
+
+def _resolve_project_path(project_root: str, path_value: str) -> Path:
+    path = Path(path_value)
+    if path.is_absolute():
+        return path
+    return Path(project_root) / path
 
 
 if __name__ == "__main__":
