@@ -21,7 +21,6 @@ data/backlog/*
 .langgraph_api/
 
 # Generated diagrams and local outputs
-graph_diagram.png
 data/*.png
 data/*.hash
 data/**/*.png

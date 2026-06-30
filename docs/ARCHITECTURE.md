@@ -67,16 +67,16 @@ The codebase currently implements two LangGraph workflows:
    - Purpose: turn an explicit human request into a bounded coding-agent execution. See `GRAPH_WORKFLOW.md` for the node-by-node route.
    - Main responsibilities: research gating, risk review, clarification handling, planning, approval routing, agent-instruction creation, and controlled coding-agent execution.
    - Studio registration: this is the only graph currently listed in `langgraph.json`.
-   - Local PNG export: [data/graph_diagram.png](../data/graph_diagram.png)
+   - Local PNG export: [graph_diagram.png](graph_diagram.png)
 
 2. `src/ai_tech_lead/telegram_agent_graph.py`
    - Exported entrypoint: `build_telegram_agent_graph(...)`
    - Purpose: provide a read-only Telegram agent for backlog Q&A and safe tool use.
    - Main responsibilities: chat-thread message handling, tool binding, backlog read-only tools, and reply generation.
    - Studio registration: not exported in `langgraph.json`; it is used by the Telegram operator at runtime.
-   - Local PNG export: `data/telegram_agent_graph.png`
+   - Local PNG export: [telegram_agent_graph.png](telegram_agent_graph.png)
 
-The helper `src/ai_tech_lead/graph_diagrams.py` refreshes both PNGs in `data/` so the diagrams stay visible without needing to hunt for the rendering code.
+The helper `src/ai_tech_lead/graph_diagrams.py` refreshes both PNGs in `docs/` so the diagrams stay visible without needing to hunt for the rendering code.
 
 Supporting modules such as `src/ai_tech_lead/backlog_graph_runner.py` call the coding workflow graph builder, but they are runners/adapters rather than separate graph implementations.
 

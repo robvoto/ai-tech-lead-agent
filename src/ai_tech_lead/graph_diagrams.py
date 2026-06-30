@@ -1,4 +1,4 @@
-"""Utilities for exporting LangGraph diagrams to the local data directory."""
+"""Utilities for exporting LangGraph diagrams to the local docs directory."""
 
 from __future__ import annotations
 
@@ -35,7 +35,7 @@ class GraphDiagramSpec:
 
 
 def export_graph_diagrams(*, settings: AppSettings | None = None) -> list[Path]:
-    """Export implemented graph diagrams into `data/`."""
+    """Export implemented graph diagrams into `docs/`."""
 
     ensure_project_dirs()
     resolved_settings = settings or _load_settings_if_needed()
