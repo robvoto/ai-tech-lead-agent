@@ -11,7 +11,6 @@ SETTINGS_PATH = DATA_DIR / "coding_agent_settings.json"
 DB_PATH = DATA_DIR / "ai_tech_lead.sqlite3"
 CODING_AGENT_LOCK_FILE = PROJECT_ROOT / ".ai_tech_lead_agent_running"
 GRAPH_DIAGRAM_PATH = DIAGRAMS_DIR / "graph_diagram.png"
-TELEGRAM_AGENT_GRAPH_DIAGRAM_PATH = DIAGRAMS_DIR / "telegram_agent_graph.png"
 
 
 def ensure_project_dirs() -> None:

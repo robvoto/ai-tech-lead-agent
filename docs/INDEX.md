@@ -40,7 +40,7 @@ Rules:
 - `ARCHITECTURE.md` - system architecture, module boundaries, adapter strategy, persistence, and growth rules.
 - `GRAPH_WORKFLOW.md` - implemented LangGraph workflow, nodes, routes, interrupts, and execution boundary.
 - `RUNTIME_RUNBOOK.md` - local run, test, Studio, admin, and troubleshooting commands.
-- `diagrams/` - generated graph PNG and hash artifacts for implemented workflows.
+- `diagrams/` - generated PNG and hash artifact for the main coding workflow.
 - `ARCHITECTURE.md` also contains the JSON subprocess contract, input/output shape, and Telegram boundary.
 - `CONTEXT_MANAGEMENT.md` - context allowed in graph state, prompts, Telegram messages, logs, and coding-agent handoffs.
 - `BACKLOG.md` - archived Markdown backlog retained only for history and comparison at `data/backlog/archive/BACKLOG.md`.

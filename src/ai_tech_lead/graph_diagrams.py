@@ -10,15 +10,10 @@ from typing import Any, Callable
 
 from langgraph.checkpoint.memory import MemorySaver
 
-from .app_settings import AppSettings, load_settings
+from .app_settings import AppSettings
 from .coding_workflow_graph import build_graph
-from .config import (
-    GRAPH_DIAGRAM_PATH,
-    TELEGRAM_AGENT_GRAPH_DIAGRAM_PATH,
-    ensure_project_dirs,
-)
+from .config import GRAPH_DIAGRAM_PATH, ensure_project_dirs
 from .logging_setup import LOGGER_NAME, configure_logging
-from .telegram_agent_graph import build_telegram_agent_graph
 
 logger = logging.getLogger(LOGGER_NAME)
 LOG_SEPARATOR = "----------------------------------------"
@@ -38,7 +33,6 @@ def export_graph_diagrams(*, settings: AppSettings | None = None) -> list[Path]:
     """Export implemented graph diagrams into `docs/`."""
 
     ensure_project_dirs()
-    resolved_settings = settings or _load_settings_if_needed()
     logger.info(LOG_SEPARATOR)
     logger.info(
         "Graph diagram export: refreshing implemented graphs in %s.",
@@ -48,10 +42,7 @@ def export_graph_diagrams(*, settings: AppSettings | None = None) -> list[Path]:
     updated_paths: list[Path] = []
 
     for spec in _graph_diagram_specs():
-        if spec.requires_settings and resolved_settings is None:
-            logger.info("Graph diagram skipped: %s requires settings.", spec.name)
-            continue
-        app = spec.build_app(resolved_settings)
+        app = spec.build_app(settings)
         graph = app.get_graph()
         mermaid_source = graph.draw_mermaid()
         current_hash = hashlib.sha256(mermaid_source.encode()).hexdigest()
@@ -73,24 +64,6 @@ def export_graph_diagrams(*, settings: AppSettings | None = None) -> list[Path]:
     else:
         logger.info("Graph diagram export complete: no diagrams were exported.")
     return updated_paths
-
-
-def _load_settings_if_needed() -> AppSettings | None:
-    try:
-        return load_settings()
-    except (FileNotFoundError, ValueError) as error:
-        logger.info("Graph diagram export skipped settings load: %s", error)
-        return None
-
-
-def _require_settings(settings: AppSettings | None) -> AppSettings:
-    if settings is None:
-        raise RuntimeError(
-            "Graph diagram export requires loaded settings for the Telegram agent graph."
-        )
-    return settings
-
-
 def _graph_diagram_specs() -> tuple[GraphDiagramSpec, ...]:
     return (
         GraphDiagramSpec(
@@ -102,15 +75,6 @@ def _graph_diagram_specs() -> tuple[GraphDiagramSpec, ...]:
                 execute_coding_agent_override=False,
             ),
         ),
-        GraphDiagramSpec(
-            name="telegram_agent",
-            path=TELEGRAM_AGENT_GRAPH_DIAGRAM_PATH,
-            requires_settings=True,
-            build_app=lambda settings: build_telegram_agent_graph(
-                settings=_require_settings(settings),
-                checkpointer=MemorySaver(),
-            ),
-        ),
     )
 
 
@@ -118,7 +82,7 @@ def main() -> None:
     """Refresh graph diagrams as a standalone debug helper."""
 
     configure_logging(debug=False)
-    export_graph_diagrams(settings=load_settings())
+    export_graph_diagrams()
 
 
 if __name__ == "__main__":

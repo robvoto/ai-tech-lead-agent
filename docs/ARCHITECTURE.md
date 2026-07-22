@@ -82,9 +82,9 @@ The codebase currently implements two LangGraph workflows:
    - Purpose: provide a read-only Telegram agent for backlog Q&A and safe tool use.
    - Main responsibilities: chat-thread message handling, tool binding, backlog read-only tools, and reply generation.
    - Studio registration: not exported in `langgraph.json`; it is used by the Telegram operator at runtime.
-   - Local PNG export: [telegram_agent_graph.png](diagrams/telegram_agent_graph.png)
+   - No standalone PNG export: the compiled graph is only the tiny assistant/tools loop, which is accurate but not useful as a Telegram runtime workflow diagram.
 
-The helper `src/ai_tech_lead/graph_diagrams.py` refreshes both PNGs in `docs/diagrams/` so the diagrams stay visible without needing to hunt for the rendering code.
+The helper `src/ai_tech_lead/graph_diagrams.py` refreshes the main coding workflow PNG in `docs/diagrams/` so the implemented runtime path stays visible without needing to hunt for the rendering code.
 
 Supporting modules such as `src/ai_tech_lead/backlog_graph_runner.py` call the coding workflow graph builder, but they are runners/adapters rather than separate graph implementations.
 
