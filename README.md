@@ -26,16 +26,16 @@ docs/plan/INITIAL_PLAN.md
 - Python: 3.13
 - Package manager: uv
 
-## Agent Army entry point
+## JSON subprocess entry point
 
-AI Tech Lead can also be called by another local agent as a coding specialist through the non-interactive JSON subprocess contract. This path is for Agent Army / agent-to-agent routing and does not start Telegram or the admin UI.
+AI Tech Lead can also be called non-interactively through the local JSON subprocess contract. The caller may be a human script, local automation, or another tool; this path does not start Telegram or the admin UI.
 
 ```bash
 cd /home/robvoto/projects/ai-tech-lead
 uv run python -m ai_tech_lead run-agent-task --input-json input.json --output-json output.json
 ```
 
-See `docs/ARCHITECTURE.md` for the Army contract and safety boundary.
+See `docs/ARCHITECTURE.md` for the subprocess contract and safety boundary.
 
 ## Telegram bot
 
@@ -45,7 +45,7 @@ AI Tech Lead also has a human-facing Telegram bot for direct use by you. When Te
 - use `/run ATL-###` to trigger a backlog item
 - use `/code` for an explicit coding workflow
 
-The Telegram bot is the direct human entry point; Agent Army is the non-interactive subprocess entry point.
+The Telegram bot is the interactive human entry point; `run-agent-task` is the non-interactive subprocess entry point.
 
 ## Normal project run
 

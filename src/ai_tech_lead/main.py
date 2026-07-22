@@ -39,7 +39,7 @@ def main() -> int:
 
     args = _parse_args()
 
-    # Army entry point — non-interactive, no Telegram, no admin UI
+    # JSON subprocess entry point — non-interactive, no Telegram, no admin UI
     if getattr(args, "command", None) == "run-agent-task":
         configure_logging(debug=args.debug)
         from ai_tech_lead.agent_task_runner import run_agent_task
@@ -143,7 +143,10 @@ def _parse_args() -> argparse.Namespace:
 
     army_parser = subparsers.add_parser(
         "run-agent-task",
-        help="Army entry point: receive a coding task as JSON, return structured JSON output.",
+        help=(
+            "JSON subprocess entry point: receive a coding task as JSON and "
+            "return structured JSON output."
+        ),
     )
     army_parser.add_argument(
         "--input-json",
@@ -353,7 +356,10 @@ def _run_knowledge_store(args: argparse.Namespace) -> int:
     if settings is None:
         return 1
 
-    knowledge_store_path = _resolve_project_path(settings.project_root, settings.knowledge_store_path)
+    knowledge_store_path = _resolve_project_path(
+        settings.project_root,
+        settings.knowledge_store_path,
+    )
     command = getattr(args, "knowledge_command", "")
 
     try:

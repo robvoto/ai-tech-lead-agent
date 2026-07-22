@@ -1,6 +1,6 @@
-"""Army-facing entry point: receive a task via JSON, return structured JSON output.
+"""Subprocess-facing entry point: receive a task via JSON, return structured JSON output.
 
-Called by the Agent Army orchestrator as a subprocess. No Telegram. No admin UI.
+Called through the local JSON subprocess contract. No Telegram. No admin UI.
 
 Security contract
 -----------------
@@ -118,7 +118,7 @@ def run_agent_task(input_path: str | Path, output_path: str | Path) -> int:
             return 1
         human_approved = True
 
-    logger.info("[ARMY] run-agent-task request_id=%s task=%s...", request_id, task_text[:80])
+    logger.info("[SUBPROCESS] run-agent-task request_id=%s task=%s...", request_id, task_text[:80])
 
     try:
         result = _execute_workflow(
@@ -129,7 +129,7 @@ def run_agent_task(input_path: str | Path, output_path: str | Path) -> int:
             human_approved=human_approved,
         )
     except Exception as exc:
-        logger.exception("[ARMY] Unexpected error running workflow")
+        logger.exception("[SUBPROCESS] Unexpected error running workflow")
         _write_output(
             output_file,
             _error_response(request_id, f"Unexpected error: {exc}", traceback.format_exc()),
@@ -143,7 +143,7 @@ def run_agent_task(input_path: str | Path, output_path: str | Path) -> int:
 
         token = create_approval_token(request_id, task_text)
         result["approval_token"] = token
-        logger.info("[ARMY] approval_required — issued token for request_id=%s", request_id)
+        logger.info("[SUBPROCESS] approval_required — issued token for request_id=%s", request_id)
 
     _write_output(output_file, result, settings=settings)
     return (
@@ -200,16 +200,16 @@ def _execute_workflow(
         project_root_override=project_root,
     )
 
-    thread_id = f"army-{request_id}"
+    thread_id = f"subprocess-{request_id}"
     config = {"configurable": {"thread_id": thread_id}}
 
     initial_state: dict[str, Any] = {
         "request": task,
-        # Army resubmissions are already approved; backlog-driven approval forcing stays local
+        # Subprocess resubmissions are already approved; backlog-driven approval forcing stays local
         # to the coding workflow graph and should not be reintroduced here.
         "force_approval": False,
         "approved": human_approved,
-        "approved_by": "human-via-army" if human_approved else "",
+        "approved_by": "human-via-subprocess" if human_approved else "",
         "online_research_approved": True,
         "orchestrator_input_required": False,
         "orchestrator_input_kind": "",
@@ -364,4 +364,4 @@ def _write_output(
         data["agent_manifest"] = agent_manifest_reference(settings)
     output_file.parent.mkdir(parents=True, exist_ok=True)
     output_file.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
-    logger.info("[ARMY] Output written to %s (status=%s)", output_file, data.get("status"))
+    logger.info("[SUBPROCESS] Output written to %s (status=%s)", output_file, data.get("status"))

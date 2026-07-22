@@ -65,25 +65,25 @@ uv run python -m ai_tech_lead knowledge-store compact
 
 Coding-agent execution is controlled by the local settings/admin toggle (`execute_coding_agent`); there is no `--execute-coding-agent` CLI flag.
 
-## Agent Army subprocess
+## JSON subprocess
 
-The Agent Army calls AI Tech Lead directly through the JSON subprocess entrypoint:
+AI Tech Lead can be called directly through the non-interactive JSON subprocess entrypoint:
 
 ```bash
 cd /home/robvoto/projects/ai-tech-lead
-uv run python -m ai_tech_lead run-agent-task --input-json /tmp/army-task.json --output-json /tmp/army-result.json
+uv run python -m ai_tech_lead run-agent-task --input-json /tmp/subprocess-task.json --output-json /tmp/subprocess-result.json
 ```
 
 The input JSON must include `task`. Common optional fields are `request_id`, `source`,
 `project_root`, `execution_mode`, `human_approved`, and `approval_token`.
 
 - Safe default: omit `execution_mode` or set it to `instruction_only`.
-- Use `execution_mode: execute` only when the army explicitly wants coding-agent execution and
+- Use `execution_mode: execute` only when the caller explicitly wants coding-agent execution and
   local settings allow it.
 - `project_root` is accepted only when it matches one of `settings.army_allowed_project_roots`.
 - If `human_approved` is true, the request must include the matching one-time `approval_token`
   previously issued for the same `request_id` and task.
-- Hub-facing responses use `success`, `needs_clarification`, `approval_required`, and `failed`.
+- Subprocess responses use `success`, `needs_clarification`, `approval_required`, and `failed`.
 - Human-text pauses inside the specialist workflow, such as plan guidance or repeated failure guidance, are surfaced here as `needs_clarification`.
 
 ## Admin UI

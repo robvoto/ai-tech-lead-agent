@@ -321,7 +321,11 @@ def review_risk_node(state: GraphState) -> dict[str, Any]:
         "required" if needs_approval else "not required",
         approval_reason,
     )
-    return {"needs_approval": needs_approval, "approval_reason": approval_reason, "risk_level": risk_level}
+    return {
+        "needs_approval": needs_approval,
+        "approval_reason": approval_reason,
+        "risk_level": risk_level,
+    }
 
 
 def tech_lead_analyse_node(state: GraphState) -> dict[str, Any]:
@@ -446,13 +450,22 @@ def request_plan_node(
     logger.info("Plan full text:\n%s", plan_text or "<empty>")
     logger.info("Plan request exit code: %s", result.returncode)
     if plan_stderr:
-        logger.info("Plan request stderr (%d chars): %s", len(plan_stderr), _single_line_preview(plan_stderr, limit=360))
+        logger.info(
+            "Plan request stderr (%d chars): %s",
+            len(plan_stderr),
+            _single_line_preview(plan_stderr, limit=360),
+        )
     if result.changed_files_delta:
         logger.warning("Plan request unexpectedly changed files: %s", result.changed_files_delta)
     if progress_callback is not None:
         progress_callback(_plan_share_message(plan_text))
 
-    return {"plan_text": plan_text, "plan_agent_stderr": plan_stderr, "plan_approved": False, "plan_correction": ""}
+    return {
+        "plan_text": plan_text,
+        "plan_agent_stderr": plan_stderr,
+        "plan_approved": False,
+        "plan_correction": "",
+    }
 
 
 def review_plan_node(
@@ -690,6 +703,22 @@ def _short_reason(reason: str, limit: int = 120) -> str:
     return normalized[:limit] + "..." if len(normalized) > limit else normalized
 
 
+def _coding_agent_result_succeeded(result: Any) -> bool:
+    """Return success for a coding-agent result with a safe fallback.
+
+    Prefer an explicit ``success`` field when the adapter provides one. When it
+    does not, infer success from a zero return code as long as the run did not
+    time out or get cancelled.
+    """
+
+    explicit_success = getattr(result, "success", None)
+    if explicit_success is not None:
+        return bool(explicit_success)
+    if getattr(result, "timed_out", False) or getattr(result, "cancelled", False):
+        return False
+    return getattr(result, "returncode", None) == 0
+
+
 def _request_title(request: str) -> str:
     """Return a short task label for readable console logs."""
 
@@ -791,7 +820,7 @@ def run_coding_agent_node(
 
     changed_files = getattr(result, "changed_files_delta", ())
     restart_required = _restart_required_for_changed_files(changed_files)
-    success = getattr(result, "success", False)
+    success = _coding_agent_result_succeeded(result)
     retry_count = state.get("coding_agent_retry_count", 0)
     new_retry_count = 0 if success else retry_count + 1
     correction = "" if success else result.summary()

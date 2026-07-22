@@ -21,8 +21,8 @@ flowchart TD
     Human[Human Operator]
     Telegram[Telegram Long Polling Adapter]
     Admin[Local Admin UI]
-    Army[Agent Army]
-    ArmyRunner[JSON subprocess adapter<br/>run-agent-task]
+    Caller[External Caller / Local Automation]
+    CallerRunner[JSON subprocess adapter<br/>run-agent-task]
 
     Backlog[Backlog Loader]
     Settings[Settings JSON + Validation]
@@ -38,14 +38,14 @@ flowchart TD
 
     Human --> Telegram
     Human --> Admin
-    Army --> ArmyRunner
+    Caller --> CallerRunner
 
     Telegram -->|/run ATL-###| Backlog
     Telegram --> Graph
     Backlog --> Graph
 
     Admin -->|edit local settings| Settings
-    ArmyRunner -->|validated JSON task| Graph
+    CallerRunner -->|validated JSON task| Graph
     Settings --> Brief
     Settings --> Instruction
     Settings --> Runner
@@ -91,13 +91,13 @@ Supporting modules such as `src/ai_tech_lead/backlog_graph_runner.py` call the c
 ## Boundaries
 
 - Input adapters turn external messages into explicit local tasks.
-  Current adapters: Telegram long polling, the local admin UI, and the Agent Army JSON subprocess.
+  Current adapters: Telegram long polling, the local admin UI, and the JSON subprocess.
   The CLI starts the process, but it does not select backlog tasks.
   Telegram is the human-facing bot for AI Tech Lead: use it directly when you want to talk to the coding agent from chat.
   It must call the bounded workflow and must not become a second agent brain.
-  Agent Army enters through `run-agent-task`, which validates the JSON contract before handing the task to the graph.
-  Agent Hub owns Hub-facing orchestration, paused-run bookkeeping, and the operator UX for resume/approval.
-  AI Tech Lead owns the specialist-internal graph, prompts, approvals, and the mapping from internal pauses to the Hub-facing status contract.
+  The JSON subprocess enters through `run-agent-task`, which validates the JSON contract before handing the task to the graph.
+  An external caller may own caller-side orchestration, paused-run bookkeeping, and resume or approval UX.
+  AI Tech Lead owns the specialist-internal graph, prompts, approvals, and the mapping from internal pauses to the subprocess status contract.
   Future adapters may include web or other chat surfaces.
 - Backlog storage must stay behind a repository boundary. The current runtime backlog is `data/backlog.sqlite3`; the Excel workbook `data/backlog/ai_tech_lead_backlog.xlsx` is the human-review/planning workbook; the archived Markdown source/backup lives at `data/backlog/archive/BACKLOG.md`.
 - Backlog loading parses local task data and converts one selected item into
@@ -119,30 +119,30 @@ Supporting modules such as `src/ai_tech_lead/backlog_graph_runner.py` call the c
 - The coding-agent runner owns subprocess execution. It receives a complete
   instruction, project root, and validated settings, then captures stdout and
   stderr without using `shell=True`.
-- Other agents should call `uv run python -m ai_tech_lead manifest`, cache the
+- External callers should call `uv run python -m ai_tech_lead manifest`, cache the
   returned JSON by `manifest_hash`, and refresh only when the hash changes.
 - LangChain/LangGraph tools, when added, are executable capabilities exposed to an LLM or graph. They are different from this repository's `.skills`, which are reusable coding-agent instructions.
 - Admin UI is optional local tooling for editing settings. Browser code keeps HTML, CSS, and JavaScript separated. HTML owns structure, CSS owns presentation, and JavaScript owns behaviour. Browser JavaScript uses ES modules.
 - UI field schemas, API paths, labels, and other UI configuration should move to JSON or API-provided configuration when they become shared, large, or reused. Small local constants are acceptable only when they are explicit and easy to replace.
 - Placeholder/demo adapters should be removed once a real adapter replaces them, unless the human explicitly wants to keep them for teaching or tests.
 
-## Agent Army Contract
+## JSON Subprocess Contract
 
-This section replaces the standalone `ARMY_INTEGRATION.md` page. Keep the Army handoff contract here so the agent-to-agent boundary has one canonical home.
+This section replaces the standalone `ARMY_INTEGRATION.md` page. Keep the bounded subprocess contract here so the non-interactive caller boundary has one canonical home.
 
-- Army calls AI Tech Lead through `run-agent-task`.
+- A caller invokes AI Tech Lead through `run-agent-task`.
 - Input is JSON with a task string plus bounded metadata such as `request_id`, `source`, `project_root`, `execution_mode`, `human_approved`, and `approval_token`.
 - `execution_mode` is a request, not a grant. `instruction_only` is the safe default.
 - `human_approved=true` must carry a matching one-time token issued for the same request and task.
 - Output is structured JSON with status, summary, formulated task, brief, coding-agent instruction, backend used, execution flag, logs, evidence, next action, and a tiny `agent_manifest` reference.
-- Supported Hub-facing statuses are:
+- Supported subprocess statuses are:
   - `success` - work completed or an instruction package is ready.
-  - `needs_clarification` - Hub should collect human text input and resubmit an updated task.
-  - `approval_required` - Hub should collect explicit approval and resubmit with `human_approved=true` plus the issued `approval_token`.
-  - `failed` - terminal failure; Hub should report the error instead of waiting for resume.
-- Specialist-internal interrupts that expect human text, such as plan guidance or repeated coding-agent failure guidance, must be translated into `needs_clarification` on this subprocess boundary instead of leaking a generic paused/blocked state to Hub.
-- Army should rely on that bounded JSON contract rather than reading the full codebase.
-- Telegram is only a relay and operator surface; it does not replace the Army contract.
+  - `needs_clarification` - the caller should collect human text input and resubmit an updated task.
+  - `approval_required` - the caller should collect explicit approval and resubmit with `human_approved=true` plus the issued `approval_token`.
+  - `failed` - terminal failure; the caller should report the error instead of waiting for resume.
+- Specialist-internal interrupts that expect human text, such as plan guidance or repeated coding-agent failure guidance, must be translated into `needs_clarification` on this subprocess boundary instead of leaking a generic paused or blocked state.
+- A caller should rely on that bounded JSON contract rather than reading the full codebase.
+- Telegram is only an interactive operator surface; it does not replace the subprocess contract.
 
 ## Persistence
 

@@ -422,7 +422,7 @@ def test_graph_runs_to_disabled_coding_agent_result(monkeypatch) -> None:
     assert result["coding_agent_retry_count"] == 0
 
 
-def test_already_approved_army_state_skips_approval_interrupt(monkeypatch) -> None:
+def test_already_approved_subprocess_state_skips_approval_interrupt(monkeypatch) -> None:
     settings = parse_settings(valid_settings_dict())
 
     class _SuccessResult:
@@ -455,7 +455,7 @@ def test_already_approved_army_state_skips_approval_interrupt(monkeypatch) -> No
 
     def fail_if_approval_interrupt_called(*_args, **_kwargs):
         raise AssertionError(
-            "approval interrupt should be skipped when the army has already approved"
+            "approval interrupt should be skipped when the subprocess caller has already approved"
         )
 
     monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.load_settings", fake_load_settings)
@@ -474,23 +474,23 @@ def test_already_approved_army_state_skips_approval_interrupt(monkeypatch) -> No
     )
 
     app = build_graph(checkpointer_storage=MemorySaver(), execute_coding_agent_override=False)
-    thread_config = {"configurable": {"thread_id": "test-already-approved-army"}}
+    thread_config = {"configurable": {"thread_id": "test-already-approved-subprocess"}}
     result = app.invoke(
         graph_state(
             request="Update README wording.",
             approved=True,
-            approved_by="human-via-army",
+            approved_by="human-via-subprocess",
             force_approval=False,
         ),
         config=thread_config,
     )
 
     assert result["approved"] is True
-    assert result["approved_by"] == "human-via-army"
+    assert result["approved_by"] == "human-via-subprocess"
     assert result["coding_agent_result"] == "done"
 
 
-def test_run_coding_agent_node_marks_restart_required_for_app_changes(monkeypatch) -> None:
+def test_run_coding_agent_node_infers_success_from_zero_returncode(monkeypatch) -> None:
     settings = replace(parse_settings(valid_settings_dict()), execute_coding_agent=True)
 
     def fake_load_settings():
@@ -521,7 +521,40 @@ def test_run_coding_agent_node_marks_restart_required_for_app_changes(monkeypatc
     )
 
     assert state["coding_agent_changed_files"] == _ChangedResult.changed_files_delta
-    assert state["coding_agent_retry_count"] == 1  # no success attr → treated as failure
+    assert state["coding_agent_success"] is True
+    assert state["coding_agent_retry_count"] == 0
+    assert state["restart_required"] is True
+
+
+def test_run_coding_agent_node_infers_failure_from_nonzero_returncode(monkeypatch) -> None:
+    settings = replace(parse_settings(valid_settings_dict()), execute_coding_agent=True)
+
+    def fake_load_settings():
+        return settings
+
+    class _FailedResult:
+        message = "failed"
+        returncode = 1
+        duration_seconds = 0.5
+        changed_files_delta: tuple[str, ...] = ()
+        command = ["codex"]
+
+        def summary(self) -> str:
+            return self.message
+
+    monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.load_settings", fake_load_settings)
+    monkeypatch.setattr("ai_tech_lead.risk_reviewer.load_settings", fake_load_settings)
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.run_coding_agent", lambda **_kw: _FailedResult()
+    )
+
+    state = run_coding_agent_node(
+        graph_state(agent_instruction="Do the task"),
+        execute_coding_agent_override=True,
+    )
+
+    assert state["coding_agent_success"] is False
+    assert state["coding_agent_retry_count"] == 1
 
 
 def test_run_coding_agent_node_logs_approval_context(monkeypatch, caplog) -> None:

@@ -26,8 +26,8 @@ Use when creating, parsing, selecting, updating, or explaining backlog items.
 - The old Markdown backlog format is historical only; do not author new items in that format unless a targeted migration task explicitly requires it.
 
 ## Hub boundary
-- Agent Hub may ask AI Tech Lead to work on an explicit task, but backlog ownership stays local to this repo.
-- Do not add silent alternate backlog sources or let Hub-facing orchestration redefine backlog truth.
+- An external caller may ask AI Tech Lead to work on an explicit task, but backlog ownership stays local to this repo.
+- Do not add silent alternate backlog sources or let caller-side orchestration redefine backlog truth.
 
 ## Future selection direction
 Additional input adapters may select tasks through explicit mechanisms:

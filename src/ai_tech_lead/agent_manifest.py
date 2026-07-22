@@ -29,7 +29,7 @@ _SUPPORTED_OUTPUT_STATUSES = [
 
 
 def build_agent_manifest(settings: AppSettings | None = None) -> dict[str, Any]:
-    """Return the small machine-readable handshake other agents can cache."""
+    """Return the small machine-readable handshake external callers can cache."""
 
     manifest: dict[str, Any] = {
         "manifest_schema_version": MANIFEST_SCHEMA_VERSION,
@@ -37,7 +37,7 @@ def build_agent_manifest(settings: AppSettings | None = None) -> dict[str, Any]:
         "agent_name": "AI Tech Lead",
         "package": "ai_tech_lead",
         "package_version": __version__,
-        "role": "specialist coding lead inside the agent army",
+        "role": "specialist coding lead callable through a bounded local subprocess contract",
         "one_line": (
             "Reads a bounded task, reasons as a tech lead, and returns a structured handoff "
             "or execution result."
@@ -91,7 +91,7 @@ def build_agent_manifest(settings: AppSettings | None = None) -> dict[str, Any]:
             "does not choose work without explicit input",
             "does not bypass approval gates",
             "does not edit files except through the configured coding-agent runner",
-            "does not rely on Telegram as the agent-to-agent contract",
+            "does not rely on Telegram as the subprocess contract",
         ],
         "required_docs": _REQUIRED_DOCS,
         "knowledge_store": {
@@ -107,7 +107,7 @@ def build_agent_manifest(settings: AppSettings | None = None) -> dict[str, Any]:
             "telegram_enabled": settings.telegram_enabled,
             "orchestrator_ai_enabled": settings.orchestrator_ai_enabled,
             "allowed_directories": list(settings.allowed_directories),
-            "army_allowed_project_roots": list(settings.army_allowed_project_roots),
+            "subprocess_allowed_project_roots": list(settings.army_allowed_project_roots),
             "knowledge_store_path": settings.knowledge_store_path,
         }
     else:
@@ -118,7 +118,7 @@ def build_agent_manifest(settings: AppSettings | None = None) -> dict[str, Any]:
 
 
 def render_agent_manifest(settings: AppSettings | None = None, *, compact: bool = False) -> str:
-    """Render the handshake as JSON for other agents to cache."""
+    """Render the handshake as JSON for external callers to cache."""
 
     manifest = build_agent_manifest(settings)
     if compact:

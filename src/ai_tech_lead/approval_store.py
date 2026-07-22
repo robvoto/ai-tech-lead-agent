@@ -1,8 +1,8 @@
-"""One-time approval tokens for army → ai-tech-lead human-approval flow.
+"""One-time approval tokens for JSON subprocess human-approval flow.
 
 When the workflow returns approval_required, we issue a UUID token and store it
-locally together with the request_id and a digest of the task text. The army
-relays it to the human. When the human approves, the army resubmits with
+locally together with the request_id and a digest of the task text. The caller
+relays it to the human. When the human approves, the caller resubmits with
 human_approved=true and the token. We validate the same request/task pair,
 consume the token (one-time use), then allow execution.
 
@@ -16,7 +16,6 @@ import hashlib
 import sqlite3
 import time
 import uuid
-from pathlib import Path
 
 from ai_tech_lead.config import DATA_DIR
 

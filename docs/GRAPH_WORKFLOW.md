@@ -8,7 +8,7 @@ Use this file for the runtime path of the main coding workflow: node order,
 interrupts, resume behavior, and loops.
 
 Use `ARCHITECTURE.md` for stable boundaries such as adapter ownership,
-Agent Hub versus AI Tech Lead responsibilities, persistence, and the
+Caller-facing versus AI Tech Lead responsibilities, persistence, and the
 subprocess contract.
 
 ## Purpose

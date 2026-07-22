@@ -41,7 +41,7 @@ Rules:
 - `GRAPH_WORKFLOW.md` - implemented LangGraph workflow, nodes, routes, interrupts, and execution boundary.
 - `RUNTIME_RUNBOOK.md` - local run, test, Studio, admin, and troubleshooting commands.
 - `diagrams/` - generated graph PNG and hash artifacts for implemented workflows.
-- `ARCHITECTURE.md` also contains the Agent Army / agent-to-agent subprocess contract, JSON input/output shape, and Telegram boundary.
+- `ARCHITECTURE.md` also contains the JSON subprocess contract, input/output shape, and Telegram boundary.
 - `CONTEXT_MANAGEMENT.md` - context allowed in graph state, prompts, Telegram messages, logs, and coding-agent handoffs.
 - `BACKLOG.md` - archived Markdown backlog retained only for history and comparison at `data/backlog/archive/BACKLOG.md`.
 - `UI_ADMIN_DESIGN.md` - admin UI design notes and browser-side ownership rules.
