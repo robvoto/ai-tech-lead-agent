@@ -430,9 +430,13 @@ def request_plan_node(
     correction_section = (
         f"\nPrevious plan was rejected. Correction needed:\n{correction}" if correction else ""
     )
+    feedback_section = (
+        f"\nTask feedback for this attempt:\n{_format_bullets(feedback)}" if feedback else ""
+    )
     instruction = render_prompt(
         PLAN_REQUEST_INSTRUCTION_PROMPT_KEY,
         formulated_task=state.get("formulated_task", "") or state["request"],
+        task_feedback=feedback_section,
         correction_feedback=correction_section,
     )
     result = run_coding_agent(

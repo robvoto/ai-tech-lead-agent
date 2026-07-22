@@ -104,6 +104,10 @@ Supporting modules such as `src/ai_tech_lead/backlog_graph_runner.py` call the c
   graph state. It must not silently choose work.
 - Worker coding agents must not freely edit the Excel backlog. Any backlog edit must be explicitly requested, field-bounded, and owned by the human/orchestrator until a controlled backlog repository handles spreadsheet writes safely.
 - The coding workflow graph owns orchestration state, approval routing, brief creation, agent-instruction creation, orchestrator-input request state, and the coding-agent execution node.
+- Coding-agent handoffs now have three explicit instruction layers:
+  1. AI Tech Lead runtime core, which is reusable across projects.
+  2. Reusable runtime skills that travel with the AI Tech Lead runtime.
+  3. Target-project rules and target-project skills loaded from the selected `project_root`.
 - Graph state keeps any conditional orchestrator-input metadata bounded and explicit; see `CONTEXT_MANAGEMENT.md` for the field shape.
 - The current coding-agent backend is Codex CLI, but the architecture must stay
   backend-neutral. Future backends may include Claude Code, OpenAI tools, local
@@ -120,7 +124,9 @@ Supporting modules such as `src/ai_tech_lead/backlog_graph_runner.py` call the c
   instruction, project root, and validated settings, then captures stdout and
   stderr without using `shell=True`.
 - External callers should call `uv run python -m ai_tech_lead manifest`, cache the
-  returned JSON by `manifest_hash`, and refresh only when the hash changes.
+  returned JSON by `manifest_hash`, and refresh only when the hash changes. If the
+  manifest includes `manifest_cache_ttl_seconds`, callers may use that as the
+  freshness window for re-fetching the full manifest.
 - LangChain/LangGraph tools, when added, are executable capabilities exposed to an LLM or graph. They are different from this repository's `.skills`, which are reusable coding-agent instructions.
 - Admin UI is optional local tooling for editing settings. Browser code keeps HTML, CSS, and JavaScript separated. HTML owns structure, CSS owns presentation, and JavaScript owns behaviour. Browser JavaScript uses ES modules.
 - UI field schemas, API paths, labels, and other UI configuration should move to JSON or API-provided configuration when they become shared, large, or reused. Small local constants are acceptable only when they are explicit and easy to replace.
@@ -131,15 +137,20 @@ Supporting modules such as `src/ai_tech_lead/backlog_graph_runner.py` call the c
 This section replaces the standalone `ARMY_INTEGRATION.md` page. Keep the bounded subprocess contract here so the non-interactive caller boundary has one canonical home.
 
 - A caller invokes AI Tech Lead through `run-agent-task`.
+- A caller discovers the callable contract through `uv run python -m ai_tech_lead manifest`.
 - Input is JSON with a task string plus bounded metadata such as `request_id`, `source`, `project_root`, `execution_mode`, `human_approved`, and `approval_token`.
 - `execution_mode` is a request, not a grant. `instruction_only` is the safe default.
 - `human_approved=true` must carry a matching one-time token issued for the same request and task.
-- Output is structured JSON with status, summary, formulated task, brief, coding-agent instruction, backend used, execution flag, logs, evidence, next action, and a tiny `agent_manifest` reference.
+- Output is structured JSON with status, summary, formulated task, brief, coding-agent instruction, backend used, execution flag, logs, evidence, next action, machine-readable caller action fields, and a tiny `agent_manifest` reference.
 - Supported subprocess statuses are:
   - `success` - work completed or an instruction package is ready.
   - `needs_clarification` - the caller should collect human text input and resubmit an updated task.
   - `approval_required` - the caller should collect explicit approval and resubmit with `human_approved=true` plus the issued `approval_token`.
   - `failed` - terminal failure; the caller should report the error instead of waiting for resume.
+- Callers should prefer machine-readable fields over parsing prose:
+  - `result_kind` distinguishes `instruction_package`, `execution_result`, `clarification_request`, `approval_request`, and `terminal_failure`.
+  - `caller_action` tells the caller whether to `submit_instruction`, `consume_result`, `provide_clarification`, `provide_approval`, `inspect_failure`, or `retry`.
+  - `resume_supported`, `resume_fields`, and `interrupt_kind` make resumable states explicit.
 - Specialist-internal interrupts that expect human text, such as plan guidance or repeated coding-agent failure guidance, must be translated into `needs_clarification` on this subprocess boundary instead of leaking a generic paused or blocked state.
 - A caller should rely on that bounded JSON contract rather than reading the full codebase.
 - Telegram is only an interactive operator surface; it does not replace the subprocess contract.

@@ -20,14 +20,26 @@ def test_build_agent_manifest_contains_core_contract_fields() -> None:
     assert manifest["manifest_schema_version"] == 1
     assert manifest["agent_id"] == "ai-tech-lead"
     assert manifest["agent_name"] == "AI Tech Lead"
+    assert manifest["manifest_cache_ttl_seconds"] == 3600
     assert manifest["entrypoints"]["manifest"] == "manifest"
     assert manifest["entrypoints"]["json_subprocess"] == "run-agent-task"
+    assert manifest["entrypoints"]["bootstrap_project_pack"] == "bootstrap-project-pack"
     assert "agent_manifest" in manifest["output_contract"]["fields"]
+    assert "result_kind" in manifest["output_contract"]["fields"]
+    assert "caller_action" in manifest["output_contract"]["fields"]
     assert manifest["output_contract"]["status_values"] == [
         "success",
         "needs_clarification",
         "approval_required",
         "failed",
+    ]
+    assert manifest["interaction_model"]["resume_via_resubmission"] is True
+    assert manifest["interaction_model"]["supports_streaming"] is False
+    assert manifest["ownership"]["specialist_repo"]
+    assert manifest["project_pack"]["required_files"] == [
+        "AGENTS.md",
+        "docs/INDEX.md",
+        ".skills/INDEX.md",
     ]
     assert manifest["runtime"]["project_root"] == settings.project_root
     assert manifest["runtime"]["knowledge_store_path"] == settings.knowledge_store_path

@@ -30,7 +30,7 @@
       "used_by": [
         "src/ai_tech_lead/coding_workflow_graph.py"
       ],
-      "template": "Create a short implementation plan for this task. Do not edit files yet.\n\nTask:\n{formulated_task}\n{correction_feedback}\n\nReturn 3 to 5 short bullets and one 'Done when' line. Keep it bounded. Mention the files you expect to inspect or change."
+      "template": "Create a short implementation plan for this task. Do not edit files yet.\n\nTask:\n{formulated_task}\n{task_feedback}\n{correction_feedback}\n\nReturn 3 to 5 short bullets and one 'Done when' line. Keep it bounded. Mention the files you expect to inspect or change."
     },
     {
       "key": "plan_review",

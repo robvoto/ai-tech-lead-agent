@@ -11,6 +11,8 @@ from urllib.parse import urlparse
 from ai_tech_lead.config import PROJECT_ROOT, SETTINGS_PATH
 
 ALLOWED_TELEGRAM_TRANSPORTS = {"polling", "webhook"}
+ALLOWED_PROJECT_ROOTS_KEY = "allowed_project_roots"
+LEGACY_ALLOWED_PROJECT_ROOTS_KEY = "army_allowed_project_roots"
 
 
 @dataclass(frozen=True)
@@ -56,7 +58,7 @@ class AppSettings:
     orchestrator_ai_max_output_tokens: int
     orchestrator_ai_timeout_seconds: int
     coding_agent_progress_interval_seconds: int
-    army_allowed_project_roots: list[str]
+    allowed_project_roots: list[str]
     sleep_mode: bool
 
 
@@ -230,9 +232,10 @@ def parse_settings(raw_settings: dict[str, Any]) -> AppSettings:
             "coding_agent_progress_interval_seconds",
             default=10,
         ),
-        army_allowed_project_roots=_optional_string_list(
+        allowed_project_roots=_optional_string_list_with_legacy(
             raw_settings,
-            "army_allowed_project_roots",
+            ALLOWED_PROJECT_ROOTS_KEY,
+            legacy_key=LEGACY_ALLOWED_PROJECT_ROOTS_KEY,
         ),
         sleep_mode=_optional_bool(
             raw_settings,
@@ -242,7 +245,7 @@ def parse_settings(raw_settings: dict[str, Any]) -> AppSettings:
     )
     _validate_telegram_settings(settings)
     _validate_research_settings(settings)
-    _validate_army_settings(settings)
+    _validate_project_root_allowlist_settings(settings)
     return settings
 
 
@@ -289,7 +292,7 @@ def settings_to_dict(settings: AppSettings) -> dict[str, Any]:
         "orchestrator_ai_max_output_tokens": settings.orchestrator_ai_max_output_tokens,
         "orchestrator_ai_timeout_seconds": settings.orchestrator_ai_timeout_seconds,
         "coding_agent_progress_interval_seconds": settings.coding_agent_progress_interval_seconds,
-        "army_allowed_project_roots": settings.army_allowed_project_roots,
+        ALLOWED_PROJECT_ROOTS_KEY: settings.allowed_project_roots,
         "sleep_mode": settings.sleep_mode,
     }
 
@@ -337,6 +340,27 @@ def _optional_string_list(
     if len(cleaned) != len(value):
         raise ValueError(f"Setting '{key}' must contain non-empty strings.")
     return cleaned
+
+
+def _optional_string_list_with_legacy(
+    raw_settings: dict[str, Any],
+    key: str,
+    *,
+    legacy_key: str,
+) -> list[str]:
+    value = raw_settings.get(key)
+    legacy_value = raw_settings.get(legacy_key)
+
+    if value is not None and legacy_value is not None and value != legacy_value:
+        raise ValueError(
+            f"Settings '{key}' and '{legacy_key}' cannot both be set with different values."
+        )
+
+    if value is not None:
+        return _optional_string_list(raw_settings, key)
+    if legacy_value is not None:
+        return _optional_string_list(raw_settings, legacy_key)
+    return []
 
 
 def _required_bool(raw_settings: dict[str, Any], key: str) -> bool:
@@ -458,14 +482,14 @@ def _validate_research_settings(settings: AppSettings) -> None:
             )
 
 
-def _validate_army_settings(settings: AppSettings) -> None:
-    if not settings.army_allowed_project_roots:
-        raise ValueError("Setting 'army_allowed_project_roots' must include the project root.")
+def _validate_project_root_allowlist_settings(settings: AppSettings) -> None:
+    if not settings.allowed_project_roots:
+        raise ValueError(f"Setting '{ALLOWED_PROJECT_ROOTS_KEY}' must include the project root.")
 
     project_root = str(Path(settings.project_root).resolve())
-    allowed_roots = {str(Path(root).resolve()) for root in settings.army_allowed_project_roots}
+    allowed_roots = {str(Path(root).resolve()) for root in settings.allowed_project_roots}
     if project_root not in allowed_roots:
         raise ValueError(
-            "Setting 'army_allowed_project_roots' must include the current project_root "
+            f"Setting '{ALLOWED_PROJECT_ROOTS_KEY}' must include the current project_root "
             f"({project_root})."
         )

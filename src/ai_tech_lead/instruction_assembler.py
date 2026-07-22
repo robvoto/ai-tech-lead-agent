@@ -9,7 +9,7 @@ from ai_tech_lead.app_settings import AppSettings
 from ai_tech_lead.config import PROJECT_ROOT
 from ai_tech_lead.prompt_loader import BACKLOG_OWNERSHIP_RULES_PROMPT_KEY, load_prompt
 
-SKILLS_DIR = PROJECT_ROOT / ".skills"
+RUNTIME_CORE_DIR = PROJECT_ROOT / "runtime_core"
 
 
 @dataclass(frozen=True)
@@ -32,9 +32,13 @@ def build_agent_instruction(
     research_evidence: list[str] | None = None,
     agent_correction: str | None = None,
 ) -> str:
-    skills = select_skills(request)
+    target_project_root = project_root or Path(settings.project_root)
+    core_instruction = _load_runtime_core_instruction()
+    core_skills = select_runtime_core_skills(request)
+    skills = select_skills(request, project_root=target_project_root)
+    selected_core_skills = "\n\n".join(_render_skill(skill) for skill in core_skills)
     selected_skills = "\n\n".join(_render_skill(skill) for skill in skills)
-    project_rules = _extract_project_rules(project_root or Path(settings.project_root))
+    project_rules = _extract_project_rules(target_project_root)
     backlog_ownership_rules = load_prompt(BACKLOG_OWNERSHIP_RULES_PROMPT_KEY)
     stop_conditions = _format_bullets(
         [
@@ -57,6 +61,8 @@ def build_agent_instruction(
         _section("Task", formulated_task or request),
         _section("Execution brief", brief),
         _section("Project context", project_context),
+        _section("AI Tech Lead core", core_instruction),
+        _section("Reusable runtime skills", selected_core_skills),
     ]
     if research_evidence:
         sections.append(
@@ -99,7 +105,13 @@ def build_agent_instruction(
     return "\n\n".join(sections)
 
 
-def select_skills(request: str) -> list[SkillSelection]:
+def select_skills(
+    request: str,
+    *,
+    project_root: Path | None = None,
+) -> list[SkillSelection]:
+    target_project_root = project_root or PROJECT_ROOT
+    _require_skills_index(target_project_root)
     text = request.lower()
     selections: list[SkillSelection] = []
     if _has_any(
@@ -117,17 +129,70 @@ def select_skills(request: str) -> list[SkillSelection]:
             "python",
         ],
     ):
-        selections.append(_skill("code-change", "Task changes code or runtime behaviour."))
+        selections.append(
+            _skill(
+                "code-change",
+                "Task changes code or runtime behaviour.",
+                project_root=target_project_root,
+            )
+        )
     if _has_any(text, ["backlog", "jh-", "task id", "approval required"]):
         selections.append(
-            _skill("backlog-management", "Task touches backlog selection or task handoff.")
+            _skill(
+                "backlog-management",
+                "Task touches backlog selection or task handoff.",
+                project_root=target_project_root,
+            )
         )
     if _has_any(text, ["agents.md", ".skills", "skill.md", "handoff", "project rules"]):
         selections.append(
-            _skill("instruction-maintenance", "Task edits or relies on project rule files.")
+            _skill(
+                "instruction-maintenance",
+                "Task edits or relies on project rule files.",
+                project_root=target_project_root,
+            )
         )
     if not selections:
-        selections.append(_skill("code-change", "Default for implementation work."))
+        selections.append(
+            _skill(
+                "code-change",
+                "Default for implementation work.",
+                project_root=target_project_root,
+            )
+        )
+    return _dedupe(selections)
+
+
+def select_runtime_core_skills(request: str) -> list[SkillSelection]:
+    text = request.lower()
+    selections = [
+        _runtime_core_skill(
+            "bounded-delivery",
+            "Core runtime rule for small, validated, bounded delivery.",
+        ),
+        _runtime_core_skill(
+            "result-reporting",
+            "Core runtime rule for machine-readable, reviewable completion reporting.",
+        ),
+    ]
+    if _has_any(
+        text,
+        [
+            "research",
+            "docs",
+            "approval",
+            "risk",
+            "langgraph",
+            "runtime",
+            "architecture",
+        ],
+    ):
+        selections.append(
+            _runtime_core_skill(
+                "research-and-approval",
+                "Core runtime rule for bounded research and approval discipline.",
+            )
+        )
     return _dedupe(selections)
 
 
@@ -156,10 +221,38 @@ def _extract_section(content: str, heading: str) -> str:
     return content[start:next_start].strip()
 
 
-def _skill(name: str, reason: str) -> SkillSelection:
-    path = SKILLS_DIR / name / "SKILL.md"
-    if not path.exists():
-        raise FileNotFoundError(f"Selected skill file not found: {path}")
+def _skills_dir(project_root: Path) -> Path:
+    return project_root / ".skills"
+
+
+def _runtime_core_skills_dir() -> Path:
+    return RUNTIME_CORE_DIR / "skills"
+
+
+def _require_skills_index(project_root: Path) -> None:
+    index_path = _skills_dir(project_root) / "INDEX.md"
+    if not index_path.is_file():
+        raise FileNotFoundError(f"Target project skills index not found: {index_path}")
+
+
+def _skill(name: str, reason: str, *, project_root: Path) -> SkillSelection:
+    path = _skills_dir(project_root) / name / "SKILL.md"
+    if not path.is_file():
+        raise FileNotFoundError(f"Selected target-project skill file not found: {path}")
+    return SkillSelection(name=name, path=path, reason=reason)
+
+
+def _load_runtime_core_instruction() -> str:
+    path = RUNTIME_CORE_DIR / "CORE.md"
+    if not path.is_file():
+        raise FileNotFoundError(f"Runtime core instruction file not found: {path}")
+    return path.read_text(encoding="utf-8").strip()
+
+
+def _runtime_core_skill(name: str, reason: str) -> SkillSelection:
+    path = _runtime_core_skills_dir() / name / "SKILL.md"
+    if not path.is_file():
+        raise FileNotFoundError(f"Runtime core skill file not found: {path}")
     return SkillSelection(name=name, path=path, reason=reason)
 
 

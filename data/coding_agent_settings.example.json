@@ -68,7 +68,7 @@
   "orchestrator_ai_max_output_tokens": 300,
   "orchestrator_ai_timeout_seconds": 20,
   "coding_agent_progress_interval_seconds": 10,
-  "army_allowed_project_roots": [
+  "allowed_project_roots": [
     "/home/robvoto/projects/ai-tech-lead"
   ],
   "sleep_mode": false

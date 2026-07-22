@@ -4,7 +4,7 @@ Called through the local JSON subprocess contract. No Telegram. No admin UI.
 
 Security contract
 -----------------
-* project_root must be in settings.army_allowed_project_roots (server-side allowlist).
+* project_root must be in settings.allowed_project_roots (server-side allowlist).
   Callers cannot inject arbitrary filesystem paths.
 * Execution (running Codex / Claude Code) is gated on settings.execute_coding_agent.
   The caller's execution_mode is a *request*, not a grant.
@@ -35,6 +35,12 @@ STATUS_NEEDS_CLARIFICATION = "needs_clarification"
 STATUS_APPROVAL_REQUIRED = "approval_required"
 STATUS_FAILED = "failed"
 ALLOWED_EXECUTION_MODES = {"instruction_only", "execute"}
+
+RESULT_KIND_INSTRUCTION_PACKAGE = "instruction_package"
+RESULT_KIND_EXECUTION_RESULT = "execution_result"
+RESULT_KIND_CLARIFICATION_REQUEST = "clarification_request"
+RESULT_KIND_APPROVAL_REQUEST = "approval_request"
+RESULT_KIND_TERMINAL_FAILURE = "terminal_failure"
 
 
 def run_agent_task(input_path: str | Path, output_path: str | Path) -> int:
@@ -84,7 +90,7 @@ def run_agent_task(input_path: str | Path, output_path: str | Path) -> int:
     if project_root is None and project_root_raw is not None:
         msg = (
             f"project_root '{project_root_raw}' is not in the "
-            "army_allowed_project_roots allowlist. "
+            "allowed_project_roots allowlist. "
             "Add it to data/coding_agent_settings.json to permit this path."
         )
         _write_output(output_file, _error_response(request_id, msg), settings=settings)
@@ -162,7 +168,7 @@ def _validate_project_root(project_root_raw: str | None, settings: Any) -> str |
     if project_root_raw is None:
         return None
     requested = str(Path(project_root_raw).resolve())
-    allowed = {str(Path(r).resolve()) for r in settings.army_allowed_project_roots}
+    allowed = {str(Path(r).resolve()) for r in settings.allowed_project_roots}
     if requested in allowed:
         return requested
     return None  # caller provided a value but it failed the allowlist check
@@ -262,6 +268,11 @@ def _map_state_to_output(
             summary = f"{summary} Reason: {reason}"
         status = STATUS_NEEDS_CLARIFICATION
         next_action = "Provide plan guidance and resubmit the task."
+        result_kind = RESULT_KIND_CLARIFICATION_REQUEST
+        caller_action = "provide_clarification"
+        resume_supported = True
+        resume_fields = ["request_id", "task"]
+        interrupt_kind = pending_interrupt_kind
     elif pending_interrupt_kind == "failure_guidance":
         status = STATUS_NEEDS_CLARIFICATION
         result_excerpt = str(pending_interrupt.get("coding_agent_result", "")).strip()
@@ -272,37 +283,71 @@ def _map_state_to_output(
         if result_excerpt:
             summary = f"{summary} Last result: {result_excerpt[:200]}"
         next_action = "Provide corrective guidance and resubmit the task."
+        result_kind = RESULT_KIND_CLARIFICATION_REQUEST
+        caller_action = "provide_clarification"
+        resume_supported = True
+        resume_fields = ["request_id", "task"]
+        interrupt_kind = pending_interrupt_kind
     elif orchestrator_input_required:
         status = STATUS_NEEDS_CLARIFICATION
         summary = f"Clarification needed: {orchestrator_input_question}"
         next_action = f"Answer the question and resubmit: {orchestrator_input_question}"
+        result_kind = RESULT_KIND_CLARIFICATION_REQUEST
+        caller_action = "provide_clarification"
+        resume_supported = True
+        resume_fields = ["request_id", "task"]
+        interrupt_kind = "orchestrator_question"
     elif needs_approval and not approved:
         status = STATUS_APPROVAL_REQUIRED
         summary = f"Approval required: {state.get('approval_reason', '')}"
         next_action = (
             "Approve via Telegram, then resubmit with human_approved=true and the approval_token."
         )
+        result_kind = RESULT_KIND_APPROVAL_REQUEST
+        caller_action = "provide_approval"
+        resume_supported = True
+        resume_fields = ["request_id", "task", "human_approved", "approval_token"]
+        interrupt_kind = "approval_required"
     elif restart_required:
         status = STATUS_FAILED
         summary = "Agent workflow requires a restart."
         next_action = "Retry the task from scratch."
+        result_kind = RESULT_KIND_TERMINAL_FAILURE
+        caller_action = "retry"
+        resume_supported = False
+        resume_fields = []
+        interrupt_kind = "restart_required"
     elif agent_instruction:
         if coding_agent_success is True:
             status = STATUS_SUCCESS
             summary = "Task completed successfully by the coding agent."
+            result_kind = RESULT_KIND_EXECUTION_RESULT
+            caller_action = "consume_result"
         elif coding_agent_success is False:
             status = STATUS_FAILED
             summary = f"Coding agent failed: {coding_agent_result[:200]}"
+            result_kind = RESULT_KIND_TERMINAL_FAILURE
+            caller_action = "inspect_failure"
         else:
             status = STATUS_SUCCESS
             summary = "Instruction generated. Ready for coding agent execution."
+            result_kind = RESULT_KIND_INSTRUCTION_PACKAGE
+            caller_action = "submit_instruction"
         next_action = (
             "Review output." if coding_agent_success else "Submit instruction to coding backend."
         )
+        resume_supported = False
+        resume_fields = []
+        interrupt_kind = ""
     else:
         status = STATUS_FAILED
         summary = "Workflow completed without producing an instruction."
         next_action = "Check logs and retry with more specific task description."
+        result_kind = RESULT_KIND_TERMINAL_FAILURE
+        caller_action = "retry"
+        resume_supported = False
+        resume_fields = []
+        interrupt_kind = ""
 
     return {
         "request_id": request_id,
@@ -316,6 +361,11 @@ def _map_state_to_output(
         "logs": state.get("task_feedback", []),
         "evidence": list(state.get("research_source_titles", [])),
         "next_action": next_action,
+        "result_kind": result_kind,
+        "caller_action": caller_action,
+        "resume_supported": resume_supported,
+        "resume_fields": resume_fields,
+        "interrupt_kind": interrupt_kind,
     }
 
 
@@ -350,6 +400,11 @@ def _error_response(request_id: str, message: str, detail: str = "") -> dict[str
         "logs": [detail] if detail else [],
         "evidence": [],
         "next_action": "Fix the error and retry.",
+        "result_kind": RESULT_KIND_TERMINAL_FAILURE,
+        "caller_action": "retry",
+        "resume_supported": False,
+        "resume_fields": [],
+        "interrupt_kind": "",
     }
 
 

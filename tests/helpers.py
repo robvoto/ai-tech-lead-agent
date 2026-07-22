@@ -61,6 +61,6 @@ def valid_settings_dict() -> dict[str, Any]:
         "telegram_webhook_bind_host": "127.0.0.1",
         "telegram_webhook_bind_port": 8080,
         "telegram_webhook_secret_token": "",
-        "army_allowed_project_roots": [str(PROJECT_ROOT)],
+        "allowed_project_roots": [str(PROJECT_ROOT)],
         "sleep_mode": False,
     }

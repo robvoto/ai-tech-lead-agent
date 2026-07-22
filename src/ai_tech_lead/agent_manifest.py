@@ -11,6 +11,7 @@ from .app_settings import AppSettings
 
 MANIFEST_SCHEMA_VERSION = 1
 MANIFEST_COMMAND = "uv run python -m ai_tech_lead manifest"
+MANIFEST_CACHE_TTL_SECONDS = 3600
 
 _REQUIRED_DOCS = [
     "docs/INDEX.md",
@@ -25,6 +26,12 @@ _SUPPORTED_OUTPUT_STATUSES = [
     "needs_clarification",
     "approval_required",
     "failed",
+]
+
+_PROJECT_PACK_REQUIRED_FILES = [
+    "AGENTS.md",
+    "docs/INDEX.md",
+    ".skills/INDEX.md",
 ]
 
 
@@ -42,9 +49,11 @@ def build_agent_manifest(settings: AppSettings | None = None) -> dict[str, Any]:
             "Reads a bounded task, reasons as a tech lead, and returns a structured handoff "
             "or execution result."
         ),
+        "manifest_cache_ttl_seconds": MANIFEST_CACHE_TTL_SECONDS,
         "entrypoints": {
             "json_subprocess": "run-agent-task",
             "manifest": "manifest",
+            "bootstrap_project_pack": "bootstrap-project-pack",
             "setup": "setup",
             "doctor": "doctor",
             "knowledge_store": "knowledge-store stats|backup|restore|compact",
@@ -75,8 +84,56 @@ def build_agent_manifest(settings: AppSettings | None = None) -> dict[str, Any]:
                 "logs",
                 "evidence",
                 "next_action",
+                "result_kind",
+                "caller_action",
+                "resume_supported",
+                "resume_fields",
+                "interrupt_kind",
                 "agent_manifest",
             ],
+        },
+        "status_contract": {
+            "success": {
+                "terminal": True,
+                "caller_action": "consume_result",
+                "notes": (
+                    "Returned when execution completed or when an instruction package is ready. "
+                    "Use result_kind to distinguish which."
+                ),
+            },
+            "needs_clarification": {
+                "terminal": False,
+                "caller_action": "provide_clarification",
+                "notes": (
+                    "Returned for resumable human-text interruptions such as plan guidance, "
+                    "clarifying questions, or repeated coding-agent failure guidance."
+                ),
+            },
+            "approval_required": {
+                "terminal": False,
+                "caller_action": "provide_approval",
+                "notes": (
+                    "Returned when explicit human approval is required. Resume with the "
+                    "issued approval_token and human_approved=true."
+                ),
+            },
+            "failed": {
+                "terminal": True,
+                "caller_action": "inspect_failure",
+                "notes": "Returned for terminal failures that should not be treated as resumable.",
+            },
+        },
+        "interaction_model": {
+            "primary_interface": "bounded local JSON subprocess",
+            "discovery_pattern": "manifest-style handshake inspired by an A2A agent card",
+            "task_pattern": "request/response with resumable human interrupts",
+            "supports_streaming": False,
+            "supports_push_notifications": False,
+            "resume_via_resubmission": True,
+            "tool_protocol_note": (
+                "Use MCP for tools/resources behind this agent. Use this manifest and "
+                "run-agent-task for the caller boundary."
+            ),
         },
         "capabilities": [
             "clarify ambiguous work",
@@ -93,6 +150,26 @@ def build_agent_manifest(settings: AppSettings | None = None) -> dict[str, Any]:
             "does not edit files except through the configured coding-agent runner",
             "does not rely on Telegram as the subprocess contract",
         ],
+        "ownership": {
+            "specialist_repo": (
+                "Owns specialist-internal workflow logic, prompts, status mapping, "
+                "instruction assembly, and reusable runtime skills."
+            ),
+            "caller": (
+                "Owns transport, user/session orchestration, and collecting human input "
+                "or approvals before resubmission."
+            ),
+        },
+        "project_pack": {
+            "bootstrap_command": "uv run python -m ai_tech_lead bootstrap-project-pack TARGET_ROOT",
+            "required_files": _PROJECT_PACK_REQUIRED_FILES,
+            "instruction_layers": [
+                "runtime_core/CORE.md",
+                "runtime_core/skills/*",
+                "TARGET_ROOT/AGENTS.md",
+                "TARGET_ROOT/.skills/INDEX.md and selected skill files",
+            ],
+        },
         "required_docs": _REQUIRED_DOCS,
         "knowledge_store": {
             "purpose": "bounded agent memory for docs, trusted sources, learnings, and preferences",
@@ -107,7 +184,7 @@ def build_agent_manifest(settings: AppSettings | None = None) -> dict[str, Any]:
             "telegram_enabled": settings.telegram_enabled,
             "orchestrator_ai_enabled": settings.orchestrator_ai_enabled,
             "allowed_directories": list(settings.allowed_directories),
-            "subprocess_allowed_project_roots": list(settings.army_allowed_project_roots),
+            "subprocess_allowed_project_roots": list(settings.allowed_project_roots),
             "knowledge_store_path": settings.knowledge_store_path,
         }
     else:

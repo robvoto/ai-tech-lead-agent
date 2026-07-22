@@ -57,11 +57,16 @@ Workspace bootstrap and local health checks:
 cd /home/robvoto/projects/ai-tech-lead
 uv run python -m ai_tech_lead setup
 uv run python -m ai_tech_lead doctor
+uv run python -m ai_tech_lead bootstrap-project-pack /tmp/new-target-repo
 uv run python -m ai_tech_lead knowledge-store stats
 uv run python -m ai_tech_lead knowledge-store backup /tmp/knowledge_store.sqlite3.bak
 uv run python -m ai_tech_lead knowledge-store restore /tmp/knowledge_store.sqlite3.bak
 uv run python -m ai_tech_lead knowledge-store compact
 ```
+
+`bootstrap-project-pack` is an explicit operator action that writes a small starter
+`AGENTS.md`, `docs/INDEX.md`, and `.skills/` pack into a reviewed target repo.
+It refuses to overwrite existing files unless `--overwrite` is supplied.
 
 Coding-agent execution is controlled by the local settings/admin toggle (`execute_coding_agent`); there is no `--execute-coding-agent` CLI flag.
 
@@ -80,11 +85,12 @@ The input JSON must include `task`. Common optional fields are `request_id`, `so
 - Safe default: omit `execution_mode` or set it to `instruction_only`.
 - Use `execution_mode: execute` only when the caller explicitly wants coding-agent execution and
   local settings allow it.
-- `project_root` is accepted only when it matches one of `settings.army_allowed_project_roots`.
+- `project_root` is accepted only when it matches one of `settings.allowed_project_roots`.
 - If `human_approved` is true, the request must include the matching one-time `approval_token`
   previously issued for the same `request_id` and task.
 - Subprocess responses use `success`, `needs_clarification`, `approval_required`, and `failed`.
 - Human-text pauses inside the specialist workflow, such as plan guidance or repeated failure guidance, are surfaced here as `needs_clarification`.
+- External callers should read `uv run python -m ai_tech_lead manifest` and use the response fields `result_kind`, `caller_action`, `resume_supported`, `resume_fields`, and `interrupt_kind` instead of scraping `summary` text.
 
 ## Admin UI
 
@@ -144,10 +150,24 @@ For formatting changed Python files only:
 uv run ruff format <file-or-folder>
 ```
 
+## Logs
+
+Runtime logs are written under:
+
+```text
+logs/ai_tech_lead.runtime.log
+logs/ai_tech_lead.coding_agent.log
+```
+
+- `ai_tech_lead.runtime.log` contains the orchestrator, graph, Telegram, admin, and research logs.
+- `ai_tech_lead.coding_agent.log` contains raw coding-agent subprocess output.
+- `--debug` raises console and runtime-log verbosity and includes research scoring diagnostics.
+
 ## Troubleshooting notes
 
 - If startup says `Settings file not found`, create `data/coding_agent_settings.json` from `data/coding_agent_settings.example.json`.
 - If a command works in WSL but not PowerShell, prefer WSL. This project runtime is WSL-first.
+- If you need to debug research selection or workflow routing, inspect `logs/ai_tech_lead.runtime.log` first, then `logs/ai_tech_lead.coding_agent.log` for subprocess output details.
 - If LangGraph Studio fails to import the graph, check `langgraph.json` and the exported `graph` object in `src/ai_tech_lead/coding_workflow_graph.py`.
 - If coding-agent execution warns that Bubblewrap is missing or hangs during startup, verify `command -v bwrap` and `bwrap --version` in WSL before retrying Codex.
 - On Ubuntu WSL, install it with `sudo apt update && sudo apt install bubblewrap`, then re-run `command -v bwrap` and `bwrap --version`.

@@ -23,6 +23,7 @@ from ai_tech_lead.knowledge_store import (
     restore_knowledge_store,
 )
 from ai_tech_lead.logging_setup import LOGGER_NAME, configure_logging
+from ai_tech_lead.project_pack_templates import bootstrap_project_pack
 from ai_tech_lead.storage import initialize_database
 from ai_tech_lead.telegram_operator import run_telegram_operator
 from ai_tech_lead.workspace_ops import bootstrap_workspace, doctor_workspace
@@ -52,6 +53,10 @@ def main() -> int:
     if getattr(args, "command", None) == "doctor":
         configure_logging(debug=args.debug)
         return _run_doctor()
+
+    if getattr(args, "command", None) == "bootstrap-project-pack":
+        configure_logging(debug=args.debug)
+        return _run_bootstrap_project_pack(args.target_root, overwrite=args.overwrite)
 
     if getattr(args, "command", None) == "manifest":
         return _run_manifest()
@@ -168,6 +173,20 @@ def _parse_args() -> argparse.Namespace:
     subparsers.add_parser(
         "doctor",
         help="Report local workspace health and tracked runtime-file issues.",
+    )
+    bootstrap_pack_parser = subparsers.add_parser(
+        "bootstrap-project-pack",
+        help="Write a small starter AGENTS/docs/skills pack into a target repo.",
+    )
+    bootstrap_pack_parser.add_argument(
+        "target_root",
+        metavar="TARGET_ROOT",
+        help="Target repository root to receive the starter project pack.",
+    )
+    bootstrap_pack_parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Allow overwriting existing starter-pack files after review.",
     )
     subparsers.add_parser(
         "manifest",
@@ -339,6 +358,18 @@ def _run_doctor() -> int:
     for line in report.lines:
         print(line)
     return 0 if report.ok else 1
+
+
+def _run_bootstrap_project_pack(target_root: str, *, overwrite: bool) -> int:
+    """Write a starter project pack into a reviewed target repo."""
+
+    try:
+        for line in bootstrap_project_pack(Path(target_root), overwrite=overwrite):
+            print(line)
+    except Exception as error:
+        logger.error("Project-pack bootstrap failed: %s", error)
+        return 1
+    return 0
 
 
 def _run_manifest() -> int:

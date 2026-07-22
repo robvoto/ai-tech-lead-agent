@@ -43,7 +43,7 @@ def test_parse_settings_round_trips_valid_config() -> None:
     assert settings.research_fetch_timeout_seconds == 10
     assert settings.research_max_excerpt_chars == 800
     assert settings.knowledge_store_path == "data/knowledge_store.sqlite3"
-    assert settings.army_allowed_project_roots == [str(PROJECT_ROOT)]
+    assert settings.allowed_project_roots == [str(PROJECT_ROOT)]
     assert settings_to_dict(settings) == raw_settings
 
 
@@ -125,11 +125,30 @@ def test_parse_settings_rejects_missing_project_context() -> None:
         assert "project_context" in str(err)
 
 
-def test_parse_settings_rejects_stale_army_project_root_allowlist() -> None:
+def test_parse_settings_rejects_project_root_allowlist_without_current_project_root() -> None:
+    raw_settings = valid_settings_dict()
+    raw_settings["allowed_project_roots"] = ["/some/other/path"]
+
+    with pytest.raises(ValueError, match="allowed_project_roots"):
+        parse_settings(raw_settings)
+
+
+def test_parse_settings_accepts_legacy_army_project_root_allowlist() -> None:
+    raw_settings = valid_settings_dict()
+    raw_settings.pop("allowed_project_roots")
+    raw_settings["army_allowed_project_roots"] = [str(PROJECT_ROOT)]
+
+    settings = parse_settings(raw_settings)
+
+    assert settings.allowed_project_roots == [str(PROJECT_ROOT)]
+    assert settings_to_dict(settings)["allowed_project_roots"] == [str(PROJECT_ROOT)]
+
+
+def test_parse_settings_rejects_conflicting_new_and_legacy_allowlists() -> None:
     raw_settings = valid_settings_dict()
     raw_settings["army_allowed_project_roots"] = ["/some/other/path"]
 
-    with pytest.raises(ValueError, match="army_allowed_project_roots"):
+    with pytest.raises(ValueError, match="cannot both be set"):
         parse_settings(raw_settings)
 
 

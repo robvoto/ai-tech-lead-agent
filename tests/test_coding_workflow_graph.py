@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import replace
+from types import SimpleNamespace
 
 from helpers import valid_settings_dict
 from langgraph.checkpoint.memory import MemorySaver
@@ -21,6 +22,8 @@ from ai_tech_lead.coding_workflow_graph import (
     run_coding_agent_node,
 )
 from ai_tech_lead.plan_reviewer import PlanReviewDecision
+from ai_tech_lead.risk_reviewer import RiskReviewDecision
+from ai_tech_lead.tech_lead_analyst import TechLeadAnalysis
 
 
 def graph_state(**overrides: object) -> dict[str, object]:
@@ -58,6 +61,56 @@ def graph_state(**overrides: object) -> dict[str, object]:
     }
     state.update(overrides)
     return state
+
+
+class _FakeAgentResult:
+    def __init__(
+        self,
+        *,
+        stdout: str = "",
+        stderr: str = "",
+        message: str = "",
+        returncode: int | None = 0,
+        changed_files_delta: tuple[str, ...] = (),
+        command: list[str] | None = None,
+        duration_seconds: float = 0.1,
+        success: bool | None = None,
+        timed_out: bool = False,
+    ) -> None:
+        self.stdout = stdout
+        self.stderr = stderr
+        self.message = message or stdout or stderr or ""
+        self.returncode = returncode
+        self.changed_files_delta = changed_files_delta
+        self.command = command or []
+        self.duration_seconds = duration_seconds
+        self.timed_out = timed_out
+        if success is not None:
+            self.success = success
+
+    def summary(self) -> str:
+        return self.message or "no result"
+
+
+def _research_result(
+    *,
+    is_complex: bool,
+    sources_found: int = 0,
+    online_research_needed: bool = False,
+    complexity_reason: str = "Simple task.",
+    titles: list[str] | None = None,
+    locations: list[str] | None = None,
+    summaries: list[str] | None = None,
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        is_complex=is_complex,
+        sources_found=sources_found,
+        online_research_needed=online_research_needed,
+        complexity_reason=complexity_reason,
+        usable_source_titles=titles or [],
+        usable_source_locations=locations or [],
+        usable_source_summaries=summaries or [],
+    )
 
 
 def test_graph_state_defaults_do_not_require_human_input() -> None:
@@ -309,10 +362,18 @@ def test_request_plan_node_uses_generated_instruction_and_stores_stdout(monkeypa
         assert prompt_key == "plan_request_instruction"
         assert replacements["formulated_task"] == "Build the plan"
         assert (
+            replacements["task_feedback"]
+            == "\nTask feedback for this attempt:\n- Keep this docs-only."
+        )
+        assert (
             replacements["correction_feedback"]
             == "\nPrevious plan was rejected. Correction needed:\nKeep it small."
         )
-        return f"Plan for {replacements['formulated_task']}\n{replacements['correction_feedback']}"
+        return (
+            f"Plan for {replacements['formulated_task']}\n"
+            f"{replacements['task_feedback']}\n"
+            f"{replacements['correction_feedback']}"
+        )
 
     def fake_run_coding_agent(*, agent_instruction, project_root, settings, **_kwargs):
         captured["agent_instruction"] = agent_instruction
@@ -335,13 +396,16 @@ def test_request_plan_node_uses_generated_instruction_and_stores_stdout(monkeypa
 
     state = graph_state(
         formulated_task="Build the plan",
+        task_feedback=["Keep this docs-only."],
         plan_correction="Keep it small.",
     )
 
     result = request_plan_node(state, progress_callback=progress_messages.append)
 
     expected_instruction = (
-        "Plan for Build the plan\n\nPrevious plan was rejected. Correction needed:\nKeep it small."
+        "Plan for Build the plan\n"
+        "\nTask feedback for this attempt:\n- Keep this docs-only.\n"
+        "\nPrevious plan was rejected. Correction needed:\nKeep it small."
     )
     assert captured["agent_instruction"] == expected_instruction
     assert captured["project_root"] is not None
@@ -691,6 +755,404 @@ def test_route_after_review_plan_rejected_twice_goes_to_human() -> None:
 def test_route_after_review_plan_reviewer_unavailable_goes_to_human() -> None:
     state = graph_state(plan_approved=False, plan_needs_human_review=True)
     assert route_after_review_plan(state) == NodeName.PLAN_INTERRUPT
+
+
+def test_workflow_scenario_approval_interrupt_resumes_to_success(monkeypatch) -> None:
+    settings = replace(
+        parse_settings(valid_settings_dict()),
+        orchestrator_ai_enabled=True,
+        execute_coding_agent=False,
+    )
+    plan_instructions: list[str] = []
+    implementation_instructions: list[str] = []
+
+    monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.load_settings", lambda: settings)
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.check_research_requirements",
+        lambda _request, _settings: _research_result(is_complex=False),
+    )
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.review_task_risk",
+        lambda _request: RiskReviewDecision(
+            needs_approval=True,
+            approval_reason="High-risk task needs explicit approval.",
+            risk_level="HIGH",
+        ),
+    )
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.analyse_task",
+        lambda **_kwargs: TechLeadAnalysis(
+            task_statement="Update the runtime docs safely.",
+            tech_direction="Keep the change scoped to documentation and tests.",
+        ),
+    )
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.render_prompt",
+        lambda _prompt_key, **replacements: (
+            f"PLAN::{replacements['formulated_task']}::"
+            f"{replacements['task_feedback']}::{replacements['correction_feedback']}"
+        ),
+    )
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.review_plan",
+        lambda **_kwargs: PlanReviewDecision(
+            approved=True,
+            reason="Plan is bounded.",
+            correction="",
+        ),
+    )
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.build_agent_instruction",
+        lambda **kwargs: (
+            f"IMPLEMENT::{kwargs['formulated_task']}::{kwargs['brief']}::"
+            f"{' | '.join(kwargs['task_feedback'])}::{kwargs['agent_correction'] or ''}"
+        ),
+    )
+
+    def fake_run_coding_agent(*, agent_instruction, **_kwargs):
+        if agent_instruction.startswith("PLAN::"):
+            plan_instructions.append(agent_instruction)
+            return _FakeAgentResult(
+                stdout="1. Inspect docs\n2. Update wording\nDone when: docs reflect runtime.",
+                returncode=0,
+            )
+        implementation_instructions.append(agent_instruction)
+        return _FakeAgentResult(
+            message="implemented",
+            returncode=0,
+            changed_files_delta=("docs/RUNTIME_RUNBOOK.md",),
+            command=["codex"],
+        )
+
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.run_coding_agent",
+        fake_run_coding_agent,
+    )
+
+    app = build_graph(checkpointer_storage=MemorySaver(), execute_coding_agent_override=False)
+    thread_config = {"configurable": {"thread_id": "workflow-approval-success"}}
+
+    app.invoke(graph_state(request="Update the runtime docs."), config=thread_config)
+    state_snapshot = app.get_state(thread_config)
+
+    assert state_snapshot.next == (NodeName.APPROVAL_INTERRUPT,)
+
+    app.invoke(
+        Command(resume={"approved": True, "approved_by": "telegram-operator"}),
+        config=thread_config,
+    )
+
+    final_state = app.get_state(thread_config)
+
+    assert final_state.next == ()
+    assert final_state.values["approved"] is True
+    assert final_state.values["approved_by"] == "telegram-operator"
+    assert final_state.values["plan_text"].startswith("1. Inspect docs")
+    assert final_state.values["coding_agent_success"] is True
+    assert plan_instructions == ["PLAN::Update the runtime docs safely.::::"]
+    assert implementation_instructions == [
+        (
+            "IMPLEMENT::Update the runtime docs safely.::"
+            "Keep the change scoped to documentation and tests.::::"
+        )
+    ]
+
+
+def test_workflow_scenario_research_interrupt_resumes_to_success(monkeypatch) -> None:
+    settings = replace(
+        parse_settings(valid_settings_dict()),
+        orchestrator_ai_enabled=True,
+        execute_coding_agent=False,
+    )
+    research_evidence_seen: list[list[str]] = []
+
+    monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.load_settings", lambda: settings)
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.check_research_requirements",
+        lambda _request, _settings: _research_result(
+            is_complex=True,
+            sources_found=1,
+            online_research_needed=True,
+            complexity_reason="LangGraph interrupt semantics should be checked.",
+            titles=["Local workflow notes"],
+            locations=["docs/GRAPH_WORKFLOW.md"],
+            summaries=["Current local workflow and interrupt notes."],
+        ),
+    )
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.collect_online_research_sources",
+        lambda _request, _settings: [
+            SimpleNamespace(
+                title="LangGraph interrupts",
+                location="https://docs.langchain.com/oss/python/langgraph/interrupts",
+                summary="Interrupts resume with Command objects.",
+                excerpt="",
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.save_online_source_to_cache",
+        lambda **_kwargs: False,
+    )
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.review_task_risk",
+        lambda _request: RiskReviewDecision(
+            needs_approval=False,
+            approval_reason="Bounded research-backed task.",
+            risk_level="LOW",
+        ),
+    )
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.analyse_task",
+        lambda **_kwargs: TechLeadAnalysis(
+            task_statement="Verify the interrupt workflow docs.",
+            tech_direction="Use local notes plus the approved LangGraph interrupts doc.",
+        ),
+    )
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.render_prompt",
+        lambda _prompt_key, **replacements: f"PLAN::{replacements['formulated_task']}",
+    )
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.review_plan",
+        lambda **_kwargs: PlanReviewDecision(True, "Plan is bounded.", ""),
+    )
+
+    def fake_build_agent_instruction(**kwargs):
+        research_evidence_seen.append(list(kwargs["research_evidence"]))
+        return "IMPLEMENT::research"
+
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.build_agent_instruction",
+        fake_build_agent_instruction,
+    )
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.run_coding_agent",
+        lambda **kwargs: (
+            _FakeAgentResult(stdout="1. Review docs\nDone when: workflow is documented.")
+            if kwargs["agent_instruction"].startswith("PLAN::")
+            else _FakeAgentResult(
+                message="implemented",
+                returncode=0,
+                changed_files_delta=("docs/GRAPH_WORKFLOW.md",),
+                command=["codex"],
+            )
+        ),
+    )
+
+    app = build_graph(checkpointer_storage=MemorySaver(), execute_coding_agent_override=False)
+    thread_config = {"configurable": {"thread_id": "workflow-research-success"}}
+
+    app.invoke(graph_state(request="Verify interrupt workflow docs."), config=thread_config)
+    state_snapshot = app.get_state(thread_config)
+
+    assert state_snapshot.next == (NodeName.RESEARCH_INTERRUPT,)
+
+    app.invoke(Command(resume={"approved": True}), config=thread_config)
+
+    final_state = app.get_state(thread_config)
+
+    assert final_state.next == ()
+    assert final_state.values["online_research_approved"] is True
+    assert final_state.values["research_online_sources_found"] == 1
+    assert final_state.values["research_source_titles"] == [
+        "Local workflow notes",
+        "LangGraph interrupts",
+    ]
+    assert research_evidence_seen == [
+        [
+            (
+                "Local workflow notes | docs/GRAPH_WORKFLOW.md | "
+                "Current local workflow and interrupt notes."
+            ),
+            (
+                "LangGraph interrupts | "
+                "https://docs.langchain.com/oss/python/langgraph/interrupts | "
+                "Interrupts resume with Command objects."
+            ),
+        ]
+    ]
+    assert final_state.values["coding_agent_success"] is True
+
+
+def test_workflow_scenario_plan_guidance_resume_feeds_next_plan_attempt(monkeypatch) -> None:
+    settings = replace(
+        parse_settings(valid_settings_dict()),
+        orchestrator_ai_enabled=True,
+        execute_coding_agent=False,
+    )
+    plan_instructions: list[str] = []
+    review_decisions = iter(
+        [
+            PlanReviewDecision(False, "Too broad.", "Keep it to one file."),
+            PlanReviewDecision(False, "Still too broad.", "Limit it to docs or tests."),
+            PlanReviewDecision(True, "Now bounded.", ""),
+        ]
+    )
+
+    monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.load_settings", lambda: settings)
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.check_research_requirements",
+        lambda _request, _settings: _research_result(is_complex=False),
+    )
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.review_task_risk",
+        lambda _request: RiskReviewDecision(False, "Safe local docs/test work.", "LOW"),
+    )
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.analyse_task",
+        lambda **_kwargs: TechLeadAnalysis(
+            task_statement="Tighten the workflow docs.",
+            tech_direction="Keep the task bounded to one docs or tests slice.",
+        ),
+    )
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.render_prompt",
+        lambda _prompt_key, **replacements: (
+            f"PLAN::{replacements['formulated_task']}::"
+            f"{replacements['task_feedback']}::{replacements['correction_feedback']}"
+        ),
+    )
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.review_plan",
+        lambda **_kwargs: next(review_decisions),
+    )
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.build_agent_instruction",
+        lambda **kwargs: (
+            f"IMPLEMENT::{kwargs['formulated_task']}::"
+            f"{' | '.join(kwargs['task_feedback'])}"
+        ),
+    )
+
+    def fake_run_coding_agent(*, agent_instruction, **_kwargs):
+        if agent_instruction.startswith("PLAN::"):
+            plan_instructions.append(agent_instruction)
+            attempt = len(plan_instructions)
+            return _FakeAgentResult(
+                stdout=f"{attempt}. Draft plan attempt {attempt}\nDone when: bounded.",
+                returncode=0,
+            )
+        return _FakeAgentResult(
+            message="implemented",
+            returncode=0,
+            changed_files_delta=("docs/GRAPH_WORKFLOW.md",),
+            command=["codex"],
+        )
+
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.run_coding_agent",
+        fake_run_coding_agent,
+    )
+
+    app = build_graph(checkpointer_storage=MemorySaver(), execute_coding_agent_override=False)
+    thread_config = {"configurable": {"thread_id": "workflow-plan-guidance-success"}}
+
+    app.invoke(graph_state(request="Tighten the workflow docs."), config=thread_config)
+    state_snapshot = app.get_state(thread_config)
+
+    assert state_snapshot.next == (NodeName.PLAN_INTERRUPT,)
+    assert state_snapshot.values["plan_rejection_count"] == 2
+
+    app.invoke(
+        Command(resume={"text": "Keep scope to docs/tests only."}),
+        config=thread_config,
+    )
+
+    final_state = app.get_state(thread_config)
+
+    assert final_state.next == ()
+    assert final_state.values["task_feedback"] == ["Keep scope to docs/tests only."]
+    assert final_state.values["coding_agent_success"] is True
+    assert len(plan_instructions) == 3
+    assert "Keep it to one file." in plan_instructions[1]
+    assert "Keep scope to docs/tests only." in plan_instructions[2]
+
+
+def test_workflow_scenario_failure_guidance_resume_retries_to_success(monkeypatch) -> None:
+    settings = replace(
+        parse_settings(valid_settings_dict()),
+        orchestrator_ai_enabled=True,
+        execute_coding_agent=False,
+    )
+    implementation_instructions: list[str] = []
+
+    monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.load_settings", lambda: settings)
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.check_research_requirements",
+        lambda _request, _settings: _research_result(is_complex=False),
+    )
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.review_task_risk",
+        lambda _request: RiskReviewDecision(False, "Safe local tests-only work.", "LOW"),
+    )
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.analyse_task",
+        lambda **_kwargs: TechLeadAnalysis(
+            task_statement="Improve workflow tests.",
+            tech_direction="Keep the change to workflow tests only.",
+        ),
+    )
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.render_prompt",
+        lambda _prompt_key, **replacements: f"PLAN::{replacements['formulated_task']}",
+    )
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.review_plan",
+        lambda **_kwargs: PlanReviewDecision(True, "Plan is bounded.", ""),
+    )
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.build_agent_instruction",
+        lambda **kwargs: (
+            f"IMPLEMENT::{kwargs['formulated_task']}::{' | '.join(kwargs['task_feedback'])}::"
+            f"{kwargs['agent_correction'] or ''}"
+        ),
+    )
+
+    def fake_run_coding_agent(*, agent_instruction, **_kwargs):
+        if agent_instruction.startswith("PLAN::"):
+            return _FakeAgentResult(stdout="1. Update tests\nDone when: retries are covered.")
+
+        implementation_instructions.append(agent_instruction)
+        attempt = len(implementation_instructions)
+        if attempt == 1:
+            return _FakeAgentResult(message="lint failed", returncode=1, command=["codex"])
+        if attempt == 2:
+            return _FakeAgentResult(message="tests failed", returncode=1, command=["codex"])
+        return _FakeAgentResult(
+            message="implemented",
+            returncode=0,
+            changed_files_delta=("tests/test_coding_workflow_graph.py",),
+            command=["codex"],
+        )
+
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.run_coding_agent",
+        fake_run_coding_agent,
+    )
+
+    app = build_graph(checkpointer_storage=MemorySaver(), execute_coding_agent_override=False)
+    thread_config = {"configurable": {"thread_id": "workflow-failure-guidance-success"}}
+
+    app.invoke(graph_state(request="Improve workflow tests."), config=thread_config)
+    state_snapshot = app.get_state(thread_config)
+
+    assert state_snapshot.next == (NodeName.FAILURE_INTERRUPT,)
+    assert state_snapshot.values["coding_agent_retry_count"] == 2
+
+    app.invoke(
+        Command(resume={"text": "Narrow the fix to tests first."}),
+        config=thread_config,
+    )
+
+    final_state = app.get_state(thread_config)
+
+    assert final_state.next == ()
+    assert final_state.values["task_feedback"] == ["Narrow the fix to tests first."]
+    assert final_state.values["coding_agent_success"] is True
+    assert len(implementation_instructions) == 3
+    assert "lint failed" in implementation_instructions[1]
+    assert "Narrow the fix to tests first." in implementation_instructions[2]
 
 
 def test_graph_has_no_clarification_gate_nodes() -> None:

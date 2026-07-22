@@ -216,6 +216,40 @@ def test_main_doctor_mode_reports_workspace_health(monkeypatch, capsys) -> None:
     assert "OK: healthy" in captured.out
 
 
+def test_main_bootstrap_project_pack_mode_writes_starter_pack(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(main_module, "configure_logging", lambda *, debug=False: None)
+    monkeypatch.setattr(
+        main_module,
+        "bootstrap_project_pack",
+        lambda target_root, *, overwrite=False: [
+            f"bootstrapped {target_root}",
+            f"overwrite={overwrite}",
+        ],
+    )
+    monkeypatch.setattr(
+        main_module,
+        "_parse_args",
+        lambda: type(
+            "Args",
+            (),
+            {
+                "debug": False,
+                "reload": False,
+                "command": "bootstrap-project-pack",
+                "target_root": "/tmp/target-repo",
+                "overwrite": True,
+            },
+        )(),
+    )
+
+    exit_code = main_module.main()
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert "bootstrapped /tmp/target-repo" in captured.out
+    assert "overwrite=True" in captured.out
+
+
 def test_main_knowledge_store_stats_reports_summary(monkeypatch, capsys) -> None:
     monkeypatch.setattr(main_module, "configure_logging", lambda *, debug=False: None)
     monkeypatch.setattr(

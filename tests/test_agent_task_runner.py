@@ -59,6 +59,11 @@ def _success_output(instruction: str = "do it") -> dict[str, Any]:
         "logs": [],
         "evidence": [],
         "next_action": "Submit instruction to coding backend.",
+        "result_kind": "instruction_package",
+        "caller_action": "submit_instruction",
+        "resume_supported": False,
+        "resume_fields": [],
+        "interrupt_kind": "",
     }
 
 
@@ -79,6 +84,11 @@ def _approval_required_output(reason: str = "risky change") -> dict[str, Any]:
             "Approve via Telegram, then resubmit with human_approved=true and the "
             "approval_token."
         ),
+        "result_kind": "approval_request",
+        "caller_action": "provide_approval",
+        "resume_supported": True,
+        "resume_fields": ["request_id", "task", "human_approved", "approval_token"],
+        "interrupt_kind": "approval_required",
     }
 
 
@@ -167,7 +177,7 @@ def test_unreadable_input_file_returns_failed(
 class TestValidateProjectRoot:
     def _settings(self, allowed_roots: list[str]) -> Any:
         settings = parse_settings(valid_settings_dict())
-        return replace(settings, army_allowed_project_roots=allowed_roots)
+        return replace(settings, allowed_project_roots=allowed_roots)
 
     def test_none_input_returns_none(self) -> None:
         settings = self._settings(["/allowed/path"])
@@ -200,7 +210,7 @@ def test_project_root_not_in_allowlist_returns_failed_without_workflow(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     calls = _make_fake_workflow(monkeypatch, _success_output())
-    _stub_settings(monkeypatch, {"army_allowed_project_roots": ["/some/other/path"]})
+    _stub_settings(monkeypatch, {"allowed_project_roots": ["/some/other/path"]})
 
     input_file, output_file = _write_input(
         tmp_path,
@@ -220,7 +230,7 @@ def test_project_root_in_allowlist_is_accepted(
 ) -> None:
     allowed_root = str(tmp_path / "allowed-project")
     calls = _make_fake_workflow(monkeypatch, _success_output())
-    _stub_settings(monkeypatch, {"army_allowed_project_roots": [allowed_root]})
+    _stub_settings(monkeypatch, {"allowed_project_roots": [allowed_root]})
 
     input_file, output_file = _write_input(
         tmp_path,
@@ -580,6 +590,11 @@ def test_successful_response_includes_all_required_fields(
         "logs",
         "evidence",
         "next_action",
+        "result_kind",
+        "caller_action",
+        "resume_supported",
+        "resume_fields",
+        "interrupt_kind",
         "agent_manifest",
     }
     assert required_keys.issubset(result.keys())
@@ -635,6 +650,10 @@ def test_map_state_to_output_maps_plan_interrupt_to_needs_clarification() -> Non
     assert result["status"] == STATUS_NEEDS_CLARIFICATION
     assert "plan guidance" in result["summary"].lower()
     assert "Plan reviewer unavailable" in result["summary"]
+    assert result["result_kind"] == "clarification_request"
+    assert result["caller_action"] == "provide_clarification"
+    assert result["resume_supported"] is True
+    assert result["interrupt_kind"] == "plan_guidance"
 
 
 def test_map_state_to_output_maps_failure_interrupt_to_needs_clarification() -> None:
@@ -667,6 +686,9 @@ def test_map_state_to_output_maps_failure_interrupt_to_needs_clarification() -> 
     assert result["status"] == STATUS_NEEDS_CLARIFICATION
     assert "repeated coding-agent failures" in result["summary"]
     assert "Tests failed in CI" in result["summary"]
+    assert result["result_kind"] == "clarification_request"
+    assert result["caller_action"] == "provide_clarification"
+    assert result["interrupt_kind"] == "failure_guidance"
 
 
 def test_map_state_to_output_uses_failed_for_terminal_agent_failure() -> None:
@@ -691,3 +713,5 @@ def test_map_state_to_output_uses_failed_for_terminal_agent_failure() -> None:
 
     assert result["status"] == STATUS_FAILED
     assert "Coding agent failed" in result["summary"]
+    assert result["result_kind"] == "terminal_failure"
+    assert result["caller_action"] == "inspect_failure"
