@@ -224,16 +224,17 @@ class SqliteBacklogRepository:
 
     def update_item_status(self, item_id: str, new_status: str) -> BacklogItem:
         normalized_id = item_id.strip().upper()
-        self.get_item(normalized_id)
+        item = self.get_item(normalized_id)
         if not new_status.strip():
             raise ValueError("Status cannot be empty.")
         status_value = normalize_backlog_status(new_status)
         if status_value is None:
             raise ValueError(f"Status must be one of: {backlog_status_choices()}.")
+        updated_body = _inject_status_into_body(item.body, status_value)
         with _connect(self._db_path) as conn:
             conn.execute(
-                "UPDATE backlog_items SET status=? WHERE UPPER(item_id)=?",
-                (status_value.value, normalized_id),
+                "UPDATE backlog_items SET status=?, body=? WHERE UPPER(item_id)=?",
+                (status_value.value, updated_body, normalized_id),
             )
         return self.get_item(normalized_id)
 
@@ -280,6 +281,33 @@ def _inject_validation_into_body(body: str, validation_note: str) -> str:
     """Set Status: Done and insert or replace a normalized Validation: line."""
 
     lines = body.splitlines(keepends=True)
+    insert_after, validation_idx = _replace_or_insert_status_line(
+        lines, BacklogStatus.DONE
+    )
+
+    validation_line = f"Validation: {_normalize_validation_note(validation_note)}\n"
+    if validation_idx is not None:
+        lines[validation_idx] = validation_line
+    else:
+        lines.insert(insert_after + 1, validation_line)
+
+    return "".join(lines)
+
+
+def _inject_status_into_body(body: str, status: BacklogStatus) -> str:
+    """Set or insert the canonical Status: line inside a backlog item body."""
+
+    lines = body.splitlines(keepends=True)
+    _replace_or_insert_status_line(lines, status)
+    return "".join(lines)
+
+
+def _replace_or_insert_status_line(
+    lines: list[str],
+    status: BacklogStatus,
+) -> tuple[int, int | None]:
+    """Rewrite the status line in-place and return insertion bookkeeping."""
+
     heading_idx = None
     status_idx = None
     validation_idx = None
@@ -293,18 +321,11 @@ def _inject_validation_into_body(body: str, validation_note: str) -> str:
             validation_idx = i
 
     if status_idx is not None:
-        lines[status_idx] = f"Status: {BacklogStatus.DONE.value}\n"
-        insert_after = status_idx
-    else:
-        insert_after = heading_idx + 1 if heading_idx is not None else 0
-        lines.insert(insert_after, f"Status: {BacklogStatus.DONE.value}\n")
-        if validation_idx is not None and validation_idx >= insert_after:
-            validation_idx += 1
+        lines[status_idx] = f"Status: {status.value}\n"
+        return status_idx, validation_idx
 
-    validation_line = f"Validation: {_normalize_validation_note(validation_note)}\n"
-    if validation_idx is not None:
-        lines[validation_idx] = validation_line
-    else:
-        lines.insert(insert_after + 1, validation_line)
-
-    return "".join(lines)
+    insert_after = heading_idx + 1 if heading_idx is not None else 0
+    lines.insert(insert_after, f"Status: {status.value}\n")
+    if validation_idx is not None and validation_idx >= insert_after:
+        validation_idx += 1
+    return insert_after, validation_idx
