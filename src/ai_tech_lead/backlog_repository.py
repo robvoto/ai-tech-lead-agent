@@ -288,7 +288,7 @@ class MarkdownBacklogRepository:
             item_end += 1
             insert_after = item_start + 1
 
-        validation_text = f"Validation: {validation_note.strip()}\n"
+        validation_text = f"Validation: {_normalize_validation_note(validation_note)}\n"
         if validation_line_index is not None:
             actual_index = (
                 validation_line_index
@@ -949,6 +949,15 @@ def _normalize_size(size: str) -> str | None:
     normalized = " ".join(size.split()).upper()
     if normalized not in {"XS", "S", "M", "L", "XL"}:
         return None
+    return normalized
+
+
+def _normalize_validation_note(validation_note: str) -> str:
+    """Return validation text without a duplicated leading 'Validation:' label."""
+
+    normalized = validation_note.strip()
+    if normalized.lower().startswith("validation:"):
+        normalized = normalized.split(":", 1)[1].strip()
     return normalized
 
 

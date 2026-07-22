@@ -10,7 +10,6 @@ import logging
 import re
 import sqlite3
 from contextlib import contextmanager
-from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 from typing import Generator
@@ -21,6 +20,7 @@ from .backlog_repository import (
     BacklogRefinementDraft,
     BacklogValidationError,
     _backlog_item_listing_key,
+    _normalize_validation_note,
     format_backlog_list_item,  # re-export so callers don't need two imports
     open_backlog_statuses,
     render_backlog_draft,
@@ -32,6 +32,8 @@ from .backlog_status import BacklogStatus, backlog_status_choices, normalize_bac
 from .config import DATA_DIR, ensure_project_dirs
 
 logger = logging.getLogger(__name__)
+
+__all__ = ["BACKLOG_DB_PATH", "SqliteBacklogRepository", "format_backlog_list_item"]
 
 BACKLOG_DB_PATH = DATA_DIR / "backlog.sqlite3"
 _SCHEMA_VERSION = 1
@@ -109,7 +111,7 @@ def _ensure_schema_version(conn: sqlite3.Connection) -> None:
 
 
 class SqliteBacklogRepository:
-    """SQLite-backed backlog repository with the same public interface as MarkdownBacklogRepository."""
+    """SQLite-backed backlog repository matching the Markdown repository interface."""
 
     def __init__(self, db_path: Path | None = None) -> None:
         self._db_path = db_path or BACKLOG_DB_PATH
@@ -275,23 +277,34 @@ class SqliteBacklogRepository:
 
 
 def _inject_validation_into_body(body: str, validation_note: str) -> str:
-    """Insert or replace a Validation: line in the body, after Status: if present."""
+    """Set Status: Done and insert or replace a normalized Validation: line."""
+
     lines = body.splitlines(keepends=True)
+    heading_idx = None
     status_idx = None
     validation_idx = None
     for i, line in enumerate(lines):
         stripped = line.strip()
+        if heading_idx is None and stripped.startswith("## "):
+            heading_idx = i
         if stripped.lower().startswith("status:"):
             status_idx = i
         if stripped.lower().startswith("validation:"):
             validation_idx = i
 
-    validation_line = f"Validation: {validation_note.strip()}\n"
+    if status_idx is not None:
+        lines[status_idx] = f"Status: {BacklogStatus.DONE.value}\n"
+        insert_after = status_idx
+    else:
+        insert_after = heading_idx + 1 if heading_idx is not None else 0
+        lines.insert(insert_after, f"Status: {BacklogStatus.DONE.value}\n")
+        if validation_idx is not None and validation_idx >= insert_after:
+            validation_idx += 1
+
+    validation_line = f"Validation: {_normalize_validation_note(validation_note)}\n"
     if validation_idx is not None:
         lines[validation_idx] = validation_line
-    elif status_idx is not None:
-        lines.insert(status_idx + 1, validation_line)
     else:
-        lines.insert(0, validation_line)
+        lines.insert(insert_after + 1, validation_line)
 
     return "".join(lines)

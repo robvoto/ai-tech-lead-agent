@@ -55,6 +55,7 @@ def export_graph_diagrams(*, settings: AppSettings | None = None) -> list[Path]:
         graph = app.get_graph()
         mermaid_source = graph.draw_mermaid()
         current_hash = hashlib.sha256(mermaid_source.encode()).hexdigest()
+        spec.path.parent.mkdir(parents=True, exist_ok=True)
         hash_path = spec.path.with_suffix(".hash")
         if hash_path.exists() and hash_path.read_text().strip() == current_hash:
             logger.info("Graph diagram unchanged, skipping: %s (%s)", spec.path, spec.name)

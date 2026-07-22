@@ -15,6 +15,7 @@ from ai_tech_lead.backlog_repository import (
     validate_backlog_refinement_draft,
 )
 from ai_tech_lead.backlog_status import BacklogStatus
+from ai_tech_lead.backlog_store import SqliteBacklogRepository, _connect
 
 
 def test_repository_lists_gets_and_adds_markdown_items(tmp_path: Path) -> None:
@@ -202,6 +203,65 @@ def test_update_item_status_inserts_when_missing(tmp_path: Path) -> None:
 
     text = backlog_path.read_text(encoding="utf-8")
     assert "Status: In Progress" in text
+
+
+def test_complete_item_normalizes_existing_validation_prefix(tmp_path: Path) -> None:
+    backlog_path = tmp_path / "BACKLOG.md"
+    backlog_path.write_text(
+        "# Backlog\n\n## ATL-001 - Some item\n\nStatus: Backlog\n\nGoal:\nDo the thing.\n",
+        encoding="utf-8",
+    )
+    repository = MarkdownBacklogRepository(backlog_path)
+
+    item = repository.complete_item("ATL-001", "Validation: uv run pytest tests/test_one.py -q")
+
+    assert item.status == BacklogStatus.DONE
+    text = backlog_path.read_text(encoding="utf-8")
+    assert "Status: Done" in text
+    assert "Status: Backlog" not in text
+    assert text.count("Validation:") == 1
+    assert "Validation: uv run pytest tests/test_one.py -q" in text
+
+
+def test_sqlite_complete_item_updates_body_status_and_validation() -> None:
+    repository = SqliteBacklogRepository()
+
+    with _connect(repository._db_path) as conn:
+        conn.execute(
+            """INSERT INTO backlog_items
+               (item_id, title, body, priority, complexity, created_date,
+                interrupt_before_implementation, status)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                "ATL-001",
+                "Some item",
+                "\n".join(
+                    [
+                        "## ATL-001 - Some item",
+                        "",
+                        "Status: Backlog",
+                        "Priority: High",
+                        "Approval Required: no",
+                        "",
+                        "Goal:",
+                        "Do the thing.",
+                    ]
+                ),
+                "High",
+                "",
+                "2026-07-22",
+                0,
+                BacklogStatus.BACKLOG.value,
+            ),
+        )
+
+    item = repository.complete_item("ATL-001", "Validation: uv run pytest tests/test_one.py -q")
+
+    assert item.status == BacklogStatus.DONE
+    assert "Status: Done" in item.body
+    assert "Status: Backlog" not in item.body
+    assert item.body.count("Validation:") == 1
+    assert "Validation: uv run pytest tests/test_one.py -q" in item.body
 
 
 def test_update_item_status_accepts_wont_do(tmp_path: Path) -> None:

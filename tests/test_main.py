@@ -198,7 +198,11 @@ def test_main_setup_mode_bootstraps_workspace(monkeypatch, capsys) -> None:
 
 def test_main_doctor_mode_reports_workspace_health(monkeypatch, capsys) -> None:
     monkeypatch.setattr(main_module, "configure_logging", lambda *, debug=False: None)
-    monkeypatch.setattr(main_module, "doctor_workspace", lambda: type("Report", (), {"ok": True, "lines": ["OK: healthy"]})())
+    monkeypatch.setattr(
+        main_module,
+        "doctor_workspace",
+        lambda: type("Report", (), {"ok": True, "lines": ["OK: healthy"]})(),
+    )
     monkeypatch.setattr(
         main_module,
         "_parse_args",
@@ -243,7 +247,12 @@ def test_main_knowledge_store_stats_reports_summary(monkeypatch, capsys) -> None
         lambda: type(
             "Args",
             (),
-            {"debug": False, "reload": False, "command": "knowledge-store", "knowledge_command": "stats"},
+            {
+                "debug": False,
+                "reload": False,
+                "command": "knowledge-store",
+                "knowledge_command": "stats",
+            },
         )(),
     )
 

@@ -21,12 +21,12 @@ from ai_tech_lead.agent_task_runner import (
     STATUS_FAILED,
     STATUS_NEEDS_CLARIFICATION,
     STATUS_SUCCESS,
+    _map_state_to_output,
     _validate_project_root,
     run_agent_task,
 )
 from ai_tech_lead.app_settings import parse_settings
 from ai_tech_lead.approval_store import consume_approval_token, create_approval_token
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -75,7 +75,10 @@ def _approval_required_output(reason: str = "risky change") -> dict[str, Any]:
         "execution_performed": False,
         "logs": [],
         "evidence": [],
-        "next_action": "Approve via Telegram, then resubmit with human_approved=true and the approval_token.",
+        "next_action": (
+            "Approve via Telegram, then resubmit with human_approved=true and the "
+            "approval_token."
+        ),
     }
 
 
@@ -583,3 +586,108 @@ def test_successful_response_includes_all_required_fields(
     assert result["status"] == STATUS_SUCCESS
     assert result["agent_manifest"]["agent_id"] == "ai-tech-lead"
     assert result["agent_manifest"]["manifest_command"] == "uv run python -m ai_tech_lead manifest"
+
+
+class _FakeInterrupt:
+    def __init__(self, value: dict[str, Any]) -> None:
+        self.value = value
+
+
+class _FakeTask:
+    def __init__(self, value: dict[str, Any]) -> None:
+        self.interrupts = (_FakeInterrupt(value),)
+
+
+class _FakeSnapshot:
+    def __init__(self, value: dict[str, Any]) -> None:
+        self.next = ("paused",)
+        self.tasks = (_FakeTask(value),)
+
+
+def test_map_state_to_output_maps_plan_interrupt_to_needs_clarification() -> None:
+    result = _map_state_to_output(
+        "req-plan",
+        {
+            "agent_instruction": "",
+            "formulated_task": "Fix the task",
+            "brief": "",
+            "needs_approval": False,
+            "approved": False,
+            "orchestrator_input_required": False,
+            "orchestrator_input_question": "",
+            "coding_agent_success": False,
+            "coding_agent_result": "",
+            "restart_required": False,
+            "task_feedback": [],
+            "research_source_titles": [],
+        },
+        False,
+        state_snapshot=_FakeSnapshot(
+            {
+                "kind": "plan_guidance",
+                "reason": "Plan reviewer unavailable",
+                "plan_text": "",
+                "rejection_count": 0,
+            }
+        ),
+    )
+
+    assert result["status"] == STATUS_NEEDS_CLARIFICATION
+    assert "plan guidance" in result["summary"].lower()
+    assert "Plan reviewer unavailable" in result["summary"]
+
+
+def test_map_state_to_output_maps_failure_interrupt_to_needs_clarification() -> None:
+    result = _map_state_to_output(
+        "req-failure",
+        {
+            "agent_instruction": "",
+            "formulated_task": "Fix the task",
+            "brief": "",
+            "needs_approval": False,
+            "approved": False,
+            "orchestrator_input_required": False,
+            "orchestrator_input_question": "",
+            "coding_agent_success": False,
+            "coding_agent_result": "Tests failed",
+            "restart_required": False,
+            "task_feedback": [],
+            "research_source_titles": [],
+        },
+        False,
+        state_snapshot=_FakeSnapshot(
+            {
+                "kind": "failure_guidance",
+                "coding_agent_result": "Tests failed in CI",
+                "retry_count": 2,
+            }
+        ),
+    )
+
+    assert result["status"] == STATUS_NEEDS_CLARIFICATION
+    assert "repeated coding-agent failures" in result["summary"]
+    assert "Tests failed in CI" in result["summary"]
+
+
+def test_map_state_to_output_uses_failed_for_terminal_agent_failure() -> None:
+    result = _map_state_to_output(
+        "req-failed",
+        {
+            "agent_instruction": "run this",
+            "formulated_task": "Fix the task",
+            "brief": "",
+            "needs_approval": False,
+            "approved": False,
+            "orchestrator_input_required": False,
+            "orchestrator_input_question": "",
+            "coding_agent_success": False,
+            "coding_agent_result": "command exited 1",
+            "restart_required": False,
+            "task_feedback": [],
+            "research_source_titles": [],
+        },
+        True,
+    )
+
+    assert result["status"] == STATUS_FAILED
+    assert "Coding agent failed" in result["summary"]

@@ -24,7 +24,6 @@ _SUPPORTED_OUTPUT_STATUSES = [
     "success",
     "needs_clarification",
     "approval_required",
-    "blocked",
     "failed",
 ]
 

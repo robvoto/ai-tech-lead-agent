@@ -4,6 +4,14 @@ This project is a local AI technical lead orchestrator. The core product is not
 the admin UI or Telegram surface; it is the workflow that turns an explicit
 human request into a bounded coding-agent execution.
 
+## Document split
+
+Use this file for stable system boundaries: ownership, adapters, persistence,
+contracts, and module responsibilities.
+
+Use `GRAPH_WORKFLOW.md` for the node-by-node runtime path of the main coding
+workflow graph.
+
 ## Design Diagram
 
 This diagram is maintained as Mermaid text so it can evolve with the code. It is not a one-off drawing.
@@ -32,8 +40,8 @@ flowchart TD
     Human --> Admin
     Army --> ArmyRunner
 
-    Telegram -->|/run JH-###| Backlog
-    Telegram -->| Graph
+    Telegram -->|/run ATL-###| Backlog
+    Telegram --> Graph
     Backlog --> Graph
 
     Admin -->|edit local settings| Settings
@@ -64,19 +72,19 @@ The codebase currently implements two LangGraph workflows:
 
 1. `src/ai_tech_lead/coding_workflow_graph.py`
    - Exported Studio graph: `graph = build_graph()`
-   - Purpose: turn an explicit human request into a bounded coding-agent execution. See `GRAPH_WORKFLOW.md` for the node-by-node route.
+   - Purpose: turn an explicit human request into a bounded coding-agent execution. See `GRAPH_WORKFLOW.md` for the node-by-node route and interrupt/resume flow.
    - Main responsibilities: research gating, risk review, clarification handling, planning, approval routing, agent-instruction creation, and controlled coding-agent execution.
    - Studio registration: this is the only graph currently listed in `langgraph.json`.
-   - Local PNG export: [graph_diagram.png](graph_diagram.png)
+   - Local PNG export: [graph_diagram.png](diagrams/graph_diagram.png)
 
 2. `src/ai_tech_lead/telegram_agent_graph.py`
    - Exported entrypoint: `build_telegram_agent_graph(...)`
    - Purpose: provide a read-only Telegram agent for backlog Q&A and safe tool use.
    - Main responsibilities: chat-thread message handling, tool binding, backlog read-only tools, and reply generation.
    - Studio registration: not exported in `langgraph.json`; it is used by the Telegram operator at runtime.
-   - Local PNG export: [telegram_agent_graph.png](telegram_agent_graph.png)
+   - Local PNG export: [telegram_agent_graph.png](diagrams/telegram_agent_graph.png)
 
-The helper `src/ai_tech_lead/graph_diagrams.py` refreshes both PNGs in `docs/` so the diagrams stay visible without needing to hunt for the rendering code.
+The helper `src/ai_tech_lead/graph_diagrams.py` refreshes both PNGs in `docs/diagrams/` so the diagrams stay visible without needing to hunt for the rendering code.
 
 Supporting modules such as `src/ai_tech_lead/backlog_graph_runner.py` call the coding workflow graph builder, but they are runners/adapters rather than separate graph implementations.
 
@@ -88,6 +96,8 @@ Supporting modules such as `src/ai_tech_lead/backlog_graph_runner.py` call the c
   Telegram is the human-facing bot for AI Tech Lead: use it directly when you want to talk to the coding agent from chat.
   It must call the bounded workflow and must not become a second agent brain.
   Agent Army enters through `run-agent-task`, which validates the JSON contract before handing the task to the graph.
+  Agent Hub owns Hub-facing orchestration, paused-run bookkeeping, and the operator UX for resume/approval.
+  AI Tech Lead owns the specialist-internal graph, prompts, approvals, and the mapping from internal pauses to the Hub-facing status contract.
   Future adapters may include web or other chat surfaces.
 - Backlog storage must stay behind a repository boundary. The current runtime backlog is `data/backlog.sqlite3`; the Excel workbook `data/backlog/ai_tech_lead_backlog.xlsx` is the human-review/planning workbook; the archived Markdown source/backup lives at `data/backlog/archive/BACKLOG.md`.
 - Backlog loading parses local task data and converts one selected item into
@@ -125,6 +135,12 @@ This section replaces the standalone `ARMY_INTEGRATION.md` page. Keep the Army h
 - `execution_mode` is a request, not a grant. `instruction_only` is the safe default.
 - `human_approved=true` must carry a matching one-time token issued for the same request and task.
 - Output is structured JSON with status, summary, formulated task, brief, coding-agent instruction, backend used, execution flag, logs, evidence, next action, and a tiny `agent_manifest` reference.
+- Supported Hub-facing statuses are:
+  - `success` - work completed or an instruction package is ready.
+  - `needs_clarification` - Hub should collect human text input and resubmit an updated task.
+  - `approval_required` - Hub should collect explicit approval and resubmit with `human_approved=true` plus the issued `approval_token`.
+  - `failed` - terminal failure; Hub should report the error instead of waiting for resume.
+- Specialist-internal interrupts that expect human text, such as plan guidance or repeated coding-agent failure guidance, must be translated into `needs_clarification` on this subprocess boundary instead of leaking a generic paused/blocked state to Hub.
 - Army should rely on that bounded JSON contract rather than reading the full codebase.
 - Telegram is only a relay and operator surface; it does not replace the Army contract.
 
@@ -154,7 +170,7 @@ surface becomes important enough to protect.
 Telegram is the human-facing bot for AI Tech Lead and the normal way to talk
 to the coding agent from a phone. Normal text goes through a Telegram intent
 router first; the router may classify the message, but it must not execute the
-configured coding agent or mutate the backlog by itself. Explicit `/run JH-###`
+configured coding agent or mutate the backlog by itself. Explicit `/run ATL-###`
 selects a backlog task. Explicit `/code` starts the bounded coding workflow.
 
 Current Telegram constraints:

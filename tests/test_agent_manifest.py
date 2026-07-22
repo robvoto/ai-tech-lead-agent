@@ -23,6 +23,12 @@ def test_build_agent_manifest_contains_core_contract_fields() -> None:
     assert manifest["entrypoints"]["manifest"] == "manifest"
     assert manifest["entrypoints"]["json_subprocess"] == "run-agent-task"
     assert "agent_manifest" in manifest["output_contract"]["fields"]
+    assert manifest["output_contract"]["status_values"] == [
+        "success",
+        "needs_clarification",
+        "approval_required",
+        "failed",
+    ]
     assert manifest["runtime"]["project_root"] == settings.project_root
     assert manifest["runtime"]["knowledge_store_path"] == settings.knowledge_store_path
     assert len(manifest["manifest_hash"]) == 64

@@ -17,11 +17,17 @@ Use when creating, parsing, selecting, updating, or explaining backlog items.
 - Do not mark work done without validation evidence.
 - Preserve the human’s original intent when formatting or converting backlog items.
 
-## Current local prototype convention
-- Local backlog path: `data/backlog/ai_tech_lead_backlog.xlsx`.
-- Normal task selection uses Telegram, for example `/run JH-001`.
+## Current local backlog ownership
+- Human planning backlog decisions live in the Google Sheet listed in `docs/INDEX.md`.
+- Runtime reads and updates the local SQLite backlog at `data/backlog.sqlite3`.
+- The workbook `data/backlog/ai_tech_lead_backlog.xlsx` is a historical comparison/import source, not the live runtime source of truth.
+- Normal task selection uses Telegram, for example `/run ATL-001`.
 - There is no `--task-id` CLI flag in the current app entrypoint.
-- The old Markdown backlog format is historical only; do not author new items in that format.
+- The old Markdown backlog format is historical only; do not author new items in that format unless a targeted migration task explicitly requires it.
+
+## Hub boundary
+- Agent Hub may ask AI Tech Lead to work on an explicit task, but backlog ownership stays local to this repo.
+- Do not add silent alternate backlog sources or let Hub-facing orchestration redefine backlog truth.
 
 ## Future selection direction
 Additional input adapters may select tasks through explicit mechanisms:

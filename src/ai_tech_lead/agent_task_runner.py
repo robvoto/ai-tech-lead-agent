@@ -24,8 +24,8 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from .app_settings import load_settings
 from .agent_manifest import agent_manifest_reference
+from .app_settings import load_settings
 from .logging_setup import LOGGER_NAME
 
 logger = logging.getLogger(LOGGER_NAME)
@@ -33,7 +33,6 @@ logger = logging.getLogger(LOGGER_NAME)
 STATUS_SUCCESS = "success"
 STATUS_NEEDS_CLARIFICATION = "needs_clarification"
 STATUS_APPROVAL_REQUIRED = "approval_required"
-STATUS_BLOCKED = "blocked"
 STATUS_FAILED = "failed"
 ALLOWED_EXECUTION_MODES = {"instruction_only", "execute"}
 
@@ -84,7 +83,8 @@ def run_agent_task(input_path: str | Path, output_path: str | Path) -> int:
     project_root = _validate_project_root(project_root_raw, settings)
     if project_root is None and project_root_raw is not None:
         msg = (
-            f"project_root '{project_root_raw}' is not in the army_allowed_project_roots allowlist. "
+            f"project_root '{project_root_raw}' is not in the "
+            "army_allowed_project_roots allowlist. "
             "Add it to data/coding_agent_settings.json to permit this path."
         )
         _write_output(output_file, _error_response(request_id, msg), settings=settings)
@@ -222,11 +222,21 @@ def _execute_workflow(
     }
 
     final_state = graph.invoke(initial_state, config=config)
-    return _map_state_to_output(request_id, final_state, execute_coding_agent)
+    state_snapshot = graph.get_state(config)
+    return _map_state_to_output(
+        request_id,
+        final_state,
+        execute_coding_agent,
+        state_snapshot=state_snapshot,
+    )
 
 
 def _map_state_to_output(
-    request_id: str, state: dict[str, Any], execute_coding_agent: bool
+    request_id: str,
+    state: dict[str, Any],
+    execute_coding_agent: bool,
+    *,
+    state_snapshot: Any | None = None,
 ) -> dict[str, Any]:
     agent_instruction = state.get("agent_instruction", "")
     formulated_task = state.get("formulated_task", "")
@@ -238,8 +248,31 @@ def _map_state_to_output(
     coding_agent_success = state.get("coding_agent_success")
     coding_agent_result = state.get("coding_agent_result", "")
     restart_required = state.get("restart_required", False)
+    pending_interrupt = _pending_interrupt_value(state_snapshot)
+    pending_interrupt_kind = (
+        str(pending_interrupt.get("kind", "")).strip()
+        if isinstance(pending_interrupt, dict)
+        else ""
+    )
 
-    if orchestrator_input_required:
+    if pending_interrupt_kind == "plan_guidance":
+        reason = str(pending_interrupt.get("reason", "")).strip()
+        summary = "Clarification needed: human plan guidance is required."
+        if reason:
+            summary = f"{summary} Reason: {reason}"
+        status = STATUS_NEEDS_CLARIFICATION
+        next_action = "Provide plan guidance and resubmit the task."
+    elif pending_interrupt_kind == "failure_guidance":
+        status = STATUS_NEEDS_CLARIFICATION
+        result_excerpt = str(pending_interrupt.get("coding_agent_result", "")).strip()
+        summary = (
+            "Clarification needed: human guidance is required after repeated "
+            "coding-agent failures."
+        )
+        if result_excerpt:
+            summary = f"{summary} Last result: {result_excerpt[:200]}"
+        next_action = "Provide corrective guidance and resubmit the task."
+    elif orchestrator_input_required:
         status = STATUS_NEEDS_CLARIFICATION
         summary = f"Clarification needed: {orchestrator_input_question}"
         next_action = f"Answer the question and resubmit: {orchestrator_input_question}"
@@ -250,7 +283,7 @@ def _map_state_to_output(
             "Approve via Telegram, then resubmit with human_approved=true and the approval_token."
         )
     elif restart_required:
-        status = STATUS_BLOCKED
+        status = STATUS_FAILED
         summary = "Agent workflow requires a restart."
         next_action = "Retry the task from scratch."
     elif agent_instruction:
@@ -258,7 +291,7 @@ def _map_state_to_output(
             status = STATUS_SUCCESS
             summary = "Task completed successfully by the coding agent."
         elif coding_agent_success is False:
-            status = STATUS_BLOCKED
+            status = STATUS_FAILED
             summary = f"Coding agent failed: {coding_agent_result[:200]}"
         else:
             status = STATUS_SUCCESS
@@ -267,7 +300,7 @@ def _map_state_to_output(
             "Review output." if coding_agent_success else "Submit instruction to coding backend."
         )
     else:
-        status = STATUS_BLOCKED
+        status = STATUS_FAILED
         summary = "Workflow completed without producing an instruction."
         next_action = "Check logs and retry with more specific task description."
 
@@ -284,6 +317,24 @@ def _map_state_to_output(
         "evidence": list(state.get("research_source_titles", [])),
         "next_action": next_action,
     }
+
+
+def _pending_interrupt_value(state_snapshot: Any | None) -> dict[str, Any] | None:
+    """Return the first interrupt payload from a paused graph snapshot, if present."""
+
+    if state_snapshot is None or not getattr(state_snapshot, "next", ()):
+        return None
+
+    tasks = getattr(state_snapshot, "tasks", ())
+    if not tasks:
+        return None
+
+    interrupts = getattr(tasks[0], "interrupts", ())
+    if not interrupts:
+        return None
+
+    value = getattr(interrupts[0], "value", None)
+    return value if isinstance(value, dict) else None
 
 
 def _error_response(request_id: str, message: str, detail: str = "") -> dict[str, Any]:

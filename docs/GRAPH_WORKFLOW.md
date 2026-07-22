@@ -2,11 +2,20 @@
 
 This document describes the implemented coding workflow graph in `src/ai_tech_lead/coding_workflow_graph.py`.
 
+## Document split
+
+Use this file for the runtime path of the main coding workflow: node order,
+interrupts, resume behavior, and loops.
+
+Use `ARCHITECTURE.md` for stable boundaries such as adapter ownership,
+Agent Hub versus AI Tech Lead responsibilities, persistence, and the
+subprocess contract.
+
 ## Purpose
 
 The graph turns an explicit human request or backlog item into a bounded coding-agent handoff. It orchestrates the tech lead thinking — clarification, analysis, planning, and execution — while keeping the human in control.
 
-Visual preview: [graph_diagram.png](graph_diagram.png)
+Visual preview: [graph_diagram.png](diagrams/graph_diagram.png)
 
 
 

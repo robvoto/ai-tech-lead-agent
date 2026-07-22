@@ -42,7 +42,7 @@ See `docs/ARCHITECTURE.md` for the Army contract and safety boundary.
 AI Tech Lead also has a human-facing Telegram bot for direct use by you. When Telegram is enabled in local settings, the bot runs the coding-agent workflow interactively from chat:
 
 - use it for direct coding requests from Telegram
-- use `/run JH-###` to trigger a backlog item
+- use `/run ATL-###` to trigger a backlog item
 - use `/code` for an explicit coding workflow
 
 The Telegram bot is the direct human entry point; Agent Army is the non-interactive subprocess entry point.
@@ -65,7 +65,7 @@ uv run python -m ai_tech_lead --debug --reload
 Trigger backlog tasks through Telegram, for example:
 
 ```text
-/run JH-001
+/run ATL-001
 ```
 
 Bootstrap a fresh workspace or inspect local health:

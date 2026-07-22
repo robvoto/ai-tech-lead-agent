@@ -46,7 +46,7 @@ uv run python -m ai_tech_lead --debug --reload
 Trigger backlog tasks through Telegram, for example:
 
 ```text
-/run JH-001
+/run ATL-001
 ```
 
 Telegram is the human-facing bot for the AI Tech Lead coding agent. Use it when you want to interact with the coding workflow directly from chat.
@@ -83,6 +83,8 @@ The input JSON must include `task`. Common optional fields are `request_id`, `so
 - `project_root` is accepted only when it matches one of `settings.army_allowed_project_roots`.
 - If `human_approved` is true, the request must include the matching one-time `approval_token`
   previously issued for the same `request_id` and task.
+- Hub-facing responses use `success`, `needs_clarification`, `approval_required`, and `failed`.
+- Human-text pauses inside the specialist workflow, such as plan guidance or repeated failure guidance, are surfaced here as `needs_clarification`.
 
 ## Admin UI
 
