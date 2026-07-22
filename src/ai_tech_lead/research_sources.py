@@ -61,6 +61,7 @@ def collect_local_research_sources(
     """Collect relevant sources from the configured local documentation indexes."""
 
     request_terms = _request_terms(request)
+    _log_research_request("Local research selection", request, request_terms)
     candidates: list[tuple[int, ResearchSource]] = []
 
     for index_path_text in settings.research_local_index_paths:
@@ -118,7 +119,13 @@ def collect_online_research_sources(
     """Fetch a bounded set of approved online documentation pages in parallel."""
 
     request_terms = _request_terms(request)
+    _log_research_request("Online research selection", request, request_terms)
     selected_urls = settings.research_online_source_urls[: settings.research_max_online_source_urls]
+    logger.debug(
+        "[LEARN] Online research candidate URLs (%d): %s",
+        len(selected_urls),
+        ", ".join(selected_urls) if selected_urls else "<none>",
+    )
     sources: list[tuple[int, ResearchSource]] = []
 
     def _fetch(url: str) -> tuple[str, ResearchSource | None]:
@@ -139,11 +146,24 @@ def collect_online_research_sources(
         if source is None:
             continue
         score = _score_text(request_terms, " ".join([source.title, source.summary, source.excerpt]))
+        _log_scored_candidate(
+            label="Online research candidate",
+            score=score,
+            source=source,
+            matched_terms=_matched_request_terms(
+                request_terms, " ".join([source.title, source.summary, source.excerpt])
+            ),
+        )
         sources.append((score, source))
 
     sources.sort(key=lambda item: (-item[0], item[1].title.lower(), item[1].location))
     selected = [source for score, source in sources if score > 0]
     if not selected:
+        logger.debug(
+            "[LEARN] Online research selection fallback: no positive-scoring sources matched "
+            "request terms; returning all %d fetched source(s).",
+            len(sources),
+        )
         selected = [source for _, source in sources]
 
     _log_selected_sources("Online research selection", selected)
@@ -196,6 +216,41 @@ def _log_selected_sources(label: str, sources: list[ResearchSource]) -> None:
     )
 
 
+def _log_research_request(label: str, request: str, request_terms: set[str]) -> None:
+    logger.debug("[LEARN] %s request: %s", label, " ".join(request.split()))
+    if request_terms:
+        logger.debug(
+            "[LEARN] %s request terms (%d): %s",
+            label,
+            len(request_terms),
+            ", ".join(sorted(request_terms)),
+        )
+        return
+    logger.debug(
+        "[LEARN] %s request terms: none extracted from 4+ character tokens; "
+        "relevance scoring may fall back to broad selection.",
+        label,
+    )
+
+
+def _log_scored_candidate(
+    *,
+    label: str,
+    score: int,
+    source: ResearchSource,
+    matched_terms: list[str],
+) -> None:
+    logger.debug(
+        "[LEARN] %s: score=%d matched_terms=%s source=%s:%s location=%s",
+        label,
+        score,
+        ",".join(matched_terms) if matched_terms else "<none>",
+        source.source_kind,
+        source.title,
+        source.location,
+    )
+
+
 def _score_docs_index_entries(
     *,
     index_path: Path,
@@ -218,17 +273,25 @@ def _score_docs_index_entries(
 
         title = Path(relative_path).name
         excerpt = _extract_local_excerpt(doc_path, max_excerpt_chars=max_excerpt_chars)
-        score = _score_text(request_terms, " ".join([title, summary, excerpt, relative_path]))
+        searchable_text = " ".join([title, summary, excerpt, relative_path])
+        score = _score_text(request_terms, searchable_text)
+        source = ResearchSource(
+            title=title,
+            location=str(doc_path.relative_to(project_root)),
+            summary=summary,
+            excerpt=excerpt,
+            source_kind="local-doc",
+        )
+        _log_scored_candidate(
+            label="Local docs candidate",
+            score=score,
+            source=source,
+            matched_terms=_matched_request_terms(request_terms, searchable_text),
+        )
         candidates.append(
             (
                 score,
-                ResearchSource(
-                    title=title,
-                    location=str(doc_path.relative_to(project_root)),
-                    summary=summary,
-                    excerpt=excerpt,
-                    source_kind="local-doc",
-                ),
+                source,
             )
         )
     return candidates
@@ -248,20 +311,25 @@ def _score_research_cache_entries(
         summary = refreshed_entry.summary.strip()
         excerpt = _truncate_text(refreshed_entry.body.strip(), max_excerpt_chars)
         relative_location = _relative_path_text(entry.path, project_root)
-        score = _score_text(
-            request_terms,
-            " ".join([refreshed_entry.title, summary, excerpt, relative_location]),
+        searchable_text = " ".join([refreshed_entry.title, summary, excerpt, relative_location])
+        score = _score_text(request_terms, searchable_text)
+        source = ResearchSource(
+            title=refreshed_entry.title,
+            location=relative_location,
+            summary=summary,
+            excerpt=excerpt,
+            source_kind="local-research",
+        )
+        _log_scored_candidate(
+            label="Local research cache candidate",
+            score=score,
+            source=source,
+            matched_terms=_matched_request_terms(request_terms, searchable_text),
         )
         candidates.append(
             (
                 score,
-                ResearchSource(
-                    title=refreshed_entry.title,
-                    location=relative_location,
-                    summary=summary,
-                    excerpt=excerpt,
-                    source_kind="local-research",
-                ),
+                source,
             )
         )
     return candidates
@@ -456,6 +524,11 @@ def _request_terms(request: str) -> set[str]:
 def _score_text(request_terms: set[str], text: str) -> int:
     normalized = text.lower()
     return sum(1 for term in request_terms if term in normalized)
+
+
+def _matched_request_terms(request_terms: set[str], text: str) -> list[str]:
+    normalized = text.lower()
+    return [term for term in sorted(request_terms) if term in normalized]
 
 
 def _resolve_path(path_text: str, project_root: str) -> Path:

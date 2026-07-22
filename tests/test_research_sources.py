@@ -14,7 +14,7 @@ from ai_tech_lead.research_sources import (
 
 
 def test_collect_local_research_sources_uses_local_indexes(tmp_path: Path, caplog) -> None:
-    caplog.set_level(logging.INFO)
+    caplog.set_level(logging.DEBUG)
     docs_dir = tmp_path / "docs"
     research_dir = docs_dir / "research"
     research_dir.mkdir(parents=True)
@@ -72,10 +72,13 @@ def test_collect_local_research_sources_uses_local_indexes(tmp_path: Path, caplo
     assert "Local research selection: selected 2 source(s)" in caplog.text
     assert "1 local-doc" in caplog.text
     assert "1 local-research" in caplog.text
+    assert "Local research selection request terms" in caplog.text
+    assert "Local docs candidate: score=" in caplog.text
+    assert "Local research cache candidate: score=" in caplog.text
 
 
 def test_collect_online_research_sources_fetches_bounded_docs(monkeypatch, caplog) -> None:
-    caplog.set_level(logging.INFO)
+    caplog.set_level(logging.DEBUG)
     settings = replace(
         parse_settings(valid_settings_dict()),
         research_online_source_urls=[
@@ -141,6 +144,9 @@ def test_collect_online_research_sources_fetches_bounded_docs(monkeypatch, caplo
     assert "Command(resume={" in sources[0].summary
     assert "Online research selection: selected 1 source(s)" in caplog.text
     assert "1 online-doc" in caplog.text
+    assert "Online research selection request terms" in caplog.text
+    assert "Online research candidate URLs (1)" in caplog.text
+    assert "Online research candidate: score=" in caplog.text
 
 
 def test_collect_online_research_sources_handles_markdown_text(monkeypatch) -> None:
