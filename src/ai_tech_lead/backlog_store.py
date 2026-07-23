@@ -1,12 +1,10 @@
 """SQLite-backed backlog repository.
 
-Replaces the Excel workbook path with a persistent SQLite store.
-On first use it migrates any existing Excel data (best-effort, silent if missing).
+Persistent SQLite store for the runtime backlog.
 """
 
 from __future__ import annotations
 
-import logging
 import re
 import sqlite3
 from contextlib import contextmanager
@@ -30,8 +28,6 @@ from .backlog_repository import (
 )
 from .backlog_status import BacklogStatus, backlog_status_choices, normalize_backlog_status
 from .config import DATA_DIR, ensure_project_dirs
-
-logger = logging.getLogger(__name__)
 
 __all__ = ["BACKLOG_DB_PATH", "SqliteBacklogRepository", "format_backlog_list_item"]
 
@@ -116,41 +112,6 @@ class SqliteBacklogRepository:
     def __init__(self, db_path: Path | None = None) -> None:
         self._db_path = db_path or BACKLOG_DB_PATH
         ensure_project_dirs()
-        self._ensure_migrated()
-
-    def _ensure_migrated(self) -> None:
-        with _connect(self._db_path) as conn:
-            count = conn.execute("SELECT COUNT(*) FROM backlog_items").fetchone()[0]
-        if count == 0:
-            self._migrate_from_excel()
-
-    def _migrate_from_excel(self) -> None:
-        """One-time migration from the Excel workbook if it exists."""
-        try:
-            from .backlog_repository import MarkdownBacklogRepository
-            from .config import PROJECT_ROOT
-
-            excel_path = PROJECT_ROOT / "data" / "backlog" / "ai_tech_lead_backlog.xlsx"
-            if not excel_path.exists():
-                return
-            repo = MarkdownBacklogRepository(excel_path)
-            items = repo.list_items()
-            if not items:
-                return
-            with _connect(self._db_path) as conn:
-                for item in items:
-                    row = _item_to_row(item)
-                    conn.execute(
-                        """INSERT OR IGNORE INTO backlog_items
-                           (item_id, title, body, priority, complexity, created_date,
-                            interrupt_before_implementation, status)
-                           VALUES (:item_id, :title, :body, :priority, :complexity,
-                                   :created_date, :interrupt_before_implementation, :status)""",
-                        row,
-                    )
-            logger.info("Migrated %d backlog items from Excel to SQLite.", len(items))
-        except Exception as exc:
-            logger.warning("Excel migration skipped: %s", exc)
 
     def list_items(self) -> list[BacklogItem]:
         with _connect(self._db_path) as conn:

@@ -8,7 +8,6 @@ dependencies = [
   "langgraph",
   "langchain-core",
   "langchain-openai",
-  "openpyxl>=3.1.5",
   "langgraph-checkpoint-sqlite>=3.1.0",
   "langmem>=0.0.30",
 ]
