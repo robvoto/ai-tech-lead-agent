@@ -104,6 +104,31 @@ def test_missing_run_id_uses_noop_sink() -> None:
     assert stream.getvalue() == ""
 
 
+def test_progress_jsonl_input_writes_to_file_not_stdout(tmp_path) -> None:
+    progress_path = tmp_path / "progress.jsonl"
+    stream = io.StringIO()
+    reporter = progress_reporter_from_input(
+        {
+            "request_id": "req-1",
+            "run_id": "run-1",
+            "task": "do work",
+            "progress_jsonl": str(progress_path),
+        },
+        request_id="req-1",
+        stream=stream,
+    )
+
+    assert reporter.enabled is True
+    assert reporter.started() is True
+    assert stream.getvalue() == ""
+
+    events = [
+        json.loads(line) for line in progress_path.read_text().splitlines() if line.strip()
+    ]
+    assert [event["event_type"] for event in events] == ["start"]
+    assert events[0]["run_id"] == "run-1"
+
+
 def test_workflow_message_translation_does_not_forward_plan_or_rejection_text() -> None:
     stream = io.StringIO()
     reporter = ProgressReporter(

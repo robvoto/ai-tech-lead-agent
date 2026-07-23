@@ -1,8 +1,11 @@
 """Transport-neutral specialist progress reporting for Hub subprocess calls.
 
-The public event shape is framework-neutral. The local subprocess adapter writes
-one JSON object per line to stdout; normal and debug logs remain on stderr.
-The existing final result continues to be written to the caller-provided JSON file.
+The public event shape is framework-neutral. When the caller (Hub) supplies a
+progress_jsonl file path, the subprocess adapter appends one JSON object per line
+to that file — Hub tails the file, not this process's stdout. Without a file path,
+events fall back to stdout for local/manual invocation. Normal and debug logs
+always stay on stderr. The existing final result continues to be written to the
+caller-provided JSON file.
 """
 
 from __future__ import annotations
@@ -16,6 +19,7 @@ import time
 from collections.abc import Mapping
 from contextlib import contextmanager
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Protocol, TextIO
 
 from .logging_setup import LOGGER_NAME
@@ -151,6 +155,76 @@ class StdoutJsonlProgressSink:
                 self._enabled = False
                 logger.warning(
                     "[SUBPROCESS][PROGRESS] Progress stream disabled after write failure: %s",
+                    exc,
+                )
+                return False
+        return True
+
+
+class FileJsonlProgressSink:
+    """Append validated progress events as JSONL to a caller-provided file path.
+
+    This is Hub's actual subprocess contract: Hub polls this file, not stdout.
+    """
+
+    def __init__(
+        self,
+        *,
+        run_id: str,
+        request_id: str,
+        path: Path,
+    ) -> None:
+        self._run_id = _required_identifier(run_id, field="run_id")
+        self._request_id = _required_identifier(request_id, field="request_id")
+        self._path = path
+        self._sequence = 0
+        self._lock = threading.Lock()
+        self._enabled = True
+
+    @property
+    def enabled(self) -> bool:
+        return self._enabled
+
+    def emit(
+        self,
+        *,
+        event_type: str,
+        phase: str,
+        human_summary: str,
+        metadata: Mapping[str, Any] | None = None,
+    ) -> bool:
+        if not self._enabled:
+            return False
+
+        normalized_event = _validated_event_type(event_type)
+        normalized_phase = _validated_phase(phase)
+        normalized_summary = _bounded_summary(human_summary)
+        normalized_metadata = _bounded_metadata(metadata)
+
+        with self._lock:
+            if not self._enabled:
+                return False
+            self._sequence += 1
+            payload = {
+                "schema_version": PROGRESS_SCHEMA_VERSION,
+                "run_id": self._run_id,
+                "request_id": self._request_id,
+                "sequence": self._sequence,
+                "event_type": normalized_event,
+                "phase": normalized_phase,
+                "human_summary": normalized_summary,
+                "occurred_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                "metadata": normalized_metadata,
+            }
+            try:
+                with self._path.open("a", encoding="utf-8") as handle:
+                    handle.write(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
+                    handle.write("\n")
+                    handle.flush()
+            except OSError as exc:
+                self._enabled = False
+                logger.warning(
+                    "[SUBPROCESS][PROGRESS] Progress file disabled after write failure: %s",
                     exc,
                 )
                 return False
@@ -354,12 +428,21 @@ def progress_reporter_from_input(
     run_id = task_input.get("run_id")
     if not isinstance(run_id, str) or not run_id.strip():
         return ProgressReporter()
+
+    progress_jsonl = task_input.get("progress_jsonl")
     try:
-        sink = StdoutJsonlProgressSink(
-            run_id=run_id,
-            request_id=request_id,
-            stream=stream,
-        )
+        if isinstance(progress_jsonl, str) and progress_jsonl.strip():
+            sink: ProgressSink = FileJsonlProgressSink(
+                run_id=run_id,
+                request_id=request_id,
+                path=Path(progress_jsonl),
+            )
+        else:
+            sink = StdoutJsonlProgressSink(
+                run_id=run_id,
+                request_id=request_id,
+                stream=stream,
+            )
     except ValueError as exc:
         logger.warning("[SUBPROCESS][PROGRESS] Live progress disabled: %s", exc)
         return ProgressReporter()
