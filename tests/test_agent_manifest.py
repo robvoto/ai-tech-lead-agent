@@ -22,9 +22,11 @@ def test_build_agent_manifest_contains_core_contract_fields() -> None:
     assert manifest["agent_name"] == "AI Tech Lead"
     assert manifest["purpose"] == (
         "Primary responsibility: Lead and execute changes to existing software.\n"
-        "Select for: Code review, implementation, debugging, testing, refactoring, "
-        "architecture guidance, documentation changes, and backlog delivery for existing software.\n"
-        "Do not select for: Designing, staging, approving, or promoting new specialist agent packages."
+        "Select for: Implementing backlog items or modifying code, tests, configuration, "
+        "architecture, or documentation in an existing repository, including Agent Factory, "
+        "Agent Hub, AI Tech Lead, or another existing software project.\n"
+        "Do not select for: Designing, staging, approving, rejecting, or promoting a new "
+        "specialist agent package as the requested deliverable."
     )
     assert "one_line" not in manifest
     assert "capabilities" not in manifest

@@ -47,9 +47,11 @@ def build_agent_manifest(settings: AppSettings | None = None) -> dict[str, Any]:
         "role": "specialist coding lead callable through a bounded local subprocess contract",
         "purpose": (
             "Primary responsibility: Lead and execute changes to existing software.\n"
-            "Select for: Code review, implementation, debugging, testing, refactoring, "
-            "architecture guidance, documentation changes, and backlog delivery for existing software.\n"
-            "Do not select for: Designing, staging, approving, or promoting new specialist agent packages."
+            "Select for: Implementing backlog items or modifying code, tests, configuration, "
+            "architecture, or documentation in an existing repository, including Agent Factory, "
+            "Agent Hub, AI Tech Lead, or another existing software project.\n"
+            "Do not select for: Designing, staging, approving, rejecting, or promoting a new "
+            "specialist agent package as the requested deliverable."
         ),
         "manifest_cache_ttl_seconds": MANIFEST_CACHE_TTL_SECONDS,
         "entrypoints": {
