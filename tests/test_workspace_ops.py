@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from types import SimpleNamespace
 from pathlib import Path
+from types import SimpleNamespace
 
 import ai_tech_lead.workspace_ops as workspace_ops
 
@@ -32,7 +32,9 @@ def test_bootstrap_workspace_initializes_expected_paths(monkeypatch, tmp_path: P
             knowledge_store_path="data/knowledge_store.sqlite3",
         ),
     )
-    monkeypatch.setattr(workspace_ops, "initialize_database", lambda: tmp_data / "ai_tech_lead.sqlite3")
+    monkeypatch.setattr(
+        workspace_ops, "initialize_database", lambda: tmp_data / "ai_tech_lead.sqlite3"
+    )
     monkeypatch.setattr(workspace_ops, "get_checkpointer", lambda: object())
 
     created_backlog_paths: list[Path] = []

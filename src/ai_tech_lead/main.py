@@ -14,7 +14,7 @@ from typing import Callable, Sequence
 from ai_tech_lead.admin_server import run_admin_server
 from ai_tech_lead.agent_manifest import render_agent_manifest
 from ai_tech_lead.app_settings import AppSettings, load_settings
-from ai_tech_lead.config import CODING_AGENT_LOCK_FILE, PROJECT_ROOT, SETTINGS_PATH
+from ai_tech_lead.config import PROJECT_ROOT, SETTINGS_PATH
 from ai_tech_lead.graph_diagrams import export_graph_diagrams
 from ai_tech_lead.knowledge_store import (
     backup_knowledge_store,
@@ -24,6 +24,7 @@ from ai_tech_lead.knowledge_store import (
 )
 from ai_tech_lead.logging_setup import LOGGER_NAME, configure_logging
 from ai_tech_lead.project_pack_templates import bootstrap_project_pack
+from ai_tech_lead.runtime_lock import list_active_project_execution_locks
 from ai_tech_lead.storage import initialize_database
 from ai_tech_lead.telegram_operator import run_telegram_operator
 from ai_tech_lead.workspace_ops import bootstrap_workspace, doctor_workspace
@@ -273,14 +274,14 @@ def _run_with_reload(command_args: Sequence[str]) -> int:
 
                 current_snapshot = _reload_snapshot(watched_paths)
                 if current_snapshot != previous_snapshot:
-                    if CODING_AGENT_LOCK_FILE.exists():
+                    if _project_execution_active():
                         logger.info(
                             "Source change detected but coding agent is running; deferring restart."
                         )
                         deadline = time.time() + _RELOAD_AGENT_LOCK_WAIT_SECONDS
-                        while CODING_AGENT_LOCK_FILE.exists() and time.time() < deadline:
+                        while _project_execution_active() and time.time() < deadline:
                             time.sleep(_RELOAD_POLL_INTERVAL_SECONDS)
-                        if CODING_AGENT_LOCK_FILE.exists():
+                        if _project_execution_active():
                             logger.warning(
                                 "Timed out waiting for coding agent to finish; restarting now."
                             )
@@ -299,6 +300,10 @@ def _run_with_reload(command_args: Sequence[str]) -> int:
 
 def _reload_watched_paths() -> tuple[Path, ...]:
     return tuple(PROJECT_ROOT / relative_path for relative_path in _RELOAD_WATCHED_DIRECTORIES)
+
+
+def _project_execution_active() -> bool:
+    return bool(list_active_project_execution_locks())
 
 
 def _reload_snapshot(paths: Sequence[Path]) -> dict[str, int]:

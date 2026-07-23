@@ -127,6 +127,8 @@ Supporting modules such as `src/ai_tech_lead/backlog_graph_runner.py` call the c
   returned JSON by `manifest_hash`, and refresh only when the hash changes. If the
   manifest includes `manifest_cache_ttl_seconds`, callers may use that as the
   freshness window for re-fetching the full manifest.
+- `run-agent-task` uses an in-memory LangGraph checkpointer per subprocess invocation,
+  so subprocess checkpoints are not shared across concurrent runs.
 - LangChain/LangGraph tools, when added, are executable capabilities exposed to an LLM or graph. They are different from this repository's `.skills`, which are reusable coding-agent instructions.
 - Admin UI is optional local tooling for editing settings. Browser code keeps HTML, CSS, and JavaScript separated. HTML owns structure, CSS owns presentation, and JavaScript owns behaviour. Browser JavaScript uses ES modules.
 - UI field schemas, API paths, labels, and other UI configuration should move to JSON or API-provided configuration when they become shared, large, or reused. Small local constants are acceptable only when they are explicit and easy to replace.
@@ -138,10 +140,16 @@ This section replaces the standalone `ARMY_INTEGRATION.md` page. Keep the bounde
 
 - A caller invokes AI Tech Lead through `run-agent-task`.
 - A caller discovers the callable contract through `uv run python -m ai_tech_lead manifest`.
-- Input is JSON with a task string plus bounded metadata such as `request_id`, `source`, `project_root`, `execution_mode`, `human_approved`, and `approval_token`.
+- Input is JSON with a task string plus bounded metadata such as `request_id`, optional Hub `run_id`, `source`, `project_root`, `execution_mode`, `human_approved`, and `approval_token`.
 - `execution_mode` is a request, not a grant. `instruction_only` is the safe default.
 - `human_approved=true` must carry a matching one-time token issued for the same request and task.
 - Output is structured JSON with status, summary, formulated task, brief, coding-agent instruction, backend used, execution flag, logs, evidence, next action, machine-readable caller action fields, and a tiny `agent_manifest` reference.
+- When a caller supplies `run_id`, AI Tech Lead also emits versioned `SpecialistProgressEvent` JSONL on stdout while it runs. Normal/debug logs stay on stderr, and the final structured result remains in the caller-provided output JSON file.
+- Progress events contain `schema_version`, `run_id`, `request_id`, monotonic `sequence`, `event_type`, stable `phase`, bounded `human_summary`, `occurred_at`, and allowlisted bounded metadata.
+- Progress is operational telemetry only. It must not expose chain-of-thought, raw plan text, full prompts, secrets, raw coding-agent/provider output, or unbounded logs.
+- Existing LangGraph/coding-runner callbacks are translated into stable external phases. Future Deep Agent custom/task events must pass through the same translation boundary instead of leaking framework-specific events to Hub.
+- Deterministic specialist heartbeats may be emitted after a genuinely quiet interval without additional LLM calls. Hub remains responsible for persistence, stale detection, Telegram rate limiting, and operator-facing message updates.
+- If `run_id` is omitted, live progress is disabled and stdout remains unused by this contract.
 - Supported subprocess statuses are:
   - `success` - work completed or an instruction package is ready.
   - `needs_clarification` - the caller should collect human text input and resubmit an updated task.
@@ -154,6 +162,12 @@ This section replaces the standalone `ARMY_INTEGRATION.md` page. Keep the bounde
 - Specialist-internal interrupts that expect human text, such as plan guidance or repeated coding-agent failure guidance, must be translated into `needs_clarification` on this subprocess boundary instead of leaking a generic paused or blocked state.
 - A caller should rely on that bounded JSON contract rather than reading the full codebase.
 - Telegram is only an interactive operator surface; it does not replace the subprocess contract.
+- Shared-state concurrency rules:
+  - duplicate concurrent `run-agent-task` calls with the same `request_id` fail loudly
+    instead of overlapping silently
+  - approval-token consumption is atomic and single-use under concurrent resumes
+  - real coding-agent subprocess execution is locked per `project_root`, so two runs
+    cannot execute against the same repo at once even if the caller misroutes work
 
 ## Persistence
 

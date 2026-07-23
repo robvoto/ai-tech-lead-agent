@@ -9,6 +9,7 @@ code from those files.
 from __future__ import annotations
 
 import logging
+import os
 import subprocess
 import threading
 import time
@@ -17,8 +18,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ai_tech_lead.app_settings import AppSettings
-from ai_tech_lead.config import CODING_AGENT_LOCK_FILE
 from ai_tech_lead.logging_setup import AGENT_LOGGER_NAME, LOGGER_NAME
+from ai_tech_lead.runtime_lock import acquire_project_execution_lock
 
 logger = logging.getLogger(LOGGER_NAME)
 agent_logger = logging.getLogger(AGENT_LOGGER_NAME)
@@ -149,8 +150,9 @@ def run_coding_agent(
 
     changed_files_before = _get_git_changed_files(project_root)
     started_at = time.time()
-
-    CODING_AGENT_LOCK_FILE.touch()
+    project_root = project_root.resolve()
+    lock_lease = acquire_project_execution_lock(project_root)
+    logger.info("Project execution lock acquired for %s (pid=%s)", project_root, os.getpid())
     try:
         run_fn = _run_with_pty if use_pty else _run_with_pipes
         outcome = run_fn(
@@ -163,7 +165,7 @@ def run_coding_agent(
             settings=settings,
         )
     finally:
-        CODING_AGENT_LOCK_FILE.unlink(missing_ok=True)
+        lock_lease.release()
 
     ended_at = time.time()
     changed_files_after = _get_git_changed_files(project_root)
@@ -392,7 +394,7 @@ def _run_with_pipes(
                 new_stderr = stderr_lines[last_reported_stderr:]
                 last_reported_stdout = len(stdout_lines)
                 last_reported_stderr = len(stderr_lines)
-                new_lines = new_stdout or [f"[stderr] {l}" for l in new_stderr]
+                new_lines = new_stdout or [f"[stderr] {line}" for line in new_stderr]
                 _emit_progress_update(
                     progress_callback,
                     new_lines=new_lines,

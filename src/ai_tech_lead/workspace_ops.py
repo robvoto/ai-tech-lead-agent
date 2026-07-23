@@ -63,7 +63,10 @@ def bootstrap_workspace(settings_path: Path = SETTINGS_PATH) -> list[str]:
 
     get_checkpointer()
     lines.append("Initialised app database and checkpointer store.")
-    lines.append("Next step: run `uv run pytest` and then start the app with `uv run python -m ai_tech_lead --debug`.")
+    lines.append(
+        "Next step: run `uv run pytest` and then start the app with "
+        "`uv run python -m ai_tech_lead --debug`."
+    )
     return lines
 
 
@@ -136,7 +139,8 @@ def doctor_workspace(settings_path: Path = SETTINGS_PATH) -> WorkspaceHealthRepo
             note(
                 "OK",
                 "Knowledge stats: "
-                f"items={knowledge_stats['item_count']} namespaces={knowledge_stats['namespace_count']} "
+                f"items={knowledge_stats['item_count']} "
+                f"namespaces={knowledge_stats['namespace_count']} "
                 f"size_bytes={knowledge_stats['size_bytes']}",
             )
 

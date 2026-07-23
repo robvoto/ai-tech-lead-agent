@@ -12,6 +12,7 @@ from ai_tech_lead.app_settings import parse_settings
 from ai_tech_lead.coding_workflow_graph import (
     NodeName,
     build_graph,
+    build_initial_graph_state,
     collect_research_evidence_node,
     request_plan_node,
     route_after_approval,
@@ -32,17 +33,13 @@ def graph_state(**overrides: object) -> dict[str, object]:
         "brief": "",
         "force_approval": False,
         "research_evidence_required": False,
-        "research_sources_found": 0,
         "research_source_titles": [],
         "research_source_locations": [],
         "research_source_summaries": [],
-        "research_online_sources_found": 0,
         "online_research_approved": False,
         "orchestrator_input_required": False,
-        "orchestrator_input_kind": "",
         "orchestrator_input_reason": "",
         "orchestrator_input_question": "",
-        "orchestrator_input_source_node": "",
         "task_feedback": [],
         "needs_approval": False,
         "approval_reason": "Safe local work.",
@@ -117,15 +114,12 @@ def test_graph_state_defaults_do_not_require_human_input() -> None:
     state = graph_state()
 
     assert state["orchestrator_input_required"] is False
-    assert state["orchestrator_input_kind"] == ""
     assert state["orchestrator_input_reason"] == ""
     assert state["orchestrator_input_question"] == ""
-    assert state["orchestrator_input_source_node"] == ""
     assert state["task_feedback"] == []
     assert state["research_source_titles"] == []
     assert state["research_source_locations"] == []
     assert state["research_source_summaries"] == []
-    assert state["research_online_sources_found"] == 0
     assert state["coding_agent_retry_count"] == 0
     assert state["coding_agent_correction"] == ""
 
@@ -133,17 +127,30 @@ def test_graph_state_defaults_do_not_require_human_input() -> None:
 def test_graph_state_can_store_orchestrator_input_request_fields() -> None:
     state = graph_state(
         orchestrator_input_required=True,
-        orchestrator_input_kind="research_approval",
         orchestrator_input_reason="Complex task needs external docs.",
         orchestrator_input_question="Fetch approved LangChain docs?",
-        orchestrator_input_source_node="1b_check_research",
     )
 
     assert state["orchestrator_input_required"] is True
-    assert state["orchestrator_input_kind"] == "research_approval"
     assert state["orchestrator_input_reason"] == "Complex task needs external docs."
     assert state["orchestrator_input_question"] == "Fetch approved LangChain docs?"
-    assert state["orchestrator_input_source_node"] == "1b_check_research"
+
+
+def test_build_initial_graph_state_is_canonical() -> None:
+    state = build_initial_graph_state(
+        "Verify workflow cleanup.",
+        force_approval=True,
+        approved=True,
+        approved_by="subprocess",
+        approval_reason="",
+    )
+
+    assert state["request"] == "Verify workflow cleanup."
+    assert state["force_approval"] is True
+    assert state["approved"] is True
+    assert state["approved_by"] == "subprocess"
+    assert state["plan_agent_stderr"] == ""
+    assert state["coding_agent_retry_count"] == 0
 
 
 def test_graph_state_can_store_task_feedback_list() -> None:
@@ -183,7 +190,6 @@ def test_route_after_check_research_complex_with_sufficient_sources_skips_gate()
     state = graph_state(
         research_evidence_required=True,
         online_research_approved=True,
-        research_sources_found=2,
     )
     assert route_after_check_research(state) == NodeName.REVIEW_RISK
 
@@ -192,7 +198,6 @@ def test_route_after_check_research_complex_with_insufficient_sources_gates() ->
     state = graph_state(
         research_evidence_required=True,
         online_research_approved=False,
-        research_sources_found=1,
     )
     assert route_after_check_research(state) == NodeName.RESEARCH_INTERRUPT
 
@@ -251,7 +256,6 @@ def test_collect_research_evidence_node_appends_online_docs(monkeypatch, caplog)
         "docs/ARCHITECTURE.md",
         "https://docs.langchain.com/oss/python/langgraph/interrupts",
     ]
-    assert result["research_online_sources_found"] == 1
     assert (
         "Research handoff summary: local_sources=1 online_sources=1 "
         "new_cache_notes=0 reused_cache_sources=1"
@@ -954,7 +958,6 @@ def test_workflow_scenario_research_interrupt_resumes_to_success(monkeypatch) ->
 
     assert final_state.next == ()
     assert final_state.values["online_research_approved"] is True
-    assert final_state.values["research_online_sources_found"] == 1
     assert final_state.values["research_source_titles"] == [
         "Local workflow notes",
         "LangGraph interrupts",

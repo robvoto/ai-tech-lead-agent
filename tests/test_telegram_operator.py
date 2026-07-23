@@ -320,8 +320,7 @@ def test_cancel_code_command_logs_cleanup_state(caplog: pytest.LogCaptureFixture
     )
     assert (
         "Telegram action: cancellation requested for chat chat-1; active task "
-        "JH-001 - Local placeholder remains until the worker exits."
-        in caplog.text
+        "JH-001 - Local placeholder remains until the worker exits." in caplog.text
     )
     assert (
         client.messages[-1][1] == "Cancellation requested for the running coding-agent subprocess."
@@ -409,8 +408,7 @@ def test_new_command_logs_discarded_cleanup_details(caplog: pytest.LogCaptureFix
         "Telegram action: fresh session started for chat chat-1 after "
         "discarding active task JH-001 - Local placeholder, pending backlog "
         f"draft ATL-002. Project root {PROJECT_ROOT} "
-        "(hardcoded default for now)."
-        in caplog.text
+        "(hardcoded default for now)." in caplog.text
     )
     assert "Reset Telegram agent memory and session id" in caplog.text
     assert "Discarded active task: JH-001 - Local placeholder." in client.messages[-1][1]
@@ -1103,10 +1101,7 @@ def test_backlog_commands_bypass_ai_and_respond_directly() -> None:
 def test_set_status_command_updates_backlog_item(tmp_path) -> None:
     backlog_path = tmp_path / "BACKLOG.md"
     backlog_path.write_text(
-        "# Backlog\n\n"
-        "## ATL-001 - First item\n\n"
-        "Status: Backlog\n\n"
-        "Goal:\nDo the thing.\n",
+        "# Backlog\n\n## ATL-001 - First item\n\nStatus: Backlog\n\nGoal:\nDo the thing.\n",
         encoding="utf-8",
     )
     raw_settings = valid_settings_dict()
@@ -1212,7 +1207,10 @@ def test_list_all_orders_by_priority_and_shows_item_metadata(tmp_path) -> None:
         "Priority: High | Complexity: Low | Created: 2024-01-01 | Approval: no | Status: Done",
         "",
         "ATL-002 - Second item",
-        "Priority: High | Complexity: Low | Created: 2024-03-01 | Approval: no | Status: In Progress",
+        (
+            "Priority: High | Complexity: Low | Created: 2024-03-01 | "
+            "Approval: no | Status: In Progress"
+        ),
         "",
         "ATL-001 - First item",
         "Priority: High | Complexity: High | Created: 2024-02-01 | Approval: yes | Status: Done",
@@ -1266,13 +1264,22 @@ def test_next_shows_top_three_ranked_items(tmp_path) -> None:
 
     assert client.messages[-1][1].splitlines() == [
         "1. ATL-005 - High simple oldest",
-        "   Priority: High | Complexity: Low | Created: 2024-01-01 | Approval: no | Status: Backlog",
+        (
+            "   Priority: High | Complexity: Low | Created: 2024-01-01 | "
+            "Approval: no | Status: Backlog"
+        ),
         "",
         "2. ATL-002 - High simple newer",
-        "   Priority: High | Complexity: Low | Created: 2024-02-01 | Approval: no | Status: Backlog",
+        (
+            "   Priority: High | Complexity: Low | Created: 2024-02-01 | "
+            "Approval: no | Status: Backlog"
+        ),
         "",
         "3. ATL-001 - High review item",
-        "   Priority: High | Complexity: High | Created: 2024-01-15 | Approval: yes | Status: Backlog",
+        (
+            "   Priority: High | Complexity: High | Created: 2024-01-15 | "
+            "Approval: yes | Status: Backlog"
+        ),
     ]
 
 
@@ -1331,13 +1338,7 @@ def test_backlog_request_summary_returns_id_and_title_only() -> None:
     item = BacklogItem(
         item_id="ATL-001",
         title="First item",
-        body=(
-            "# Backlog\n\n"
-            "## ATL-001 - First item\n\n"
-            "Status: Backlog\n\n"
-            "Goal:\n"
-            "Do the thing.\n"
-        ),
+        body=("# Backlog\n\n## ATL-001 - First item\n\nStatus: Backlog\n\nGoal:\nDo the thing.\n"),
         status=BacklogStatus.BACKLOG,
     )
 

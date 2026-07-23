@@ -27,6 +27,12 @@ from typing import Any
 from .agent_manifest import agent_manifest_reference
 from .app_settings import load_settings
 from .logging_setup import LOGGER_NAME
+from .progress_events import (
+    ProgressReporter,
+    emit_terminal_progress,
+    progress_reporter_from_input,
+)
+from .runtime_lock import RuntimeLockBusyError, acquire_request_run_lock
 
 logger = logging.getLogger(LOGGER_NAME)
 
@@ -64,11 +70,14 @@ def run_agent_task(input_path: str | Path, output_path: str | Path) -> int:
 
     request_id = task_input.get("request_id") or str(uuid.uuid4())
     task_text = task_input.get("task", "").strip()
+    progress_reporter = progress_reporter_from_input(task_input, request_id=request_id)
 
     if not task_text:
-        _write_output(
+        _write_error_output(
             output_file,
-            _error_response(request_id, "task field is required and must not be empty."),
+            progress_reporter,
+            request_id,
+            "task field is required and must not be empty.",
             settings=None,
         )
         return 1
@@ -77,9 +86,11 @@ def run_agent_task(input_path: str | Path, output_path: str | Path) -> int:
     try:
         settings = load_settings()
     except Exception as exc:
-        _write_output(
+        _write_error_output(
             output_file,
-            _error_response(request_id, f"Failed to load settings: {exc}"),
+            progress_reporter,
+            request_id,
+            f"Failed to load settings: {exc}",
             settings=None,
         )
         return 1
@@ -93,7 +104,13 @@ def run_agent_task(input_path: str | Path, output_path: str | Path) -> int:
             "allowed_project_roots allowlist. "
             "Add it to data/coding_agent_settings.json to permit this path."
         )
-        _write_output(output_file, _error_response(request_id, msg), settings=settings)
+        _write_error_output(
+            output_file,
+            progress_reporter,
+            request_id,
+            msg,
+            settings=settings,
+        )
         return 1
 
     # Execution gate: local settings decide, not the caller.
@@ -101,63 +118,100 @@ def run_agent_task(input_path: str | Path, output_path: str | Path) -> int:
     # must also be True. The caller's requires_human_approval is intentionally ignored.
     execution_mode = _validate_execution_mode(task_input.get("execution_mode"))
     if execution_mode is None:
-        _write_output(
+        _write_error_output(
             output_file,
-            _error_response(
-                request_id,
-                "execution_mode must be one of: instruction_only, execute.",
-            ),
+            progress_reporter,
+            request_id,
+            "execution_mode must be one of: instruction_only, execute.",
             settings=settings,
         )
         return 1
     execute_coding_agent = execution_mode == "execute" and settings.execute_coding_agent
 
-    # Approval token: human_approved=true requires a valid token issued by this process.
-    human_approved = False
-    if task_input.get("human_approved"):
-        from .approval_store import consume_approval_token
-
-        token = task_input.get("approval_token", "")
-        if not consume_approval_token(token, request_id, task_text):
-            msg = "human_approved=true requires a valid, unconsumed approval_token."
-            _write_output(output_file, _error_response(request_id, msg), settings=settings)
-            return 1
-        human_approved = True
-
-    logger.info("[SUBPROCESS] run-agent-task request_id=%s task=%s...", request_id, task_text[:80])
-
     try:
-        result = _execute_workflow(
-            request_id=request_id,
-            task=task_text,
-            execute_coding_agent=execute_coding_agent,
-            project_root=project_root,
-            human_approved=human_approved,
-        )
-    except Exception as exc:
-        logger.exception("[SUBPROCESS] Unexpected error running workflow")
-        _write_output(
+        request_lock = acquire_request_run_lock(request_id)
+    except RuntimeLockBusyError as exc:
+        _write_error_output(
             output_file,
-            _error_response(request_id, f"Unexpected error: {exc}", traceback.format_exc()),
+            progress_reporter,
+            request_id,
+            str(exc),
             settings=settings,
         )
         return 1
 
-    # Issue an approval token when the workflow asks for human approval.
-    if result.get("status") == STATUS_APPROVAL_REQUIRED:
-        from .approval_store import create_approval_token
+    try:
+        # Approval token: human_approved=true requires a valid token issued by this process.
+        human_approved = False
+        if task_input.get("human_approved"):
+            from .approval_store import consume_approval_token
 
-        token = create_approval_token(request_id, task_text)
-        result["approval_token"] = token
-        logger.info("[SUBPROCESS] approval_required — issued token for request_id=%s", request_id)
+            token = task_input.get("approval_token", "")
+            if not consume_approval_token(token, request_id, task_text):
+                msg = "human_approved=true requires a valid, unconsumed approval_token."
+                _write_error_output(
+                    output_file,
+                    progress_reporter,
+                    request_id,
+                    msg,
+                    settings=settings,
+                )
+                return 1
+            human_approved = True
 
-    _write_output(output_file, result, settings=settings)
-    return (
-        0
-        if result.get("status")
-        in (STATUS_SUCCESS, STATUS_NEEDS_CLARIFICATION, STATUS_APPROVAL_REQUIRED)
-        else 1
-    )
+        progress_reporter.started()
+        logger.info(
+            "[SUBPROCESS] run-agent-task request_id=%s task=%s...",
+            request_id,
+            task_text[:80],
+        )
+
+        try:
+            with progress_reporter.heartbeat_scope():
+                result = _execute_workflow(
+                    request_id=request_id,
+                    task=task_text,
+                    execute_coding_agent=execute_coding_agent,
+                    project_root=project_root,
+                    human_approved=human_approved,
+                    progress_reporter=progress_reporter,
+                )
+        except (KeyboardInterrupt, SystemExit):
+            progress_reporter.cancelled()
+            raise
+        except Exception as exc:
+            logger.exception("[SUBPROCESS] Unexpected error running workflow")
+            _write_error_output(
+                output_file,
+                progress_reporter,
+                request_id,
+                f"Unexpected error: {exc}",
+                detail=traceback.format_exc(),
+                settings=settings,
+            )
+            return 1
+
+        # Issue an approval token when the workflow asks for human approval.
+        if result.get("status") == STATUS_APPROVAL_REQUIRED:
+            from .approval_store import create_approval_token
+
+            token = create_approval_token(request_id, task_text)
+            result["approval_token"] = token
+            logger.info(
+                "[SUBPROCESS] approval_required — issued token for request_id=%s",
+                request_id,
+            )
+
+        emit_terminal_progress(progress_reporter, result)
+        _write_output(output_file, result, settings=settings)
+        return (
+            0
+            if result.get("status")
+            in (STATUS_SUCCESS, STATUS_NEEDS_CLARIFICATION, STATUS_APPROVAL_REQUIRED)
+            else 1
+        )
+    finally:
+        request_lock.release()
 
 
 def _validate_project_root(project_root_raw: str | None, settings: Any) -> str | None:
@@ -195,40 +249,39 @@ def _execute_workflow(
     execute_coding_agent: bool,
     project_root: str | None,
     human_approved: bool = False,
+    progress_reporter: ProgressReporter | None = None,
 ) -> dict[str, Any]:
     from langgraph.checkpoint.memory import MemorySaver
 
-    from .coding_workflow_graph import build_graph
+    from .coding_workflow_graph import build_graph, build_initial_graph_state
 
+    reporter = progress_reporter or ProgressReporter()
+    reporter.phase("analysing", "Analysing the task and project context.")
     graph = build_graph(
         checkpointer_storage=MemorySaver(),
         execute_coding_agent_override=execute_coding_agent,
         project_root_override=project_root,
+        coding_agent_progress_callback=(
+            reporter.handle_workflow_message if reporter.enabled else None
+        ),
     )
 
     thread_id = f"subprocess-{request_id}"
     config = {"configurable": {"thread_id": thread_id}}
 
-    initial_state: dict[str, Any] = {
-        "request": task,
+    initial_state: dict[str, Any] = build_initial_graph_state(
+        task,
         # Subprocess resubmissions are already approved; backlog-driven approval forcing stays local
         # to the coding workflow graph and should not be reintroduced here.
-        "force_approval": False,
-        "approved": human_approved,
-        "approved_by": "human-via-subprocess" if human_approved else "",
-        "online_research_approved": True,
-        "orchestrator_input_required": False,
-        "orchestrator_input_kind": "",
-        "orchestrator_input_reason": "",
-        "orchestrator_input_question": "",
-        "orchestrator_input_source_node": "",
-        "needs_approval": False,
-        "approval_reason": "",
-        "task_feedback": [],
-    }
+        force_approval=False,
+        approved=human_approved,
+        approved_by="human-via-subprocess" if human_approved else "",
+        approval_reason="",
+    )
 
     final_state = graph.invoke(initial_state, config=config)
     state_snapshot = graph.get_state(config)
+    reporter.phase("finalising", "Preparing the structured result.")
     return _map_state_to_output(
         request_id,
         final_state,
@@ -277,8 +330,7 @@ def _map_state_to_output(
         status = STATUS_NEEDS_CLARIFICATION
         result_excerpt = str(pending_interrupt.get("coding_agent_result", "")).strip()
         summary = (
-            "Clarification needed: human guidance is required after repeated "
-            "coding-agent failures."
+            "Clarification needed: human guidance is required after repeated coding-agent failures."
         )
         if result_excerpt:
             summary = f"{summary} Last result: {result_excerpt[:200]}"
@@ -406,6 +458,20 @@ def _error_response(request_id: str, message: str, detail: str = "") -> dict[str
         "resume_fields": [],
         "interrupt_kind": "",
     }
+
+
+def _write_error_output(
+    output_file: Path,
+    reporter: ProgressReporter,
+    request_id: str,
+    message: str,
+    *,
+    detail: str = "",
+    settings: Any | None,
+) -> None:
+    result = _error_response(request_id, message, detail)
+    reporter.failed("AI Tech Lead could not complete the task.")
+    _write_output(output_file, result, settings=settings)
 
 
 def _write_output(

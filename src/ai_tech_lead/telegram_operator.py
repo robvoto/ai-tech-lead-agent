@@ -15,7 +15,8 @@ import re
 import threading
 import uuid
 from collections.abc import Mapping
-from dataclasses import dataclass, replace as dc_replace
+from dataclasses import dataclass
+from dataclasses import replace as dc_replace
 from enum import StrEnum
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -42,10 +43,14 @@ from .backlog_repository import (
 from .backlog_status import backlog_status_choices, normalize_backlog_status
 from .checkpointer_store import get_checkpointer
 from .coding_agent_runner import CodingAgentCancellationToken
-from .coding_workflow_graph import GraphState, build_graph
+from .coding_workflow_graph import GraphState, build_graph, build_initial_graph_state
 from .config import PROJECT_ROOT
 from .logging_setup import LOGGER_NAME
-from .telegram_agent_graph import build_telegram_agent_graph, run_telegram_agent_message
+from .telegram_agent_graph import (
+    TelegramAgentReply,
+    build_telegram_agent_graph,
+    run_telegram_agent_message,
+)
 from .telegram_secrets import get_telegram_bot_token
 
 logger = logging.getLogger(LOGGER_NAME)
@@ -1942,44 +1947,7 @@ def run_telegram_operator(*, execute_coding_agent_override: bool | None = None) 
 
 
 def _base_graph_state(request: str) -> GraphState:
-    return {
-        "request": request,
-        "brief": "",
-        "force_approval": False,
-        "orchestrator_input_required": False,
-        "orchestrator_input_kind": "",
-        "orchestrator_input_reason": "",
-        "orchestrator_input_question": "",
-        "orchestrator_input_source_node": "",
-        "task_feedback": [],
-        "needs_approval": False,
-        "approval_reason": "Risk review has not run yet.",
-        "approved": False,
-        "approved_by": "",
-        "research_evidence_required": False,
-        "research_sources_found": 0,
-        "research_source_titles": [],
-        "research_source_locations": [],
-        "research_source_summaries": [],
-        "research_online_sources_found": 0,
-        "online_research_approved": False,
-        "formulated_task": "",
-        "plan_text": "",
-        "plan_approved": False,
-        "plan_review_reason": "",
-        "plan_correction": "",
-        "plan_rejection_count": 0,
-        "plan_needs_human_review": False,
-        "agent_instruction": "",
-        "coding_agent_result": "",
-        "coding_agent_success": False,
-        "coding_agent_changed_files": (),
-        "restart_required": False,
-        "coding_agent_command": "",
-        "coding_agent_returncode": None,
-        "coding_agent_timed_out": False,
-        "coding_agent_performed_by": "",
-    }
+    return build_initial_graph_state(request)
 
 
 def _approval_prompt(

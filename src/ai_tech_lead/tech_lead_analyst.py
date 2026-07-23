@@ -38,7 +38,9 @@ def analyse_task(
         return TechLeadAnalysis(task_statement=request, tech_direction="")
 
     try:
-        return _llm_analyse_task(request, task_feedback, approval_reason, research_evidence, settings)
+        return _llm_analyse_task(
+            request, task_feedback, approval_reason, research_evidence, settings
+        )
     except OrchestratorLlmError as error:
         logger.warning("Tech lead analysis LLM call failed: %s", error)
         return TechLeadAnalysis(task_statement=request, tech_direction="")

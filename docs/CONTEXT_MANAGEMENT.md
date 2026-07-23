@@ -69,6 +69,27 @@ Telegram must not show:
 
 Detailed reasons belong in state/logs/admin surfaces, not phone-first Telegram messages.
 
+## Specialist progress events
+
+Hub-facing progress is a phone-first operational summary, not a reasoning or log channel.
+
+Progress may contain:
+
+- stable phase name
+- short human-safe milestone
+- elapsed seconds, line count, attempt number, or other allowlisted bounded metrics
+- waiting, warning, failure, or completion state
+
+Progress must not contain:
+
+- chain-of-thought or hidden reasoning
+- full prompts or plan bodies
+- raw coding-agent or provider output
+- secrets, tokens, environment values, or unrestricted paths
+- unbounded logs or arbitrary metadata
+
+The specialist translates internal LangGraph, Deep Agent, and coding-runner events into the same external contract. Hub owns persistence, stale detection, rate limiting, and Telegram presentation.
+
 ## Coding-agent handoffs
 
 Coding-agent handoffs should be bounded and reviewable.

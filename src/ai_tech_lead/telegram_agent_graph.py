@@ -37,6 +37,7 @@ _LLM_PRICING_PATH = PROJECT_ROOT / "config" / "llm_pricing.json"
 # Cached after first load — pricing file is read once per process.
 _pricing_cache: dict[str, tuple[float, float]] | None = None
 
+
 @dataclass(frozen=True)
 class TelegramAgentReply:
     """Final reply produced by the Telegram agent graph."""
@@ -65,7 +66,10 @@ def build_telegram_agent_graph(*, settings: AppSettings, checkpointer: Any):
             create_manage_memory_tool(
                 ("coding", "learnings"),
                 store=store,
-                instructions="Save patterns, decisions, and tech insights useful across future sessions.",
+                instructions=(
+                    "Save patterns, decisions, and tech insights useful across "
+                    "future sessions."
+                ),
             ),
             create_search_memory_tool(
                 ("shared", "docs"),
@@ -76,7 +80,10 @@ def build_telegram_agent_graph(*, settings: AppSettings, checkpointer: Any):
                 ("shared", "trusted"),
                 store=store,
                 name="search_trusted_sources",
-                instructions="Search trusted online sources (LangChain, LangGraph, Anthropic docs).",
+                instructions=(
+                    "Search trusted online sources "
+                    "(LangChain, LangGraph, Anthropic docs)."
+                ),
             ),
         ]
         tools = [*tools, *memory_tools]
@@ -177,7 +184,9 @@ def _build_backlog_tools(settings: AppSettings):
     if not path.is_absolute():
         path = Path(settings.project_root) / path
     if path.suffix.lower() == ".sqlite3":
-        repository: MarkdownBacklogRepository | SqliteBacklogRepository = SqliteBacklogRepository(path)
+        repository: MarkdownBacklogRepository | SqliteBacklogRepository = SqliteBacklogRepository(
+            path
+        )
     else:
         repository = MarkdownBacklogRepository(path)
     project_root = Path(settings.project_root).resolve()
@@ -223,7 +232,8 @@ def _build_backlog_tools(settings: AppSettings):
         """Set the Status field of a backlog item.
 
         Only call after the user has confirmed the change.
-        Common values: Backlog, Not Done, In Progress, Needs Review, Blocked, Done, Won't Do, Obsolete.
+        Common values: Backlog, Not Done, In Progress, Needs Review, Blocked,
+        Done, Won't Do, Obsolete.
         """
 
         logger.info(
@@ -263,7 +273,13 @@ def _build_backlog_tools(settings: AppSettings):
             return f"Could not read {path}: {err}"
         return _truncate_text(content, 4000)
 
-    return [count_backlog_items, list_backlog_items, read_backlog_item, set_backlog_item_status, read_project_file]
+    return [
+        count_backlog_items,
+        list_backlog_items,
+        read_backlog_item,
+        set_backlog_item_status,
+        read_project_file,
+    ]
 
 
 def _backlog_body_without_status(body: str) -> str:

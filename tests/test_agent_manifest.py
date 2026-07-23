@@ -33,8 +33,12 @@ def test_build_agent_manifest_contains_core_contract_fields() -> None:
         "approval_required",
         "failed",
     ]
+    assert "run_id" in manifest["input_contract"]["optional"]
+    assert manifest["progress_contract"]["transport"] == "stdout_jsonl"
+    assert manifest["progress_contract"]["log_transport"] == "stderr"
+    assert manifest["progress_contract"]["schema_version"] == 1
     assert manifest["interaction_model"]["resume_via_resubmission"] is True
-    assert manifest["interaction_model"]["supports_streaming"] is False
+    assert manifest["interaction_model"]["supports_streaming"] is True
     assert manifest["ownership"]["specialist_repo"]
     assert manifest["project_pack"]["required_files"] == [
         "AGENTS.md",

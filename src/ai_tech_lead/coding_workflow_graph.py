@@ -57,12 +57,9 @@ class GraphState(TypedDict):
     request: str
     brief: str
     force_approval: bool
-    # Reserved for future conditional interrupt/resume handling.
     orchestrator_input_required: bool
-    orchestrator_input_kind: str
     orchestrator_input_reason: str
     orchestrator_input_question: str
-    orchestrator_input_source_node: str
     task_feedback: Annotated[list[str], operator.add]
     needs_approval: bool
     approval_reason: str
@@ -70,11 +67,9 @@ class GraphState(TypedDict):
     approved: bool
     approved_by: str
     research_evidence_required: bool
-    research_sources_found: int
     research_source_titles: list[str]
     research_source_locations: list[str]
     research_source_summaries: list[str]
-    research_online_sources_found: int
     online_research_approved: bool
     formulated_task: str
     plan_text: str
@@ -95,6 +90,58 @@ class GraphState(TypedDict):
     coding_agent_returncode: int | None
     coding_agent_timed_out: bool
     coding_agent_performed_by: str
+
+
+def build_initial_graph_state(
+    request: str,
+    *,
+    force_approval: bool = False,
+    approved: bool = False,
+    approved_by: str = "",
+    approval_reason: str = "Risk review has not run yet.",
+    online_research_approved: bool = False,
+    task_feedback: list[str] | None = None,
+) -> GraphState:
+    """Return one canonical initial state for the coding workflow graph."""
+
+    return {
+        "request": request,
+        "brief": "",
+        "force_approval": force_approval,
+        "orchestrator_input_required": False,
+        "orchestrator_input_reason": "",
+        "orchestrator_input_question": "",
+        "task_feedback": list(task_feedback or []),
+        "needs_approval": False,
+        "approval_reason": approval_reason,
+        "risk_level": "",
+        "approved": approved,
+        "approved_by": approved_by,
+        "research_evidence_required": False,
+        "research_source_titles": [],
+        "research_source_locations": [],
+        "research_source_summaries": [],
+        "online_research_approved": online_research_approved,
+        "formulated_task": "",
+        "plan_text": "",
+        "plan_agent_stderr": "",
+        "plan_approved": False,
+        "plan_review_reason": "",
+        "plan_correction": "",
+        "plan_rejection_count": 0,
+        "plan_needs_human_review": False,
+        "agent_instruction": "",
+        "coding_agent_result": "",
+        "coding_agent_success": False,
+        "coding_agent_changed_files": (),
+        "restart_required": False,
+        "coding_agent_retry_count": 0,
+        "coding_agent_correction": "",
+        "coding_agent_command": "",
+        "coding_agent_returncode": None,
+        "coding_agent_timed_out": False,
+        "coding_agent_performed_by": "",
+    }
 
 
 def read_request_node(state: GraphState) -> dict[str, Any]:
@@ -120,11 +167,9 @@ def check_research_node(state: GraphState) -> dict[str, Any]:
 
     partial: dict[str, Any] = {
         "research_evidence_required": result.is_complex,
-        "research_sources_found": result.sources_found,
         "research_source_titles": list(result.usable_source_titles),
         "research_source_locations": list(result.usable_source_locations),
         "research_source_summaries": list(result.usable_source_summaries),
-        "research_online_sources_found": 0,
         "online_research_approved": not result.online_research_needed,
     }
 
@@ -136,7 +181,7 @@ def check_research_node(state: GraphState) -> dict[str, Any]:
             "Do you want me to fetch the approved LangChain docs next?"
         )
         partial["orchestrator_input_required"] = True
-        partial["orchestrator_input_kind"] = "online_research_needed"
+        partial["orchestrator_input_reason"] = result.complexity_reason
         partial["orchestrator_input_question"] = question
         logger.info(
             "[LEARN] Research interrupt required: sources_found=%d reason=%s",
@@ -170,10 +215,8 @@ def research_interrupt_node(state: GraphState) -> dict[str, Any]:
     return {
         "online_research_approved": approved,
         "orchestrator_input_required": False,
-        "orchestrator_input_kind": "",
         "orchestrator_input_reason": "",
         "orchestrator_input_question": "",
-        "orchestrator_input_source_node": "",
     }
 
 
@@ -272,7 +315,6 @@ def collect_research_evidence_node(state: GraphState) -> dict[str, Any]:
         "research_source_titles": combined_titles,
         "research_source_locations": combined_locations,
         "research_source_summaries": combined_summaries,
-        "research_online_sources_found": len(online_sources),
     }
 
 
@@ -797,7 +839,14 @@ def run_coding_agent_node(
     if cancellation_token is not None:
         runner_kwargs["cancellation_token"] = cancellation_token
 
-    result = run_coding_agent(**runner_kwargs)
+    try:
+        result = run_coding_agent(**runner_kwargs)
+    except Exception:
+        logger.exception(
+            "Coding agent execution failed before producing a result project_root=%s",
+            settings.project_root,
+        )
+        raise
     command = getattr(result, "command", ())
 
     logger.info("[LEARN] Coding agent subprocess finished.")

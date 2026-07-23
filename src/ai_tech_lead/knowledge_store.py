@@ -15,8 +15,8 @@ from __future__ import annotations
 
 import json
 import logging
-import sqlite3
 import shutil
+import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -155,7 +155,9 @@ class SqliteStore(BaseStore):
         conn.execute(
             """INSERT INTO knowledge_items (namespace, key, value, created_at, updated_at)
                VALUES (?, ?, ?, ?, ?)
-               ON CONFLICT(namespace, key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at""",
+               ON CONFLICT(namespace, key) DO UPDATE SET
+                   value=excluded.value,
+                   updated_at=excluded.updated_at""",
             (ns, op.key, serialized, now, now),
         )
         return None
@@ -171,7 +173,10 @@ class SqliteStore(BaseStore):
     def _search(self, conn: sqlite3.Connection, op: SearchOp) -> list[SearchItem]:
         ns_prefix = _ns_key(op.namespace_prefix)
         rows = conn.execute(
-            "SELECT * FROM knowledge_items WHERE namespace=? OR namespace LIKE ? ORDER BY updated_at DESC LIMIT ? OFFSET ?",
+            """SELECT * FROM knowledge_items
+               WHERE namespace=? OR namespace LIKE ?
+               ORDER BY updated_at DESC
+               LIMIT ? OFFSET ?""",
             (ns_prefix, f"{ns_prefix}/%", op.limit, op.offset),
         ).fetchall()
 
@@ -193,7 +198,9 @@ class SqliteStore(BaseStore):
             for i in items
         ]
 
-    def _list_namespaces(self, conn: sqlite3.Connection, op: ListNamespacesOp) -> list[tuple[str, ...]]:
+    def _list_namespaces(
+        self, conn: sqlite3.Connection, op: ListNamespacesOp
+    ) -> list[tuple[str, ...]]:
         rows = conn.execute("SELECT DISTINCT namespace FROM knowledge_items").fetchall()
         return [tuple(r["namespace"].split("/")) for r in rows]
 

@@ -7,6 +7,7 @@ tokens) without requiring LLM calls or a real LangGraph runtime.
 
 from __future__ import annotations
 
+import io
 import json
 import time
 from dataclasses import replace
@@ -21,12 +22,15 @@ from ai_tech_lead.agent_task_runner import (
     STATUS_FAILED,
     STATUS_NEEDS_CLARIFICATION,
     STATUS_SUCCESS,
+    _execute_workflow,
     _map_state_to_output,
     _validate_project_root,
     run_agent_task,
 )
 from ai_tech_lead.app_settings import parse_settings
 from ai_tech_lead.approval_store import consume_approval_token, create_approval_token
+from ai_tech_lead.progress_events import ProgressReporter, StdoutJsonlProgressSink
+from ai_tech_lead.runtime_lock import RuntimeLockBusyError
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -81,8 +85,7 @@ def _approval_required_output(reason: str = "risky change") -> dict[str, Any]:
         "logs": [],
         "evidence": [],
         "next_action": (
-            "Approve via Telegram, then resubmit with human_approved=true and the "
-            "approval_token."
+            "Approve via Telegram, then resubmit with human_approved=true and the approval_token."
         ),
         "result_kind": "approval_request",
         "caller_action": "provide_approval",
@@ -361,6 +364,31 @@ def test_instruction_only_mode_disables_execution_regardless_of_settings(
     assert calls[0]["execute_coding_agent"] is False
 
 
+def test_duplicate_request_id_returns_failed_without_running_workflow(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = _make_fake_workflow(monkeypatch, _success_output())
+    _stub_settings(monkeypatch)
+    monkeypatch.setattr(
+        "ai_tech_lead.agent_task_runner.acquire_request_run_lock",
+        lambda _request_id: (_ for _ in ()).throw(
+            RuntimeLockBusyError("Runtime lock busy for request-run: req-dup")
+        ),
+    )
+
+    input_file, output_file = _write_input(
+        tmp_path,
+        {"request_id": "req-dup", "task": "fix bug"},
+    )
+    rc = run_agent_task(input_file, output_file)
+
+    result = _read_output(output_file)
+    assert rc == 1
+    assert result["status"] == STATUS_FAILED
+    assert "request-run" in result["summary"]
+    assert calls == []
+
+
 # ---------------------------------------------------------------------------
 # Approval token
 # ---------------------------------------------------------------------------
@@ -400,6 +428,22 @@ class TestApprovalStore:
         assert consume_approval_token(token, "req-4", "fix the wrong bug") is False
         assert consume_approval_token(token, "req-5", "fix the bug") is False
         assert consume_approval_token(token, "req-4", "fix the bug") is True
+
+    def test_token_is_single_use_under_concurrent_consumers(self) -> None:
+        from concurrent.futures import ThreadPoolExecutor
+
+        token = create_approval_token("req-race-1", "fix the bug")
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            results = list(
+                executor.map(
+                    lambda _: consume_approval_token(token, "req-race-1", "fix the bug"),
+                    range(2),
+                )
+            )
+
+        assert results.count(True) == 1
+        assert results.count(False) == 1
 
 
 def test_human_approved_without_token_is_rejected(
@@ -715,3 +759,188 @@ def test_map_state_to_output_uses_failed_for_terminal_agent_failure() -> None:
     assert "Coding agent failed" in result["summary"]
     assert result["result_kind"] == "terminal_failure"
     assert result["caller_action"] == "inspect_failure"
+
+
+# ---------------------------------------------------------------------------
+# Hub progress stream
+# ---------------------------------------------------------------------------
+
+
+def _captured_progress_events(capsys: pytest.CaptureFixture[str]) -> list[dict[str, Any]]:
+    return [json.loads(line) for line in capsys.readouterr().out.splitlines() if line.strip()]
+
+
+def test_run_agent_task_streams_start_and_completion_when_run_id_is_supplied(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _make_fake_workflow(monkeypatch, _success_output("implement it"))
+    _stub_settings(monkeypatch)
+    input_file, output_file = _write_input(
+        tmp_path,
+        {
+            "request_id": "req-progress-1",
+            "run_id": "run-progress-1",
+            "task": "fix the bug",
+        },
+    )
+
+    rc = run_agent_task(input_file, output_file)
+
+    assert rc == 0
+    events = _captured_progress_events(capsys)
+    assert [(event["event_type"], event["phase"]) for event in events] == [
+        ("start", "starting"),
+        ("completed", "completed"),
+    ]
+    assert [event["sequence"] for event in events] == [1, 2]
+    assert all(event["run_id"] == "run-progress-1" for event in events)
+    assert all(event["request_id"] == "req-progress-1" for event in events)
+    assert "progress" not in _read_output(output_file)
+
+
+def test_run_agent_task_without_run_id_keeps_stdout_empty(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _make_fake_workflow(monkeypatch, _success_output())
+    _stub_settings(monkeypatch)
+    input_file, output_file = _write_input(
+        tmp_path,
+        {"request_id": "req-no-progress", "task": "fix the bug"},
+    )
+
+    assert run_agent_task(input_file, output_file) == 0
+
+    assert capsys.readouterr().out == ""
+    assert _read_output(output_file)["status"] == STATUS_SUCCESS
+
+
+def test_run_agent_task_streams_failure_when_workflow_raises(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _stub_settings(monkeypatch)
+
+    def fail_workflow(**_kwargs: Any) -> dict[str, Any]:
+        raise RuntimeError("workflow exploded")
+
+    monkeypatch.setattr("ai_tech_lead.agent_task_runner._execute_workflow", fail_workflow)
+    input_file, output_file = _write_input(
+        tmp_path,
+        {
+            "request_id": "req-progress-failure",
+            "run_id": "run-progress-failure",
+            "task": "fix the bug",
+        },
+    )
+
+    assert run_agent_task(input_file, output_file) == 1
+
+    events = _captured_progress_events(capsys)
+    assert [event["event_type"] for event in events] == ["start", "failure"]
+    assert events[-1]["human_summary"] == "AI Tech Lead could not complete the task."
+    assert _read_output(output_file)["status"] == STATUS_FAILED
+
+
+def test_run_agent_task_streams_cancelled_when_interrupted(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _stub_settings(monkeypatch)
+
+    def cancel_workflow(**_kwargs: Any) -> dict[str, Any]:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("ai_tech_lead.agent_task_runner._execute_workflow", cancel_workflow)
+    input_file, output_file = _write_input(
+        tmp_path,
+        {
+            "request_id": "req-progress-cancel",
+            "run_id": "run-progress-cancel",
+            "task": "fix the bug",
+        },
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        run_agent_task(input_file, output_file)
+
+    events = _captured_progress_events(capsys)
+    assert [event["event_type"] for event in events] == ["start", "warning"]
+    assert events[-1]["phase"] == "cancelled"
+    assert not output_file.exists()
+
+
+def test_execute_workflow_translates_existing_graph_progress_callbacks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stream = io.StringIO()
+    reporter = ProgressReporter(
+        StdoutJsonlProgressSink(
+            run_id="run-graph-progress",
+            request_id="req-graph-progress",
+            stream=stream,
+        ),
+        heartbeat_interval_seconds=0,
+    )
+
+    class _Snapshot:
+        next: tuple[str, ...] = ()
+        tasks: tuple[Any, ...] = ()
+
+    class _Graph:
+        def __init__(self, callback: Any) -> None:
+            self._callback = callback
+
+        def invoke(self, _state: dict[str, Any], *, config: dict[str, Any]) -> dict[str, Any]:
+            assert config["configurable"]["thread_id"] == "subprocess-req-graph-progress"
+            assert callable(self._callback)
+            self._callback("Requesting implementation plan from coding agent...")
+            self._callback("Plan received. Reviewing...")
+            self._callback("Running coding agent (codex). This may take several minutes...")
+            return {
+                "agent_instruction": "implement it",
+                "formulated_task": "Implement the change",
+                "brief": "bounded brief",
+                "needs_approval": False,
+                "approved": False,
+                "orchestrator_input_required": False,
+                "orchestrator_input_question": "",
+                "coding_agent_success": None,
+                "coding_agent_result": "",
+                "restart_required": False,
+                "task_feedback": [],
+                "research_source_titles": [],
+                "coding_agent_performed_by": "none",
+            }
+
+        def get_state(self, _config: dict[str, Any]) -> _Snapshot:
+            return _Snapshot()
+
+    def fake_build_graph(**kwargs: Any) -> _Graph:
+        return _Graph(kwargs["coding_agent_progress_callback"])
+
+    monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.build_graph", fake_build_graph)
+
+    result = _execute_workflow(
+        request_id="req-graph-progress",
+        task="Implement the change",
+        execute_coding_agent=False,
+        project_root=None,
+        progress_reporter=reporter,
+    )
+
+    events = [json.loads(line) for line in stream.getvalue().splitlines()]
+    assert [event["phase"] for event in events] == [
+        "analysing",
+        "planning",
+        "reviewing_plan",
+        "coding",
+        "finalising",
+    ]
+    assert result["status"] == STATUS_SUCCESS
+    assert result["result_kind"] == "instruction_package"

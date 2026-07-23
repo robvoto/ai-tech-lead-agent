@@ -10,6 +10,7 @@ from helpers import valid_settings_dict
 
 from ai_tech_lead.app_settings import parse_settings
 from ai_tech_lead.coding_agent_runner import run_coding_agent
+from ai_tech_lead.runtime_lock import RuntimeLockBusyError
 
 
 def _install_fake_pipe_popen(
@@ -111,6 +112,22 @@ def test_run_coding_agent_rejects_empty_instruction_when_enabled(tmp_path: Path)
 
     with pytest.raises(ValueError, match="Agent instruction cannot be empty"):
         run_coding_agent("   ", tmp_path, settings)
+
+
+def test_run_coding_agent_raises_when_project_execution_lock_is_busy(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    settings = replace(parse_settings(valid_settings_dict()), execute_coding_agent=True)
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_agent_runner.acquire_project_execution_lock",
+        lambda _project_root: (_ for _ in ()).throw(
+            RuntimeLockBusyError("Runtime lock busy for project-execution: /tmp/project")
+        ),
+    )
+
+    with pytest.raises(RuntimeLockBusyError, match="project-execution"):
+        run_coding_agent("Do the task", tmp_path, settings)
 
 
 def test_run_coding_agent_reports_nonzero_exit(

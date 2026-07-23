@@ -79,9 +79,12 @@ cd /home/robvoto/projects/ai-tech-lead
 uv run python -m ai_tech_lead run-agent-task --input-json /tmp/subprocess-task.json --output-json /tmp/subprocess-result.json
 ```
 
-The input JSON must include `task`. Common optional fields are `request_id`, `source`,
-`project_root`, `execution_mode`, `human_approved`, and `approval_token`.
+The input JSON must include `task`. Common optional fields are `request_id`, Hub `run_id`,
+`source`, `project_root`, `execution_mode`, `human_approved`, and `approval_token`.
 
+- When `run_id` is supplied, stdout is reserved for one structured progress JSON object per line. Runtime and coding-agent logs remain on stderr. The final result still goes only to `--output-json`.
+- When `run_id` is omitted, the subprocess contract emits no progress lines to stdout.
+- Progress events are bounded operational telemetry, not raw logs, prompts, plan text, provider output, or hidden reasoning.
 - Safe default: omit `execution_mode` or set it to `instruction_only`.
 - Use `execution_mode: execute` only when the caller explicitly wants coding-agent execution and
   local settings allow it.
@@ -91,6 +94,30 @@ The input JSON must include `task`. Common optional fields are `request_id`, `so
 - Subprocess responses use `success`, `needs_clarification`, `approval_required`, and `failed`.
 - Human-text pauses inside the specialist workflow, such as plan guidance or repeated failure guidance, are surfaced here as `needs_clarification`.
 - External callers should read `uv run python -m ai_tech_lead manifest` and use the response fields `result_kind`, `caller_action`, `resume_supported`, `resume_fields`, and `interrupt_kind` instead of scraping `summary` text.
+- Concurrent `run-agent-task` calls are allowed only when they do not collide on the
+  same runtime lock scope. Duplicate `request_id` runs fail fast, and real coding-agent
+  execution is locked per target `project_root`.
+
+For a manual progress-contract check:
+
+```bash
+cat >/tmp/subprocess-task.json <<'JSON'
+{
+  "request_id": "req-demo-1",
+  "run_id": "run-demo-1",
+  "task": "Prepare a bounded instruction for a small documentation fix",
+  "execution_mode": "instruction_only"
+}
+JSON
+
+uv run python -m ai_tech_lead run-agent-task \
+  --input-json /tmp/subprocess-task.json \
+  --output-json /tmp/subprocess-result.json \
+  1>/tmp/subprocess-progress.jsonl \
+  2>/tmp/subprocess-runtime.log
+```
+
+`/tmp/subprocess-progress.jsonl` should contain only progress JSONL. The final result is in `/tmp/subprocess-result.json`.
 
 ## Admin UI
 

@@ -17,7 +17,7 @@ from pathlib import Path
 from ai_tech_lead.app_settings import load_settings
 from ai_tech_lead.backlog_repository import BacklogItem, MarkdownBacklogRepository
 from ai_tech_lead.backlog_store import SqliteBacklogRepository
-from ai_tech_lead.coding_workflow_graph import GraphState
+from ai_tech_lead.coding_workflow_graph import GraphState, build_initial_graph_state
 
 
 def load_backlog_items(backlog_path: Path | None = None) -> list[BacklogItem]:
@@ -61,50 +61,19 @@ Title: {item.title}
 {item.body}
 """.strip()
 
-    return {
-        "request": request,
-        "brief": "",
-        "force_approval": item.interrupt_before_implementation,
-        "research_evidence_required": False,
-        "research_sources_found": 0,
-        "research_source_titles": [],
-        "research_source_locations": [],
-        "research_source_summaries": [],
-        "research_online_sources_found": 0,
-        "online_research_approved": False,
-        "orchestrator_input_required": False,
-        "orchestrator_input_kind": "",
-        "orchestrator_input_reason": "",
-        "orchestrator_input_question": "",
-        "orchestrator_input_source_node": "",
-        "task_feedback": [],
-        "needs_approval": False,
-        "approval_reason": "Risk review has not run yet.",
-        "approved": False,
-        "approved_by": "",
-        "formulated_task": "",
-        "plan_text": "",
-        "plan_agent_stderr": "",
-        "plan_approved": False,
-        "plan_review_reason": "",
-        "plan_correction": "",
-        "plan_rejection_count": 0,
-        "plan_needs_human_review": False,
-        "agent_instruction": "",
-        "coding_agent_result": "",
-        "coding_agent_success": False,
-        "coding_agent_changed_files": (),
-        "restart_required": False,
-        "coding_agent_command": "",
-        "coding_agent_returncode": None,
-        "coding_agent_timed_out": False,
-        "coding_agent_performed_by": "",
-    }
+    return build_initial_graph_state(
+        request,
+        force_approval=item.interrupt_before_implementation,
+    )
 
 
 def _repository(backlog_path: Path | None) -> MarkdownBacklogRepository | SqliteBacklogRepository:
     if backlog_path is not None:
-        resolved = backlog_path if backlog_path.is_absolute() else (Path(load_settings().project_root) / backlog_path)
+        resolved = (
+            backlog_path
+            if backlog_path.is_absolute()
+            else (Path(load_settings().project_root) / backlog_path)
+        )
         if resolved.suffix.lower() == ".sqlite3":
             return SqliteBacklogRepository(resolved)
         return MarkdownBacklogRepository(resolved)

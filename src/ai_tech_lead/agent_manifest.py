@@ -62,6 +62,7 @@ def build_agent_manifest(settings: AppSettings | None = None) -> dict[str, Any]:
             "required": ["task"],
             "optional": [
                 "request_id",
+                "run_id",
                 "source",
                 "project_root",
                 "execution_mode",
@@ -127,12 +128,38 @@ def build_agent_manifest(settings: AppSettings | None = None) -> dict[str, Any]:
             "primary_interface": "bounded local JSON subprocess",
             "discovery_pattern": "manifest-style handshake inspired by an A2A agent card",
             "task_pattern": "request/response with resumable human interrupts",
-            "supports_streaming": False,
+            "supports_streaming": True,
+            "streaming_scope": (
+                "Structured progress events stream on stdout when run_id is supplied; "
+                "the final result remains in the output JSON file."
+            ),
             "supports_push_notifications": False,
             "resume_via_resubmission": True,
             "tool_protocol_note": (
                 "Use MCP for tools/resources behind this agent. Use this manifest and "
                 "run-agent-task for the caller boundary."
+            ),
+        },
+        "progress_contract": {
+            "optional": True,
+            "activation": "caller supplies run_id",
+            "schema_version": 1,
+            "transport": "stdout_jsonl",
+            "log_transport": "stderr",
+            "event_fields": [
+                "schema_version",
+                "run_id",
+                "request_id",
+                "sequence",
+                "event_type",
+                "phase",
+                "human_summary",
+                "occurred_at",
+                "metadata",
+            ],
+            "notes": (
+                "Progress is operational telemetry only. It never contains chain-of-thought, "
+                "full prompts, raw provider payloads, or unbounded logs."
             ),
         },
         "capabilities": [
@@ -143,6 +170,7 @@ def build_agent_manifest(settings: AppSettings | None = None) -> dict[str, Any]:
             "run the configured coding backend when enabled",
             "maintain a local knowledge store",
             "report workspace health and knowledge-store stats",
+            "emit bounded structured progress for a Hub caller",
         ],
         "boundaries": [
             "does not choose work without explicit input",
