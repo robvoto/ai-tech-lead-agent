@@ -71,5 +71,11 @@
   "allowed_project_roots": [
     "/home/robvoto/projects/ai-tech-lead"
   ],
-  "sleep_mode": false
+  "sleep_mode": false,
+  "backlog_project_key": "ai-tech-lead",
+  "backlog_spreadsheet_id": "1-e2lQ6vLUD8A5t3cuLhrjRvdTbs3hfs4ptdEE2yDaEc",
+  "backlog_sheet_name": "AI Tech Lead Backlog",
+  "backlog_google_credentials_path": "/path/to/your/google-service-account.json",
+  "backlog_projects": {},
+  "backlog_pending_update_max_attempts": 5
 }

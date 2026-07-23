@@ -15,6 +15,9 @@ from ai_tech_lead.coding_workflow_graph import (
     build_initial_graph_state,
     collect_research_evidence_node,
     request_plan_node,
+    resolve_context_node,
+    route_after_resolve_context,
+    understand_and_bound_request_node,
     route_after_approval,
     route_after_check_research,
     route_after_research_interrupt,
@@ -1173,3 +1176,42 @@ def test_review_risk_connects_directly_to_tech_lead_analyse() -> None:
     targets_from_review_risk = [t for s, t in edges if s == NodeName.REVIEW_RISK]
     assert NodeName.TECH_LEAD_ANALYSE in targets_from_review_risk
     assert "3_check_clarification" not in targets_from_review_risk
+
+
+def test_request_context_is_resolved_before_research(monkeypatch) -> None:
+    state = graph_state(
+        request="Code AF-052 for Agent Factory",
+        supplied_context={
+            "project_reference": {"project_key": "agent-factory"},
+            "backlog_reference": {
+                "item_id": "AF-052",
+                "title": "Implement validation",
+                "body": "Acceptance Criteria: bounded validation.",
+            },
+        },
+    )
+
+    understood = understand_and_bound_request_node(state)
+    state.update(understood)
+    resolved = resolve_context_node(state)
+    state.update(resolved)
+
+    assert route_after_resolve_context(state) == NodeName.CHECK_RESEARCH
+    assert state["unresolved_references"] == []
+    assert "bounded validation" in state["bounded_request"]
+
+
+def test_unresolved_reference_routes_to_clarification_before_research() -> None:
+    state = graph_state(
+        request="Code AF-052 for Agent Factory",
+        supplied_context={},
+    )
+
+    state.update(understand_and_bound_request_node(state))
+    state.update(resolve_context_node(state))
+
+    assert route_after_resolve_context(state) == NodeName.END_NODE
+    assert state["orchestrator_input_required"] is True
+    assert state["orchestrator_input_question"] == (
+        "What does AF-052 refer to, and where should I retrieve it from?"
+    )

@@ -63,4 +63,10 @@ def valid_settings_dict() -> dict[str, Any]:
         "telegram_webhook_secret_token": "",
         "allowed_project_roots": [str(PROJECT_ROOT)],
         "sleep_mode": False,
+        "backlog_project_key": "ai-tech-lead",
+        "backlog_spreadsheet_id": "test-spreadsheet-id",
+        "backlog_sheet_name": "AI Tech Lead Backlog",
+        "backlog_google_credentials_path": "tests/fixtures/fake-credentials.json",
+        "backlog_projects": {},
+        "backlog_pending_update_max_attempts": 5,
     }

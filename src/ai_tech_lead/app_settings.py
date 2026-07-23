@@ -60,6 +60,12 @@ class AppSettings:
     coding_agent_progress_interval_seconds: int
     allowed_project_roots: list[str]
     sleep_mode: bool
+    backlog_project_key: str
+    backlog_spreadsheet_id: str
+    backlog_sheet_name: str
+    backlog_google_credentials_path: str
+    backlog_projects: dict[str, dict[str, str]]
+    backlog_pending_update_max_attempts: int
 
 
 def load_settings(settings_path: Path = SETTINGS_PATH) -> AppSettings:
@@ -242,6 +248,19 @@ def parse_settings(raw_settings: dict[str, Any]) -> AppSettings:
             "sleep_mode",
             default=False,
         ),
+        backlog_project_key=_required_string(raw_settings, "backlog_project_key"),
+        backlog_spreadsheet_id=_required_string(raw_settings, "backlog_spreadsheet_id"),
+        backlog_sheet_name=_required_string(raw_settings, "backlog_sheet_name"),
+        backlog_google_credentials_path=_required_string(
+            raw_settings,
+            "backlog_google_credentials_path",
+        ),
+        backlog_projects=_optional_backlog_projects(raw_settings, "backlog_projects"),
+        backlog_pending_update_max_attempts=_optional_positive_int(
+            raw_settings,
+            "backlog_pending_update_max_attempts",
+            default=5,
+        ),
     )
     _validate_telegram_settings(settings)
     _validate_research_settings(settings)
@@ -294,6 +313,12 @@ def settings_to_dict(settings: AppSettings) -> dict[str, Any]:
         "coding_agent_progress_interval_seconds": settings.coding_agent_progress_interval_seconds,
         ALLOWED_PROJECT_ROOTS_KEY: settings.allowed_project_roots,
         "sleep_mode": settings.sleep_mode,
+        "backlog_project_key": settings.backlog_project_key,
+        "backlog_spreadsheet_id": settings.backlog_spreadsheet_id,
+        "backlog_sheet_name": settings.backlog_sheet_name,
+        "backlog_google_credentials_path": settings.backlog_google_credentials_path,
+        "backlog_projects": settings.backlog_projects,
+        "backlog_pending_update_max_attempts": settings.backlog_pending_update_max_attempts,
     }
 
 
@@ -423,6 +448,41 @@ def _optional_url(
     if not cleaned_value.startswith(("http://", "https://")):
         raise ValueError(f"Setting '{key}' must start with http:// or https://.")
     return cleaned_value
+
+
+def _optional_backlog_projects(
+    raw_settings: dict[str, Any],
+    key: str,
+) -> dict[str, dict[str, str]]:
+    value = raw_settings.get(key)
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ValueError(f"Setting '{key}' must be an object of project_key -> entry.")
+
+    projects: dict[str, dict[str, str]] = {}
+    for project_key, entry in value.items():
+        if not isinstance(project_key, str) or not project_key.strip():
+            raise ValueError(f"Setting '{key}' keys must be non-empty project keys.")
+        if not isinstance(entry, dict):
+            raise ValueError(f"Setting '{key}[\"{project_key}\"]' must be an object.")
+        spreadsheet_id = entry.get("spreadsheet_id")
+        sheet_name = entry.get("sheet_name")
+        if (
+            not isinstance(spreadsheet_id, str)
+            or not spreadsheet_id.strip()
+            or not isinstance(sheet_name, str)
+            or not sheet_name.strip()
+        ):
+            raise ValueError(
+                f"Setting '{key}[\"{project_key}\"]' must define non-empty "
+                "spreadsheet_id and sheet_name."
+            )
+        projects[project_key.strip()] = {
+            "spreadsheet_id": spreadsheet_id.strip(),
+            "sheet_name": sheet_name.strip(),
+        }
+    return projects
 
 
 def _required_telegram_transport(raw_settings: dict[str, Any]) -> str:

@@ -16,6 +16,7 @@ class BacklogStatus(StrEnum):
     DONE = "Done"
     WONT_DO = "Won't Do"
     OBSOLETE = "Obsolete"
+    DEFERRED = "Deferred"
 
 
 _STATUS_BY_NUMBER: dict[str, BacklogStatus] = {

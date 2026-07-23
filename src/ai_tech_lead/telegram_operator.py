@@ -19,7 +19,6 @@ from dataclasses import dataclass
 from dataclasses import replace as dc_replace
 from enum import StrEnum
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
 from typing import Any, Callable
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urlparse
@@ -33,14 +32,23 @@ from .backlog_draft_builder import (
     BacklogRefinementBuildError,
     build_backlog_refinement_from_text,
 )
-from .backlog_loader import backlog_item_to_graph_state, load_backlog_item_by_id
+from .backlog_loader import backlog_item_to_graph_state
 from .backlog_repository import (
     BacklogItem,
     BacklogRefinementDraft,
-    MarkdownBacklogRepository,
+    BacklogValidationError,
     format_backlog_list_item,
 )
-from .backlog_status import backlog_status_choices, normalize_backlog_status
+from .backlog_runtime_store import (
+    BacklogRuntimeStore,
+    enqueue_and_flush_update,
+    run_pending_backlog_recovery,
+)
+from .backlog_sheets_repository import (
+    BacklogSourceUnavailableError,
+    repository_from_settings,
+)
+from .backlog_status import BacklogStatus, backlog_status_choices, normalize_backlog_status
 from .checkpointer_store import get_checkpointer
 from .coding_agent_runner import CodingAgentCancellationToken
 from .coding_workflow_graph import GraphState, build_graph, build_initial_graph_state
@@ -640,14 +648,43 @@ class TelegramOperator:
         self._send_message(chat_id, self._help_text())
 
     def _run_backlog_task(self, chat_id: str, task_id: str) -> None:
+        repository = self._get_repository()
         try:
-            backlog_item = load_backlog_item_by_id(task_id)
-        except ValueError as error:
+            source_record = repository.get_item_with_source(task_id)
+        except (ValueError, BacklogValidationError, BacklogSourceUnavailableError) as error:
             logger.info(
                 "Telegram run: backlog item selection failed for chat %s: %s", chat_id, error
             )
             self._send_message(chat_id, str(error))
             return
+
+        backlog_item = source_record.item
+        if backlog_item.status in {
+            BacklogStatus.DONE,
+            BacklogStatus.WONT_DO,
+            BacklogStatus.OBSOLETE,
+            BacklogStatus.DEFERRED,
+        }:
+            message = (
+                f"Backlog item '{backlog_item.item_id}' is Done and cannot be selected "
+                "for execution."
+            )
+            logger.info("Telegram run: %s", message)
+            self._send_message(chat_id, message)
+            return
+
+        reference = repository.reference
+        BacklogRuntimeStore().save_snapshot(
+            request_id=_telegram_backlog_request_id(backlog_item.item_id),
+            project_key=reference.project_key,
+            spreadsheet_id=reference.spreadsheet_id,
+            sheet_name=reference.sheet_name,
+            item_id=backlog_item.item_id,
+            row_data=source_record.row_values,
+            row_hash=source_record.row_hash,
+            fetched_at=source_record.fetched_at,
+        )
+
         graph_state = backlog_item_to_graph_state(backlog_item)
         task_label = f"{backlog_item.item_id} - {backlog_item.title}"
         request_summary = _backlog_request_summary(backlog_item)
@@ -1193,16 +1230,57 @@ class TelegramOperator:
             parts.append("No files changed.")
 
         validation_note = " ".join(parts)
+        request_id = _telegram_backlog_request_id(backlog_item_id)
 
         try:
             repository = self._get_repository()
-            repository.complete_item(backlog_item_id, validation_note)
-            logger.info("Finalize: %s marked Done in backlog.", backlog_item_id)
-            return True, None
+            runtime_store = BacklogRuntimeStore()
+            snapshot = runtime_store.get_snapshot(request_id)
+            if snapshot is not None:
+                expected_row_hash = snapshot.row_hash
+            else:
+                # No snapshot (process restarted since /run, or an
+                # out-of-band completion): treat the current row as the
+                # expected source rather than refusing to close the item.
+                expected_row_hash = repository.get_item_with_source(backlog_item_id).row_hash
+
+            sync_status = enqueue_and_flush_update(
+                runtime_store=runtime_store,
+                sheets_repository=repository,
+                request_id=request_id,
+                item_id=backlog_item_id,
+                update_fields={
+                    "Status": BacklogStatus.DONE.value,
+                    "Evidence / Validation": validation_note,
+                },
+                expected_row_hash=expected_row_hash,
+                max_attempts=self._settings.backlog_pending_update_max_attempts,
+            )
         except Exception as exc:
             alert = f"ALERT: Could not update backlog for {backlog_item_id}: {exc}"
             logger.error("Finalize: %s", alert)
             return False, alert
+
+        runtime_store.mark_snapshot_status(
+            request_id, "completed" if sync_status == "synced" else sync_status
+        )
+
+        if sync_status == "synced":
+            logger.info("Finalize: %s marked Done in backlog.", backlog_item_id)
+            return True, None
+        if sync_status == "conflict":
+            alert = (
+                f"ALERT: {backlog_item_id} changed in the Sheet while this task ran. "
+                "Status/evidence were NOT written; see sync_conflicts for review."
+            )
+            logger.warning("Finalize: %s", alert)
+            return False, alert
+        alert = (
+            f"ALERT: Backlog update for {backlog_item_id} is queued "
+            f"(sync status: {sync_status})."
+        )
+        logger.warning("Finalize: %s", alert)
+        return False, alert
 
     def _orchestrator_input_expectation_message(
         self,
@@ -1593,14 +1671,7 @@ class TelegramOperator:
         self._telegram_agent_session_cost_usd += usage_cost_usd
 
     def _get_repository(self):
-        from .backlog_store import SqliteBacklogRepository
-
-        path = Path(self._settings.backlog_path)
-        if not path.is_absolute():
-            path = Path(self._settings.project_root) / path
-        if path.suffix.lower() == ".sqlite3":
-            return SqliteBacklogRepository(path)
-        return MarkdownBacklogRepository(path)
+        return repository_from_settings(self._settings)
 
     def _send_message(self, chat_id: str, text: str) -> None:
         self._client.send_message(
@@ -1938,6 +2009,13 @@ def run_telegram_operator(*, execute_coding_agent_override: bool | None = None) 
         logger.info("Telegram operator disabled by settings.")
         return
 
+    try:
+        outcomes = run_pending_backlog_recovery(settings)
+        if outcomes:
+            logger.info("Backlog sync recovery at startup: %s", outcomes)
+    except Exception as exc:
+        logger.warning("Backlog sync recovery at startup failed (will retry later): %s", exc)
+
     operator = TelegramOperator(
         get_telegram_bot_token(),
         settings,
@@ -2105,6 +2183,16 @@ def _truncate_text(text: str, limit: int) -> str:
 def _summarize_text(text: str, limit: int = 120) -> str:
     first_line = next((line.strip() for line in text.splitlines() if line.strip()), text.strip())
     return _truncate_text(first_line, limit)
+
+
+def _telegram_backlog_request_id(item_id: str) -> str:
+    """Snapshot/outbox key for a Telegram-initiated backlog run.
+
+    Telegram has no separate Hub-style request_id for backlog runs, and only
+    one /run per item is meaningful at a time, so the item id itself keys
+    the snapshot (namespaced to avoid collision with Hub-issued request ids).
+    """
+    return f"telegram:{item_id}"
 
 
 def _backlog_start_message(item: BacklogItem, *, limit: int) -> str:

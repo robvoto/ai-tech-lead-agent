@@ -7,12 +7,27 @@ from helpers import valid_settings_dict
 from langchain_core.messages import AIMessage
 
 from ai_tech_lead.app_settings import parse_settings
+from ai_tech_lead.backlog_repository import MarkdownBacklogRepository
 from ai_tech_lead.telegram_agent_graph import (
     TelegramAgentReply,
     _build_backlog_tools,
     run_telegram_agent_message,
 )
 from ai_tech_lead.telegram_operator import TelegramCommand, TelegramCommandName, TelegramOperator
+
+
+def _patch_markdown_backlog(monkeypatch, backlog_path: Path) -> None:
+    """Point the live-repository factory at a Markdown fixture for this test.
+
+    Production code always resolves the backlog through
+    repository_from_settings (Google Sheets); tests inject a Markdown
+    repository here to keep fixture-based test authoring without hitting
+    real Sheets.
+    """
+    monkeypatch.setattr(
+        "ai_tech_lead.telegram_agent_graph.repository_from_settings",
+        lambda _settings: MarkdownBacklogRepository(backlog_path),
+    )
 
 
 def test_plain_text_uses_telegram_agent_graph_when_ai_enabled(monkeypatch, tmp_path: Path) -> None:
@@ -213,7 +228,7 @@ def test_run_telegram_agent_message_skips_usage_log_when_no_usage(caplog) -> Non
     assert "[LLM]" not in caplog.text
 
 
-def test_count_backlog_items_logs_learner_message(caplog, tmp_path: Path) -> None:
+def test_count_backlog_items_logs_learner_message(caplog, tmp_path: Path, monkeypatch) -> None:
     backlog_path = tmp_path / "BACKLOG.md"
     backlog_path.write_text(
         "# Backlog\n\n## ATL-001 - First item\n\nStatus: Backlog\n\nGoal:\nDo the first thing.\n",
@@ -222,6 +237,7 @@ def test_count_backlog_items_logs_learner_message(caplog, tmp_path: Path) -> Non
     raw_settings = valid_settings_dict()
     raw_settings["backlog_path"] = str(backlog_path)
     settings = parse_settings(raw_settings)
+    _patch_markdown_backlog(monkeypatch, backlog_path)
     tools = _build_backlog_tools(settings)
     count_tool = next(tool for tool in tools if tool.name == "count_backlog_items")
 
@@ -232,7 +248,7 @@ def test_count_backlog_items_logs_learner_message(caplog, tmp_path: Path) -> Non
     assert "[LEARN] Backlog tool is counting backlog items." in caplog.text
 
 
-def test_list_backlog_items_orders_and_shows_metadata(tmp_path: Path) -> None:
+def test_list_backlog_items_orders_and_shows_metadata(tmp_path: Path, monkeypatch) -> None:
     backlog_path = tmp_path / "BACKLOG.md"
     backlog_path.write_text(
         "# Backlog\n\n"
@@ -262,6 +278,7 @@ def test_list_backlog_items_orders_and_shows_metadata(tmp_path: Path) -> None:
     raw_settings = valid_settings_dict()
     raw_settings["backlog_path"] = str(backlog_path)
     settings = parse_settings(raw_settings)
+    _patch_markdown_backlog(monkeypatch, backlog_path)
     tools = _build_backlog_tools(settings)
     list_tool = next(tool for tool in tools if tool.name == "list_backlog_items")
 
@@ -279,7 +296,9 @@ def test_list_backlog_items_orders_and_shows_metadata(tmp_path: Path) -> None:
     assert "ATL-003" not in result
 
 
-def test_read_backlog_item_tool_returns_selected_item_details(tmp_path: Path) -> None:
+def test_read_backlog_item_tool_returns_selected_item_details(
+    tmp_path: Path, monkeypatch
+) -> None:
     backlog_path = tmp_path / "BACKLOG.md"
     backlog_path.write_text(
         "# Backlog\n\n"
@@ -291,6 +310,7 @@ def test_read_backlog_item_tool_returns_selected_item_details(tmp_path: Path) ->
     raw_settings = valid_settings_dict()
     raw_settings["backlog_path"] = str(backlog_path)
     settings = parse_settings(raw_settings)
+    _patch_markdown_backlog(monkeypatch, backlog_path)
     tools = _build_backlog_tools(settings)
     read_tool = next(tool for tool in tools if tool.name == "read_backlog_item")
 
@@ -301,7 +321,7 @@ def test_read_backlog_item_tool_returns_selected_item_details(tmp_path: Path) ->
     assert "Do the thing." in result
 
 
-def test_set_backlog_item_status_tool_updates_repository(tmp_path: Path) -> None:
+def test_set_backlog_item_status_tool_updates_repository(tmp_path: Path, monkeypatch) -> None:
     backlog_path = tmp_path / "BACKLOG.md"
     backlog_path.write_text(
         "# Backlog\n\n"
@@ -313,6 +333,7 @@ def test_set_backlog_item_status_tool_updates_repository(tmp_path: Path) -> None
     raw_settings = valid_settings_dict()
     raw_settings["backlog_path"] = str(backlog_path)
     settings = parse_settings(raw_settings)
+    _patch_markdown_backlog(monkeypatch, backlog_path)
     tools = _build_backlog_tools(settings)
     status_tool = next(tool for tool in tools if tool.name == "set_backlog_item_status")
 
@@ -323,7 +344,7 @@ def test_set_backlog_item_status_tool_updates_repository(tmp_path: Path) -> None
     assert "Status: Done" in backlog_path.read_text(encoding="utf-8")
 
 
-def test_set_backlog_item_status_tool_accepts_wont_do(tmp_path: Path) -> None:
+def test_set_backlog_item_status_tool_accepts_wont_do(tmp_path: Path, monkeypatch) -> None:
     backlog_path = tmp_path / "BACKLOG.md"
     backlog_path.write_text(
         "# Backlog\n\n"
@@ -335,6 +356,7 @@ def test_set_backlog_item_status_tool_accepts_wont_do(tmp_path: Path) -> None:
     raw_settings = valid_settings_dict()
     raw_settings["backlog_path"] = str(backlog_path)
     settings = parse_settings(raw_settings)
+    _patch_markdown_backlog(monkeypatch, backlog_path)
 
     tools = _build_backlog_tools(settings)
     status_tool = next(tool for tool in tools if tool.name == "set_backlog_item_status")

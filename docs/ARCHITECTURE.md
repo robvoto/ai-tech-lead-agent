@@ -99,9 +99,11 @@ Supporting modules such as `src/ai_tech_lead/backlog_graph_runner.py` call the c
   An external caller may own caller-side orchestration, paused-run bookkeeping, and resume or approval UX.
   AI Tech Lead owns the specialist-internal graph, prompts, approvals, and the mapping from internal pauses to the subprocess status contract.
   Future adapters may include web or other chat surfaces.
-- Backlog storage must stay behind a repository boundary. The current runtime backlog is `data/backlog.sqlite3`; the human planning backlog is the Google Sheet listed in `docs/INDEX.md`; the archived Markdown source/backup lives at `data/backlog/archive/BACKLOG.md`.
-- Backlog loading parses local task data and converts one selected item into
-  graph state. It must not silently choose work.
+- Google Sheets is the only canonical backlog. `SheetsBacklogRepository` (`backlog_sheets_repository.py`) is the live repository boundary — Telegram, chat tools, and the Agent Hub subprocess path all read/write through it. `MarkdownBacklogRepository` remains for the historical archive format only and is not constructed by any live call site.
+- `data/backlog.sqlite3` holds runtime state only, not backlog ownership: task snapshots (the exact source row and its hash at fetch time), a pending-update outbox for Sheet writes, and sync-conflict records (`backlog_runtime_store.py`). It exposes no create/edit/list/planning operations.
+- Every backlog-driven run follows one flow: fetch the exact Sheet row by `BacklogReference` (`backlog_reference.py` — project key, spreadsheet ID, sheet name, item ID; never hardcoded), snapshot it, execute, then write-ahead the completion update to the outbox and attempt an immediate flush. If the source row changed since the snapshot, the update is abandoned and a conflict is recorded instead of overwriting a human edit. If the Sheets call fails, the row stays pending for bounded recovery (`backlog-sync-recover` CLI command, also run automatically at Telegram-operator startup) — retries are bounded per row, never infinite, and a row is never silently reported as synced.
+- Only the `Status` and `Evidence / Validation` columns are ever written by runtime code.
+- Backlog loading parses the fetched item into graph state. It must not silently choose work.
 - Worker coding agents must not freely edit backlog storage. Any backlog edit must be explicitly requested, field-bounded, and owned by the human/orchestrator through a controlled repository boundary.
 - The coding workflow graph owns orchestration state, approval routing, brief creation, agent-instruction creation, orchestrator-input request state, and the coding-agent execution node.
 - Coding-agent handoffs now have three explicit instruction layers:

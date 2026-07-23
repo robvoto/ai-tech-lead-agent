@@ -9,7 +9,7 @@ from pathlib import Path
 
 from ai_tech_lead.app_settings import AppSettings, load_settings
 from ai_tech_lead.backlog_repository import MarkdownBacklogRepository
-from ai_tech_lead.backlog_store import SqliteBacklogRepository
+from ai_tech_lead.backlog_runtime_store import BacklogRuntimeStore
 from ai_tech_lead.checkpointer_store import get_checkpointer
 from ai_tech_lead.config import DATA_DIR, LOGS_DIR, PROJECT_ROOT, SETTINGS_PATH, ensure_project_dirs
 from ai_tech_lead.knowledge_store import (
@@ -48,8 +48,8 @@ def bootstrap_workspace(settings_path: Path = SETTINGS_PATH) -> list[str]:
 
     backlog_path = _resolve_project_path(settings.project_root, settings.backlog_path)
     if backlog_path.suffix.lower() == ".sqlite3":
-        SqliteBacklogRepository(backlog_path)
-        lines.append(f"Initialised backlog store: {backlog_path}")
+        BacklogRuntimeStore(backlog_path).ensure_initialized()
+        lines.append(f"Initialised backlog runtime store: {backlog_path}")
     else:
         MarkdownBacklogRepository(backlog_path)
         lines.append(f"Validated markdown backlog file: {backlog_path}")
@@ -114,7 +114,7 @@ def doctor_workspace(settings_path: Path = SETTINGS_PATH) -> WorkspaceHealthRepo
 
         note(
             "OK" if backlog_path.exists() else "WARN",
-            f"Backlog store: {backlog_path}",
+            f"Backlog runtime store: {backlog_path}",
         )
         note(
             "OK" if knowledge_store_path.exists() else "WARN",

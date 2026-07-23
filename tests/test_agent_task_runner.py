@@ -16,7 +16,17 @@ from typing import Any
 
 import pytest
 from helpers import valid_settings_dict
+from test_backlog_sheets_repository import (
+    CREDENTIALS_PATH,
+    HEADER,
+    SHEET_NAME,
+    FakeClient,
+    FakeSpreadsheet,
+    FakeWorksheet,
+    _row,
+)
 
+import ai_tech_lead.backlog_sheets_repository as sheets_mod
 from ai_tech_lead.agent_task_runner import (
     STATUS_APPROVAL_REQUIRED,
     STATUS_FAILED,
@@ -121,6 +131,35 @@ def _stub_settings(
         settings = replace(settings, **overrides)
 
     monkeypatch.setattr("ai_tech_lead.agent_task_runner.load_settings", lambda: settings)
+
+
+def _execution_success_output(summary: str = "Task completed successfully.") -> dict[str, Any]:
+    """Minimal output dict for a real (executed, not just formulated) success."""
+    return {
+        "request_id": "",
+        "status": STATUS_SUCCESS,
+        "summary": summary,
+        "formulated_task": "",
+        "brief": "",
+        "coding_agent_instruction": "implement it",
+        "backend_used": "codex",
+        "execution_performed": True,
+        "logs": [],
+        "evidence": [],
+        "next_action": "Review output.",
+        "result_kind": "execution_result",
+        "caller_action": "consume_result",
+        "resume_supported": False,
+        "resume_fields": [],
+        "interrupt_kind": "",
+    }
+
+
+def _install_fake_sheets_client(monkeypatch: pytest.MonkeyPatch, spreadsheet_id: str, row) -> None:
+    """Inject a fake gspread client so backlog_reference resolution hits no network."""
+    worksheet = FakeWorksheet([HEADER, row])
+    client = FakeClient({spreadsheet_id: FakeSpreadsheet({SHEET_NAME: worksheet})})
+    monkeypatch.setattr(sheets_mod, "_client_cache", {CREDENTIALS_PATH: client})
 
 
 # ---------------------------------------------------------------------------
@@ -944,3 +983,201 @@ def test_execute_workflow_translates_existing_graph_progress_callbacks(
     ]
     assert result["status"] == STATUS_SUCCESS
     assert result["result_kind"] == "instruction_package"
+
+
+# ---------------------------------------------------------------------------
+# backlog_reference (Agent Hub-facing structured backlog identity)
+# ---------------------------------------------------------------------------
+
+
+def test_malformed_backlog_reference_is_rejected_clearly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _stub_settings(monkeypatch)
+    _make_fake_workflow(monkeypatch, _execution_success_output())
+    input_file, output_file = _write_input(
+        tmp_path,
+        {"task": "do the thing", "backlog_reference": {"item_id": "ATL-001"}},
+    )
+
+    exit_code = run_agent_task(input_file, output_file)
+
+    assert exit_code == 1
+    result = _read_output(output_file)
+    assert result["status"] == STATUS_FAILED
+    assert "backlog_reference could not be resolved" in result["summary"]
+    assert result["backlog_sync_status"] == "not_applicable"
+
+
+def test_backlog_reference_unknown_item_id_is_rejected_clearly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _stub_settings(monkeypatch)
+    _make_fake_workflow(monkeypatch, _execution_success_output())
+    _install_fake_sheets_client(
+        monkeypatch, "spreadsheet-a", _row("ATL-001", "Existing item")
+    )
+    input_file, output_file = _write_input(
+        tmp_path,
+        {
+            "task": "do the thing",
+            "backlog_reference": {
+                "spreadsheet_id": "spreadsheet-a",
+                "sheet_name": SHEET_NAME,
+                "item_id": "ATL-999",
+            },
+        },
+    )
+
+    exit_code = run_agent_task(input_file, output_file)
+
+    assert exit_code == 1
+    result = _read_output(output_file)
+    assert result["status"] == STATUS_FAILED
+    assert "backlog_reference could not be resolved" in result["summary"]
+
+
+def test_backlog_reference_syncs_on_real_execution_success(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _stub_settings(monkeypatch)
+    _make_fake_workflow(monkeypatch, _execution_success_output("Implemented the change."))
+    _install_fake_sheets_client(
+        monkeypatch, "spreadsheet-a", _row("ATL-001", "Existing item", status="Backlog")
+    )
+    input_file, output_file = _write_input(
+        tmp_path,
+        {
+            "request_id": "req-hub-1",
+            "task": "do the thing",
+            "backlog_reference": {
+                "spreadsheet_id": "spreadsheet-a",
+                "sheet_name": SHEET_NAME,
+                "item_id": "ATL-001",
+            },
+        },
+    )
+
+    exit_code = run_agent_task(input_file, output_file)
+
+    assert exit_code == 0
+    result = _read_output(output_file)
+    assert result["status"] == STATUS_SUCCESS
+    assert result["backlog_sync_status"] == "synced"
+
+    from ai_tech_lead.backlog_reference import BacklogReference
+    from ai_tech_lead.backlog_sheets_repository import SheetsBacklogRepository
+
+    repository = SheetsBacklogRepository(
+        BacklogReference("ai-tech-lead", "spreadsheet-a", SHEET_NAME, ""),
+        credentials_path=CREDENTIALS_PATH,
+    )
+    assert repository.get_item("ATL-001").status.value == "Done"
+
+
+def test_backlog_reference_not_applicable_when_only_instruction_produced(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An instruction_package (no real execution) must not touch the Sheet."""
+    _stub_settings(monkeypatch)
+    _make_fake_workflow(monkeypatch, _success_output())
+    _install_fake_sheets_client(
+        monkeypatch, "spreadsheet-a", _row("ATL-001", "Existing item", status="Backlog")
+    )
+    input_file, output_file = _write_input(
+        tmp_path,
+        {
+            "request_id": "req-hub-2",
+            "task": "do the thing",
+            "backlog_reference": {
+                "spreadsheet_id": "spreadsheet-a",
+                "sheet_name": SHEET_NAME,
+                "item_id": "ATL-001",
+            },
+        },
+    )
+
+    exit_code = run_agent_task(input_file, output_file)
+
+    assert exit_code == 0
+    result = _read_output(output_file)
+    assert result["backlog_sync_status"] == "not_applicable"
+
+    from ai_tech_lead.backlog_reference import BacklogReference
+    from ai_tech_lead.backlog_sheets_repository import SheetsBacklogRepository
+
+    repository = SheetsBacklogRepository(
+        BacklogReference("ai-tech-lead", "spreadsheet-a", SHEET_NAME, ""),
+        credentials_path=CREDENTIALS_PATH,
+    )
+    assert repository.get_item("ATL-001").status.value == "Backlog"
+
+
+def test_backlog_reference_supports_dynamic_second_spreadsheet(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A spreadsheet AI Tech Lead has never seen before works with no code change."""
+    _stub_settings(monkeypatch)
+    worksheet_hub = FakeWorksheet(
+        [HEADER, _row("HUB-001", "Hub item", status="Backlog")]
+    )
+    client = FakeClient({"spreadsheet-hub": FakeSpreadsheet({SHEET_NAME: worksheet_hub})})
+    monkeypatch.setattr(sheets_mod, "_client_cache", {CREDENTIALS_PATH: client})
+    _make_fake_workflow(monkeypatch, _execution_success_output())
+    input_file, output_file = _write_input(
+        tmp_path,
+        {
+            "request_id": "req-hub-3",
+            "task": "do the thing",
+            "backlog_reference": {
+                "project_key": "agent-hub",
+                "spreadsheet_id": "spreadsheet-hub",
+                "sheet_name": SHEET_NAME,
+                "item_id": "HUB-001",
+            },
+        },
+    )
+
+    exit_code = run_agent_task(input_file, output_file)
+
+    assert exit_code == 0
+    result = _read_output(output_file)
+    assert result["backlog_sync_status"] == "synced"
+
+
+def test_backlog_reference_reuses_existing_snapshot_on_resubmission(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A resubmitted request_id continues its existing snapshot, not a fresh one."""
+    from ai_tech_lead.backlog_runtime_store import BacklogRuntimeStore
+
+    _stub_settings(monkeypatch)
+    _install_fake_sheets_client(
+        monkeypatch, "spreadsheet-a", _row("ATL-001", "Existing item", status="Backlog")
+    )
+    _make_fake_workflow(monkeypatch, _approval_required_output())
+    input_file, output_file = _write_input(
+        tmp_path,
+        {
+            "request_id": "req-resume-1",
+            "task": "do the thing",
+            "backlog_reference": {
+                "spreadsheet_id": "spreadsheet-a",
+                "sheet_name": SHEET_NAME,
+                "item_id": "ATL-001",
+            },
+        },
+    )
+
+    run_agent_task(input_file, output_file)
+    store = BacklogRuntimeStore()
+    first_snapshot = store.get_snapshot("req-resume-1")
+    assert first_snapshot is not None
+
+    # Resubmit the same request_id (e.g. after providing clarification).
+    run_agent_task(input_file, output_file)
+    second_snapshot = store.get_snapshot("req-resume-1")
+
+    assert second_snapshot is not None
+    assert second_snapshot.request_id == first_snapshot.request_id
+    assert second_snapshot.item_id == "ATL-001"

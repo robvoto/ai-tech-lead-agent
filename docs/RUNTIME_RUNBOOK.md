@@ -62,7 +62,16 @@ uv run python -m ai_tech_lead knowledge-store stats
 uv run python -m ai_tech_lead knowledge-store backup /tmp/knowledge_store.sqlite3.bak
 uv run python -m ai_tech_lead knowledge-store restore /tmp/knowledge_store.sqlite3.bak
 uv run python -m ai_tech_lead knowledge-store compact
+uv run python -m ai_tech_lead backlog-sync-recover
 ```
+
+`backlog-sync-recover` runs a bounded recovery pass over backlog Sheet updates that
+failed to sync (network/API errors during task completion). It also runs
+automatically at Telegram-operator startup. Each pending update has a bounded
+number of attempts (`backlog_pending_update_max_attempts` in settings); once
+exhausted it is marked abandoned rather than retried forever or silently
+dropped. Exit code is non-zero if anything is still pending, in conflict, or
+abandoned after the pass.
 
 `bootstrap-project-pack` is an explicit operator action that writes a small starter
 `AGENTS.md`, `docs/INDEX.md`, and `.skills/` pack into a reviewed target repo.
@@ -80,7 +89,21 @@ uv run python -m ai_tech_lead run-agent-task --input-json /tmp/subprocess-task.j
 ```
 
 The input JSON must include `task`. Common optional fields are `request_id`, Hub `run_id`,
-`source`, `project_root`, `execution_mode`, `human_approved`, and `approval_token`.
+`source`, `project_root`, `execution_mode`, `human_approved`, `approval_token`, and
+`backlog_reference`.
+
+- `backlog_reference` is an explicit pointer to one row in one Google Sheet backlog:
+  `{"project_key": "...", "spreadsheet_id": "...", "sheet_name": "...", "item_id": "..."}`.
+  `spreadsheet_id`/`sheet_name` may be omitted if `project_key` resolves through the
+  local `backlog_projects` settings registry. An invalid or inaccessible reference
+  fails the request clearly — there is no silent fallback to free-text-only mode.
+- When `backlog_reference` is supplied and the run actually executes code
+  successfully, AI Tech Lead writes the item's `Status`/`Evidence / Validation`
+  columns back to the Sheet and reports the outcome in the response field
+  `backlog_sync_status`: `not_applicable` (no reference, or only an instruction
+  was produced), `synced`, `pending` (Sheet call failed, queued for recovery),
+  `conflict` (the source row changed since it was fetched — nothing was
+  overwritten), or `abandoned` (recovery attempts exhausted).
 
 - When `run_id` is supplied, stdout is reserved for one structured progress JSON object per line. Runtime and coding-agent logs remain on stderr. The final result still goes only to `--output-json`.
 - When `run_id` is omitted, the subprocess contract emits no progress lines to stdout.

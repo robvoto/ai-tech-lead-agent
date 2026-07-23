@@ -16,11 +16,11 @@ def _isolate_checkpointer(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def _isolate_backlog_store(tmp_path, monkeypatch):
-    """Redirect the SQLite backlog store to a per-test temp path."""
-    import ai_tech_lead.backlog_store as bs_mod
+def _isolate_backlog_runtime_store(tmp_path, monkeypatch):
+    """Redirect the SQLite backlog runtime store to a per-test temp path."""
+    import ai_tech_lead.backlog_runtime_store as brs_mod
 
-    monkeypatch.setattr(bs_mod, "BACKLOG_DB_PATH", tmp_path / "backlog.sqlite3")
+    monkeypatch.setattr(brs_mod, "BACKLOG_DB_PATH", tmp_path / "backlog.sqlite3")
 
 
 @pytest.fixture(autouse=True)

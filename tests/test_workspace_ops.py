@@ -39,11 +39,14 @@ def test_bootstrap_workspace_initializes_expected_paths(monkeypatch, tmp_path: P
 
     created_backlog_paths: list[Path] = []
 
-    class _FakeBacklogRepository:
+    class _FakeBacklogRuntimeStore:
         def __init__(self, backlog_path: Path) -> None:
             created_backlog_paths.append(backlog_path)
 
-    monkeypatch.setattr(workspace_ops, "SqliteBacklogRepository", _FakeBacklogRepository)
+        def ensure_initialized(self) -> None:
+            pass
+
+    monkeypatch.setattr(workspace_ops, "BacklogRuntimeStore", _FakeBacklogRuntimeStore)
 
     created_knowledge_paths: list[Path] = []
 

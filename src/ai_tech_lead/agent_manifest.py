@@ -61,6 +61,7 @@ def build_agent_manifest(settings: AppSettings | None = None) -> dict[str, Any]:
             "setup": "setup",
             "doctor": "doctor",
             "knowledge_store": "knowledge-store stats|backup|restore|compact",
+            "backlog_sync_recovery": "backlog-sync-recover",
         },
         "input_contract": {
             "required": ["task"],
@@ -72,8 +73,21 @@ def build_agent_manifest(settings: AppSettings | None = None) -> dict[str, Any]:
                 "execution_mode",
                 "human_approved",
                 "approval_token",
+                "backlog_reference",
+                "project_reference",
+                "resource_references",
             ],
             "execution_modes": ["instruction_only", "execute"],
+            "context_resolution": (
+                "AI Tech Lead understands and bounds the request, resolves explicit project/resource "
+                "context, and asks one clarification question for unresolved references before research."
+            ),
+            "backlog_reference_shape": {
+                "item_id": "required",
+                "project_key": "required unless spreadsheet_id and sheet_name are both given",
+                "spreadsheet_id": "required unless project_key resolves via a configured alias",
+                "sheet_name": "required unless project_key resolves via a configured alias",
+            },
         },
         "output_contract": {
             "status_values": _SUPPORTED_OUTPUT_STATUSES,
@@ -94,7 +108,15 @@ def build_agent_manifest(settings: AppSettings | None = None) -> dict[str, Any]:
                 "resume_supported",
                 "resume_fields",
                 "interrupt_kind",
+                "backlog_sync_status",
                 "agent_manifest",
+            ],
+            "backlog_sync_status_values": [
+                "not_applicable",
+                "synced",
+                "pending",
+                "conflict",
+                "abandoned",
             ],
         },
         "status_contract": {

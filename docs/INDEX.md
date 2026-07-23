@@ -9,13 +9,13 @@ Use this file as the single documentation entry point. Start here, then open onl
 
 ## Backlog source of truth
 
-Human planning backlog for AI agents / AI Tech Lead data, setup, production, and knowledge-store work:
+The Google Sheet is the only canonical backlog for AI agents / AI Tech Lead data, setup, production, and knowledge-store work — the running app reads and writes it directly, it is not just a human planning reference:
 
 ```text
 https://docs.google.com/spreadsheets/d/1-e2lQ6vLUD8A5t3cuLhrjRvdTbs3hfs4ptdEE2yDaEc/edit
 ```
 
-Runtime backlog source:
+Runtime state only (not backlog ownership — task snapshots, pending Sheet updates, sync conflicts):
 
 ```text
 data/backlog.sqlite3
@@ -23,10 +23,11 @@ data/backlog.sqlite3
 
 Rules:
 
-- The Google Sheet is the human planning backlog and the source of truth for backlog decisions.
-- The running app reads runtime backlog items from SQLite.
+- The Google Sheet is the sole canonical backlog. SQLite never acts as an independent backlog.
+- Only the `Status` and `Evidence / Validation` columns are ever written by runtime code.
 - Do not add hidden alternate backlog sources or silent source switching.
 - If a backlog source is missing, stale, inaccessible, or inconsistent, stop and ask the operator.
+- If a Sheet update fails, it queues in the pending-update outbox for bounded recovery (`uv run python -m ai_tech_lead backlog-sync-recover`) — never silently reported as synced.
 
 ## Core project documents
 

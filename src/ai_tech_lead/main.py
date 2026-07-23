@@ -66,6 +66,10 @@ def main() -> int:
         configure_logging(debug=args.debug)
         return _run_knowledge_store(args)
 
+    if getattr(args, "command", None) == "backlog-sync-recover":
+        configure_logging(debug=args.debug)
+        return _run_backlog_sync_recover()
+
     configure_logging(debug=args.debug)
 
     if args.reload:
@@ -229,6 +233,11 @@ def _parse_args() -> argparse.Namespace:
     knowledge_subparsers.add_parser(
         "compact",
         help="Compact the knowledge store in place.",
+    )
+
+    subparsers.add_parser(
+        "backlog-sync-recover",
+        help="Retry pending Google Sheets backlog updates that failed to sync.",
     )
 
     return parser.parse_args()
@@ -430,6 +439,27 @@ def _run_knowledge_store(args: argparse.Namespace) -> int:
     except Exception as error:
         logger.error("Knowledge-store command failed: %s", error)
         return 1
+
+
+def _run_backlog_sync_recover() -> int:
+    """Run a bounded recovery pass over pending Google Sheets backlog updates."""
+
+    settings = _load_settings_for_startup()
+    if settings is None:
+        return 1
+
+    from ai_tech_lead.backlog_runtime_store import run_pending_backlog_recovery
+
+    outcomes = run_pending_backlog_recovery(settings)
+    if not outcomes:
+        print("No pending backlog updates.")
+        return 0
+
+    for status in outcomes:
+        print(f"Pending backlog update: {status}")
+    unresolved = sum(1 for status in outcomes if status != "synced")
+    print(f"Processed {len(outcomes)} pending update(s); {unresolved} still need attention.")
+    return 1 if unresolved else 0
 
 
 def _resolve_project_path(project_root: str, path_value: str) -> Path:

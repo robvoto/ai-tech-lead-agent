@@ -15,10 +15,9 @@ from typing import Any
 from ai_tech_lead.app_settings import AppSettings
 from ai_tech_lead.backlog_repository import (
     BacklogRefinementDraft,
-    MarkdownBacklogRepository,
+    BacklogRepositoryProtocol,
     validate_backlog_refinement_draft,
 )
-from ai_tech_lead.backlog_store import SqliteBacklogRepository
 from ai_tech_lead.logging_setup import LOGGER_NAME
 from ai_tech_lead.orchestrator_llm import (
     OrchestratorLlmConfig,
@@ -48,7 +47,7 @@ class BacklogRefinementBuildResult:
 def build_backlog_refinement_from_text(
     *,
     text: str,
-    repository: MarkdownBacklogRepository | SqliteBacklogRepository,
+    repository: BacklogRepositoryProtocol,
     settings: AppSettings,
 ) -> BacklogRefinementBuildResult:
     """Use the orchestrator AI to turn a rough idea into a refined backlog item."""

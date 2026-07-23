@@ -26,6 +26,10 @@ from typing import Any
 
 from .agent_manifest import agent_manifest_reference
 from .app_settings import load_settings
+from .backlog_reference import BacklogReferenceError, resolve_backlog_reference
+from .backlog_repository import BacklogValidationError
+from .backlog_runtime_store import BacklogRuntimeStore, enqueue_and_flush_update
+from .backlog_sheets_repository import BacklogSourceUnavailableError, SheetsBacklogRepository
 from .logging_setup import LOGGER_NAME
 from .progress_events import (
     ProgressReporter,
@@ -141,6 +145,46 @@ def run_agent_task(input_path: str | Path, output_path: str | Path) -> int:
         return 1
 
     try:
+        # Backlog reference: an explicit, caller-supplied pointer to one row in one
+        # Google Sheet. Resolved and snapshotted before execution; never a hidden
+        # or discovered selection. No reference means no backlog side-effects.
+        backlog_reference = None
+        sheets_repository = None
+        source_record = None
+        raw_backlog_reference = task_input.get("backlog_reference")
+        if raw_backlog_reference is not None:
+            try:
+                backlog_reference = resolve_backlog_reference(raw_backlog_reference, settings)
+                sheets_repository = SheetsBacklogRepository(
+                    backlog_reference,
+                    credentials_path=settings.backlog_google_credentials_path,
+                )
+                source_record = sheets_repository.get_item_with_source(backlog_reference.item_id)
+            except (
+                BacklogReferenceError,
+                ValueError,
+                BacklogValidationError,
+                BacklogSourceUnavailableError,
+            ) as exc:
+                _write_error_output(
+                    output_file,
+                    progress_reporter,
+                    request_id,
+                    f"backlog_reference could not be resolved: {exc}",
+                    settings=settings,
+                )
+                return 1
+            BacklogRuntimeStore().save_snapshot(
+                request_id=request_id,
+                project_key=backlog_reference.project_key,
+                spreadsheet_id=backlog_reference.spreadsheet_id,
+                sheet_name=backlog_reference.sheet_name,
+                item_id=backlog_reference.item_id,
+                row_data=source_record.row_values,
+                row_hash=source_record.row_hash,
+                fetched_at=source_record.fetched_at,
+            )
+
         # Approval token: human_approved=true requires a valid token issued by this process.
         human_approved = False
         if task_input.get("human_approved"):
@@ -175,6 +219,12 @@ def run_agent_task(input_path: str | Path, output_path: str | Path) -> int:
                     project_root=project_root,
                     human_approved=human_approved,
                     progress_reporter=progress_reporter,
+                    supplied_context=_build_supplied_context(
+                        task_input=task_input,
+                        project_root=project_root,
+                        backlog_reference=backlog_reference,
+                        source_record=source_record,
+                    ),
                 )
         except (KeyboardInterrupt, SystemExit):
             progress_reporter.cancelled()
@@ -202,6 +252,16 @@ def run_agent_task(input_path: str | Path, output_path: str | Path) -> int:
                 request_id,
             )
 
+        if backlog_reference is not None:
+            result["backlog_sync_status"] = _sync_backlog_completion(
+                request_id=request_id,
+                backlog_reference=backlog_reference,
+                sheets_repository=sheets_repository,
+                source_row_hash=source_record.row_hash,
+                result=result,
+                settings=settings,
+            )
+
         emit_terminal_progress(progress_reporter, result)
         _write_output(output_file, result, settings=settings)
         return (
@@ -212,6 +272,30 @@ def run_agent_task(input_path: str | Path, output_path: str | Path) -> int:
         )
     finally:
         request_lock.release()
+
+
+def _build_supplied_context(
+    *,
+    task_input: dict[str, Any],
+    project_root: str | None,
+    backlog_reference: Any | None,
+    source_record: Any | None,
+) -> dict[str, Any]:
+    context: dict[str, Any] = {
+        "project_reference": task_input.get("project_reference") or {},
+        "resource_references": task_input.get("resource_references") or [],
+        "project_root": project_root or "",
+    }
+    if backlog_reference is not None and source_record is not None:
+        context["backlog_reference"] = {
+            "project_key": backlog_reference.project_key,
+            "spreadsheet_id": backlog_reference.spreadsheet_id,
+            "sheet_name": backlog_reference.sheet_name,
+            "item_id": backlog_reference.item_id,
+            "title": source_record.item.title,
+            "body": source_record.item.body,
+        }
+    return context
 
 
 def _validate_project_root(project_root_raw: str | None, settings: Any) -> str | None:
@@ -250,6 +334,7 @@ def _execute_workflow(
     project_root: str | None,
     human_approved: bool = False,
     progress_reporter: ProgressReporter | None = None,
+    supplied_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     from langgraph.checkpoint.memory import MemorySaver
 
@@ -274,6 +359,7 @@ def _execute_workflow(
         # Subprocess resubmissions are already approved; backlog-driven approval forcing stays local
         # to the coding workflow graph and should not be reintroduced here.
         force_approval=False,
+        supplied_context=supplied_context,
         approved=human_approved,
         approved_by="human-via-subprocess" if human_approved else "",
         approval_reason="",
@@ -288,6 +374,54 @@ def _execute_workflow(
         execute_coding_agent,
         state_snapshot=state_snapshot,
     )
+
+
+def _sync_backlog_completion(
+    *,
+    request_id: str,
+    backlog_reference: Any,
+    sheets_repository: SheetsBacklogRepository,
+    source_row_hash: str,
+    result: dict[str, Any],
+    settings: Any,
+) -> str:
+    """Write the backlog item's Status/Evidence back only on real execution success.
+
+    Returns the sync status: "not_applicable" (no execution happened this
+    run), "synced", "pending" (Sheets call failed, queued for recovery),
+    "conflict" (source row changed since the snapshot), or "abandoned".
+    """
+    if not (
+        result.get("status") == STATUS_SUCCESS
+        and result.get("result_kind") == RESULT_KIND_EXECUTION_RESULT
+    ):
+        return "not_applicable"
+
+    validation_note = f"Completed via Agent Hub request {request_id}. {result.get('summary', '')}"
+    runtime_store = BacklogRuntimeStore()
+    sync_status = enqueue_and_flush_update(
+        runtime_store=runtime_store,
+        sheets_repository=sheets_repository,
+        request_id=request_id,
+        item_id=backlog_reference.item_id,
+        update_fields={
+            "Status": "Done",
+            "Evidence / Validation": validation_note.strip(),
+        },
+        expected_row_hash=source_row_hash,
+        max_attempts=settings.backlog_pending_update_max_attempts,
+    )
+    runtime_store.mark_snapshot_status(
+        request_id, "completed" if sync_status == "synced" else sync_status
+    )
+    if sync_status != "synced":
+        logger.warning(
+            "[SUBPROCESS] backlog sync for request_id=%s item_id=%s ended in status=%s",
+            request_id,
+            backlog_reference.item_id,
+            sync_status,
+        )
+    return sync_status
 
 
 def _map_state_to_output(
@@ -418,6 +552,7 @@ def _map_state_to_output(
         "resume_supported": resume_supported,
         "resume_fields": resume_fields,
         "interrupt_kind": interrupt_kind,
+        "backlog_sync_status": "not_applicable",
     }
 
 
@@ -457,6 +592,7 @@ def _error_response(request_id: str, message: str, detail: str = "") -> dict[str
         "resume_supported": False,
         "resume_fields": [],
         "interrupt_kind": "",
+        "backlog_sync_status": "not_applicable",
     }
 
 

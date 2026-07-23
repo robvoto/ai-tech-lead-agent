@@ -6,10 +6,27 @@ from urllib.error import URLError
 
 import pytest
 from helpers import valid_settings_dict
+from test_backlog_sheets_repository import (
+    CREDENTIALS_PATH,
+    HEADER,
+    SHEET_NAME,
+    SPREADSHEET_ID,
+    FakeClient,
+    FakeSpreadsheet,
+    FakeWorksheet,
+    _row,
+)
 
+import ai_tech_lead.backlog_sheets_repository as sheets_mod
 from ai_tech_lead.app_settings import parse_settings
 from ai_tech_lead.backlog_draft_builder import BacklogRefinementBuildResult
-from ai_tech_lead.backlog_repository import BacklogItem, BacklogRefinementDraft
+from ai_tech_lead.backlog_reference import BacklogReference
+from ai_tech_lead.backlog_repository import (
+    BacklogItem,
+    BacklogRefinementDraft,
+    MarkdownBacklogRepository,
+)
+from ai_tech_lead.backlog_sheets_repository import SheetsBacklogRepository
 from ai_tech_lead.backlog_status import BacklogStatus
 from ai_tech_lead.config import PROJECT_ROOT
 from ai_tech_lead.telegram_agent_graph import TelegramAgentReply
@@ -28,6 +45,37 @@ from ai_tech_lead.telegram_operator import (
     parse_telegram_command,
     parse_telegram_update,
 )
+
+
+def _patch_markdown_backlog(monkeypatch, backlog_path) -> None:
+    """Point the live-repository factory at a Markdown fixture for this test.
+
+    Production code always resolves the backlog through
+    repository_from_settings (Google Sheets); tests inject a Markdown
+    repository here to keep fixture-based test authoring without hitting
+    real Sheets.
+    """
+    monkeypatch.setattr(
+        "ai_tech_lead.telegram_operator.repository_from_settings",
+        lambda _settings: MarkdownBacklogRepository(backlog_path),
+    )
+
+
+def _install_fake_sheets_repository(monkeypatch, worksheet) -> SheetsBacklogRepository:
+    """Point the live-repository factory at a fake Sheets client for this test.
+
+    Used for /run and completion flows, which need get_item_with_source —
+    a Sheets-specific method the Markdown repository does not implement.
+    """
+    client = FakeClient({SPREADSHEET_ID: FakeSpreadsheet({SHEET_NAME: worksheet})})
+    monkeypatch.setattr(sheets_mod, "_client_cache", {CREDENTIALS_PATH: client})
+    reference = BacklogReference("ai-tech-lead", SPREADSHEET_ID, SHEET_NAME, "")
+    repository = SheetsBacklogRepository(reference, credentials_path=CREDENTIALS_PATH)
+    monkeypatch.setattr(
+        "ai_tech_lead.telegram_operator.repository_from_settings",
+        lambda _settings: repository,
+    )
+    return repository
 
 
 def test_parse_run_command_with_backlog_id() -> None:
@@ -895,6 +943,7 @@ def test_propose_command_creates_and_approves_backlog_item(
     raw_settings["backlog_path"] = str(backlog_path)
     raw_settings["orchestrator_ai_enabled"] = True
     settings = parse_settings(raw_settings)
+    _patch_markdown_backlog(monkeypatch, backlog_path)
     client = _RecordingClient()
     operator = TelegramOperator("token", settings, client=client)
 
@@ -1085,8 +1134,9 @@ def test_commands_and_help_show_same_text() -> None:
     assert help_message == commands_message
 
 
-def test_backlog_commands_bypass_ai_and_respond_directly() -> None:
+def test_backlog_commands_bypass_ai_and_respond_directly(monkeypatch) -> None:
     settings = parse_settings(valid_settings_dict())
+    _patch_markdown_backlog(monkeypatch, PROJECT_ROOT / "tests" / "fixtures" / "BACKLOG.md")
     client = _RecordingClient()
     operator = TelegramOperator("dummy", settings, client=client)
 
@@ -1098,7 +1148,7 @@ def test_backlog_commands_bypass_ai_and_respond_directly() -> None:
         assert "orchestrator AI" not in reply.lower() and "enabled" not in reply.lower()
 
 
-def test_set_status_command_updates_backlog_item(tmp_path) -> None:
+def test_set_status_command_updates_backlog_item(tmp_path, monkeypatch) -> None:
     backlog_path = tmp_path / "BACKLOG.md"
     backlog_path.write_text(
         "# Backlog\n\n## ATL-001 - First item\n\nStatus: Backlog\n\nGoal:\nDo the thing.\n",
@@ -1107,6 +1157,7 @@ def test_set_status_command_updates_backlog_item(tmp_path) -> None:
     raw_settings = valid_settings_dict()
     raw_settings["backlog_path"] = str(backlog_path)
     settings = parse_settings(raw_settings)
+    _patch_markdown_backlog(monkeypatch, backlog_path)
     client = _RecordingClient()
     operator = TelegramOperator("token", settings, client=client)
 
@@ -1129,37 +1180,24 @@ def test_run_backlog_task_uses_explicit_item_and_starts_graph(
     settings = parse_settings(valid_settings_dict())
     client = _RecordingClient()
     operator = TelegramOperator("token", settings, client=client)
-    selected_item = BacklogItem(
-        item_id="ATL-001",
-        title="First item",
-        body="Goal:\nDo the thing.\n",
-        status=BacklogStatus.BACKLOG,
-    )
+    worksheet = FakeWorksheet([HEADER, _row("ATL-001", "First item", status="Backlog")])
+    _install_fake_sheets_repository(monkeypatch, worksheet)
     captured: dict[str, object] = {}
-
-    def fake_load_backlog_item_by_id(task_id: str) -> BacklogItem:
-        captured["task_id"] = task_id
-        return selected_item
 
     def fake_run_graph_task(self, **kwargs) -> None:
         captured["kwargs"] = kwargs
 
-    monkeypatch.setattr(
-        "ai_tech_lead.telegram_operator.load_backlog_item_by_id",
-        fake_load_backlog_item_by_id,
-    )
     monkeypatch.setattr(TelegramOperator, "_run_graph_task", fake_run_graph_task)
 
     operator._run_backlog_task("chat-1", "ATL-001")
 
-    assert captured["task_id"] == "ATL-001"
     assert captured["kwargs"]["backlog_item_id"] == "ATL-001"
     assert captured["kwargs"]["task_label"] == "ATL-001 - First item"
     assert captured["kwargs"]["graph_state"]["request"].startswith("Backlog item: ATL-001")
     assert client.messages[-1][1].startswith("ATL-001 — First item")
 
 
-def test_list_all_orders_by_priority_and_shows_item_metadata(tmp_path) -> None:
+def test_list_all_orders_by_priority_and_shows_item_metadata(tmp_path, monkeypatch) -> None:
     backlog_path = tmp_path / "BACKLOG.md"
     backlog_path.write_text(
         "# Backlog\n\n"
@@ -1196,6 +1234,7 @@ def test_list_all_orders_by_priority_and_shows_item_metadata(tmp_path) -> None:
     raw_settings = valid_settings_dict()
     raw_settings["backlog_path"] = str(backlog_path)
     settings = parse_settings(raw_settings)
+    _patch_markdown_backlog(monkeypatch, backlog_path)
     client = _RecordingClient()
     operator = TelegramOperator("token", settings, client=client)
 
@@ -1220,7 +1259,7 @@ def test_list_all_orders_by_priority_and_shows_item_metadata(tmp_path) -> None:
     ]
 
 
-def test_next_shows_top_three_ranked_items(tmp_path) -> None:
+def test_next_shows_top_three_ranked_items(tmp_path, monkeypatch) -> None:
     backlog_path = tmp_path / "BACKLOG.md"
     backlog_path.write_text(
         "# Backlog\n\n"
@@ -1257,6 +1296,7 @@ def test_next_shows_top_three_ranked_items(tmp_path) -> None:
     raw_settings = valid_settings_dict()
     raw_settings["backlog_path"] = str(backlog_path)
     settings = parse_settings(raw_settings)
+    _patch_markdown_backlog(monkeypatch, backlog_path)
     client = _RecordingClient()
     operator = TelegramOperator("token", settings, client=client)
 
@@ -1283,7 +1323,7 @@ def test_next_shows_top_three_ranked_items(tmp_path) -> None:
     ]
 
 
-def test_list_all_splits_into_multiple_messages_when_needed(tmp_path) -> None:
+def test_list_all_splits_into_multiple_messages_when_needed(tmp_path, monkeypatch) -> None:
     backlog_path = tmp_path / "BACKLOG.md"
     backlog_path.write_text(
         "# Backlog\n\n"
@@ -1314,6 +1354,7 @@ def test_list_all_splits_into_multiple_messages_when_needed(tmp_path) -> None:
     raw_settings["backlog_path"] = str(backlog_path)
     raw_settings["telegram_max_message_chars"] = 180
     settings = parse_settings(raw_settings)
+    _patch_markdown_backlog(monkeypatch, backlog_path)
     client = _RecordingClient()
     operator = TelegramOperator("token", settings, client=client)
 
@@ -1351,13 +1392,8 @@ def test_run_backlog_task_reports_done_items_to_the_user(monkeypatch: pytest.Mon
     settings = parse_settings(valid_settings_dict())
     client = _RecordingClient()
     operator = TelegramOperator("token", settings, client=client)
-
-    monkeypatch.setattr(
-        "ai_tech_lead.telegram_operator.load_backlog_item_by_id",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            ValueError("Backlog item 'ATL-001' is Done and cannot be selected for execution.")
-        ),
-    )
+    worksheet = FakeWorksheet([HEADER, _row("ATL-001", "First item", status="Done")])
+    _install_fake_sheets_repository(monkeypatch, worksheet)
 
     operator._run_backlog_task("chat-1", "ATL-001")
 

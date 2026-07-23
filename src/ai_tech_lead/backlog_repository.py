@@ -10,6 +10,7 @@ import re
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
+from typing import Protocol, runtime_checkable
 
 from ai_tech_lead.backlog_status import (
     BacklogStatus,
@@ -82,6 +83,36 @@ class BacklogRefinementDraft:
 
 class BacklogValidationError(ValueError):
     """Raised when a backlog draft is incomplete or unsafe to append."""
+
+
+@runtime_checkable
+class BacklogRepositoryProtocol(Protocol):
+    """Shared method surface implemented by every live backlog repository.
+
+    Markdown (this module) and Google Sheets (backlog_sheets_repository.py)
+    are interchangeable through this boundary; callers must not depend on
+    which one is behind it.
+    """
+
+    def list_items(self) -> list[BacklogItem]: ...
+
+    def list_open_items(self) -> list[BacklogItem]: ...
+
+    def list_items_sorted(self) -> list[BacklogItem]: ...
+
+    def list_open_items_sorted(self) -> list[BacklogItem]: ...
+
+    def get_item(self, item_id: str) -> BacklogItem: ...
+
+    def get_item_for_execution(self, item_id: str) -> BacklogItem: ...
+
+    def next_item_id(self, prefix: str = "ATL") -> str: ...
+
+    def update_item_status(self, item_id: str, new_status: str) -> BacklogItem: ...
+
+    def complete_item(self, item_id: str, validation_note: str) -> BacklogItem: ...
+
+    def add_refined_item(self, draft: BacklogRefinementDraft) -> BacklogItem: ...
 
 
 class MarkdownBacklogRepository:
@@ -157,7 +188,12 @@ class MarkdownBacklogRepository:
         """Return an item only if it is still actionable."""
 
         item = self.get_item(item_id)
-        if item.status in {BacklogStatus.DONE, BacklogStatus.WONT_DO, BacklogStatus.OBSOLETE}:
+        if item.status in {
+            BacklogStatus.DONE,
+            BacklogStatus.WONT_DO,
+            BacklogStatus.OBSOLETE,
+            BacklogStatus.DEFERRED,
+        }:
             raise ValueError(
                 f"Backlog item '{item.item_id}' is Done and cannot be selected for execution."
             )

@@ -16,7 +16,7 @@ from pathlib import Path
 
 from ai_tech_lead.app_settings import load_settings
 from ai_tech_lead.backlog_repository import BacklogItem, MarkdownBacklogRepository
-from ai_tech_lead.backlog_store import SqliteBacklogRepository
+from ai_tech_lead.backlog_sheets_repository import SheetsBacklogRepository, repository_from_settings
 from ai_tech_lead.coding_workflow_graph import GraphState, build_initial_graph_state
 
 
@@ -67,14 +67,20 @@ Title: {item.title}
     )
 
 
-def _repository(backlog_path: Path | None) -> MarkdownBacklogRepository | SqliteBacklogRepository:
+def _repository(backlog_path: Path | None) -> MarkdownBacklogRepository | SheetsBacklogRepository:
+    """Return the live backlog repository.
+
+    An explicit backlog_path selects the historical Markdown format. The
+    default (no path) is the canonical Google Sheets backlog, resolved from
+    this process's own configured project (see docs/INDEX.md).
+    """
+
     if backlog_path is not None:
         resolved = (
             backlog_path
             if backlog_path.is_absolute()
             else (Path(load_settings().project_root) / backlog_path)
         )
-        if resolved.suffix.lower() == ".sqlite3":
-            return SqliteBacklogRepository(resolved)
         return MarkdownBacklogRepository(resolved)
-    return SqliteBacklogRepository()
+
+    return repository_from_settings(load_settings())

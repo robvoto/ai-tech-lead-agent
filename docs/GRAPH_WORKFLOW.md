@@ -32,7 +32,10 @@ coding_workflow_graph -> ai_tech_lead.coding_workflow_graph:graph
 ```text
 START
 -> 1_read_request
--> 1b_check_research
+-> 1a_understand_and_bound_request
+-> 1b_resolve_context
+-> [7_end_node with clarification, if a reference cannot be resolved safely]
+-> 1c_check_research
 -> [1c_research_interrupt, if complex task needs online sources]
 -> 1d_collect_research_evidence  (if online research approved)
 -> 2_review_risk                 (sets risk_level: LOW/MEDIUM/HIGH/UNKNOWN; sleep mode applied here)
@@ -47,6 +50,18 @@ START
 -> 7_end_node
 -> END
 ```
+
+
+## Request understanding and context resolution
+
+Before research, the graph now separates the original request from the bounded task context:
+
+- `1a_understand_and_bound_request` classifies the request intent, detects possible external references, and records whether execution was requested. Phrases such as `report only` or `do not code` keep execution intent false.
+- `1b_resolve_context` resolves references only from explicit caller-supplied project, resource, or fetched backlog context. It never infers that a prefix such as `AF` means a particular project.
+- If a reference cannot be resolved, the workflow asks one precise clarification question and ends before research.
+- `bounded_request` contains the original request plus verified project/backlog context. Research, risk review, and tech-lead analysis use this bounded form rather than the raw ambiguous request.
+
+Backlog context is optional. Plain reviews, explanations, bug investigations, and direct coding requests continue without requiring a backlog reference.
 
 ## Tech lead analysis node
 

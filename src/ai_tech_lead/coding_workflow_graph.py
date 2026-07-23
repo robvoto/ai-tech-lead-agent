@@ -24,6 +24,7 @@ from .prompt_loader import PLAN_REQUEST_INSTRUCTION_PROMPT_KEY, render_prompt
 from .research_cache import save_online_source_to_cache
 from .research_checker import check_research_requirements
 from .research_sources import collect_online_research_sources
+from .request_context import resolve_request_context, understand_request
 from .risk_reviewer import review_task_risk
 from .tech_lead_analyst import analyse_task
 
@@ -36,7 +37,9 @@ class NodeName(StrEnum):
     """Stable LangGraph node names."""
 
     READ_REQUEST = "1_read_request"
-    CHECK_RESEARCH = "1b_check_research"
+    UNDERSTAND_AND_BOUND_REQUEST = "1a_understand_and_bound_request"
+    RESOLVE_CONTEXT = "1b_resolve_context"
+    CHECK_RESEARCH = "1c_check_research"
     RESEARCH_INTERRUPT = "1c_research_interrupt"
     COLLECT_RESEARCH_EVIDENCE = "1d_collect_research_evidence"
     REVIEW_RISK = "2_review_risk"
@@ -55,6 +58,16 @@ class GraphState(TypedDict):
     """State carried through the brief-generation workflow."""
 
     request: str
+    bounded_request: str
+    supplied_context: dict[str, Any]
+    request_intent: str
+    execution_requested: bool
+    detected_references: list[str]
+    resolved_project_identity: str
+    resolved_project_root: str
+    resolved_resource_references: list[str]
+    unresolved_references: list[str]
+    context_resolution_evidence: list[str]
     brief: str
     force_approval: bool
     orchestrator_input_required: bool
@@ -101,11 +114,22 @@ def build_initial_graph_state(
     approval_reason: str = "Risk review has not run yet.",
     online_research_approved: bool = False,
     task_feedback: list[str] | None = None,
+    supplied_context: dict[str, Any] | None = None,
 ) -> GraphState:
     """Return one canonical initial state for the coding workflow graph."""
 
     return {
         "request": request,
+        "bounded_request": request,
+        "supplied_context": dict(supplied_context or {}),
+        "request_intent": "",
+        "execution_requested": False,
+        "detected_references": [],
+        "resolved_project_identity": "",
+        "resolved_project_root": "",
+        "resolved_resource_references": [],
+        "unresolved_references": [],
+        "context_resolution_evidence": [],
         "brief": "",
         "force_approval": force_approval,
         "orchestrator_input_required": False,
@@ -157,13 +181,49 @@ def read_request_node(state: GraphState) -> dict[str, Any]:
     return {"request": request, "restart_required": False}
 
 
+def understand_and_bound_request_node(state: GraphState) -> dict[str, Any]:
+    """Classify intent and detect references before any research decision."""
+
+    _log_node_start("1a", "UNDERSTAND_AND_BOUND_REQUEST", "Understand and bound request")
+    understanding = understand_request(state["request"])
+    return {
+        "request_intent": understanding.intent,
+        "execution_requested": understanding.execution_requested,
+        "detected_references": list(understanding.detected_references),
+    }
+
+
+def resolve_context_node(state: GraphState) -> dict[str, Any]:
+    """Resolve references from explicit supplied context; never infer prefix meaning."""
+
+    _log_node_start("1b", "RESOLVE_CONTEXT", "Resolve project and resource context")
+    result = resolve_request_context(
+        state["request"],
+        supplied_context=dict(state.get("supplied_context", {})),
+    )
+    question = str(result.pop("clarification_question", "")).strip()
+    if question:
+        result.update({
+            "orchestrator_input_required": True,
+            "orchestrator_input_reason": "A referenced project resource could not be resolved safely.",
+            "orchestrator_input_question": question,
+        })
+    return result
+
+
+def route_after_resolve_context(state: GraphState) -> str:
+    if state.get("orchestrator_input_required"):
+        return NodeName.END_NODE
+    return NodeName.CHECK_RESEARCH
+
+
 def check_research_node(state: GraphState) -> dict[str, Any]:
     """Check research evidence requirements for complex tasks."""
 
     _log_node_start("1b", "CHECK_RESEARCH", "Check research evidence requirements")
     settings = load_settings()
 
-    result = check_research_requirements(state["request"], settings)
+    result = check_research_requirements(state.get("bounded_request", "") or state["request"], settings)
 
     partial: dict[str, Any] = {
         "research_evidence_required": result.is_complex,
@@ -265,7 +325,7 @@ def collect_research_evidence_node(state: GraphState) -> dict[str, Any]:
         state.get("online_research_approved", False),
     )
 
-    online_sources = collect_online_research_sources(state["request"], settings)
+    online_sources = collect_online_research_sources(state.get("bounded_request", "") or state["request"], settings)
     online_titles = [source.title for source in online_sources]
     online_locations = [source.location for source in online_sources]
     online_summaries = [source.summary for source in online_sources]
@@ -330,7 +390,7 @@ def review_risk_node(state: GraphState) -> dict[str, Any]:
     logger.info("AI channel: OpenAI Responses API")
     logger.info("AI model: %s", settings.orchestrator_ai_model)
     logger.info("AI enabled: %s", settings.orchestrator_ai_enabled)
-    decision = review_task_risk(state["request"])
+    decision = review_task_risk(state.get("bounded_request", "") or state["request"])
     needs_approval = decision.needs_approval
     approval_reason = decision.approval_reason
     risk_level = decision.risk_level
@@ -385,7 +445,7 @@ def tech_lead_analyse_node(state: GraphState) -> dict[str, Any]:
     )
 
     analysis = analyse_task(
-        request=state["request"],
+        request=state.get("bounded_request", "") or state["request"],
         task_feedback=list(state.get("task_feedback", [])),
         approval_reason=state.get("approval_reason", ""),
         research_evidence=research_evidence,
@@ -974,6 +1034,8 @@ def build_graph(
     workflow = StateGraph(GraphState)
 
     workflow.add_node(NodeName.READ_REQUEST, read_request_node)
+    workflow.add_node(NodeName.UNDERSTAND_AND_BOUND_REQUEST, understand_and_bound_request_node)
+    workflow.add_node(NodeName.RESOLVE_CONTEXT, resolve_context_node)
     workflow.add_node(NodeName.CHECK_RESEARCH, check_research_node)
     workflow.add_node(NodeName.RESEARCH_INTERRUPT, research_interrupt_node)
     workflow.add_node(NodeName.COLLECT_RESEARCH_EVIDENCE, collect_research_evidence_node)
@@ -1007,7 +1069,16 @@ def build_graph(
     workflow.add_node(NodeName.END_NODE, end_node)
 
     workflow.add_edge(START, NodeName.READ_REQUEST)
-    workflow.add_edge(NodeName.READ_REQUEST, NodeName.CHECK_RESEARCH)
+    workflow.add_edge(NodeName.READ_REQUEST, NodeName.UNDERSTAND_AND_BOUND_REQUEST)
+    workflow.add_edge(NodeName.UNDERSTAND_AND_BOUND_REQUEST, NodeName.RESOLVE_CONTEXT)
+    workflow.add_conditional_edges(
+        NodeName.RESOLVE_CONTEXT,
+        route_after_resolve_context,
+        {
+            NodeName.CHECK_RESEARCH: NodeName.CHECK_RESEARCH,
+            NodeName.END_NODE: NodeName.END_NODE,
+        },
+    )
     workflow.add_conditional_edges(
         NodeName.CHECK_RESEARCH,
         route_after_check_research,

@@ -25,8 +25,11 @@ from langgraph.graph import START, MessagesState, StateGraph
 from langgraph.prebuilt import ToolNode, tools_condition
 
 from ai_tech_lead.app_settings import AppSettings
-from ai_tech_lead.backlog_repository import MarkdownBacklogRepository, format_backlog_list_item
-from ai_tech_lead.backlog_store import SqliteBacklogRepository
+from ai_tech_lead.backlog_repository import format_backlog_list_item
+from ai_tech_lead.backlog_sheets_repository import (
+    BacklogSourceUnavailableError,
+    repository_from_settings,
+)
 from ai_tech_lead.config import PROJECT_ROOT
 from ai_tech_lead.env_loader import load_local_env
 from ai_tech_lead.prompt_loader import TELEGRAM_AGENT_SYSTEM_PROMPT_KEY, load_prompt
@@ -180,15 +183,7 @@ def run_telegram_agent_message(
 
 
 def _build_backlog_tools(settings: AppSettings):
-    path = Path(settings.backlog_path)
-    if not path.is_absolute():
-        path = Path(settings.project_root) / path
-    if path.suffix.lower() == ".sqlite3":
-        repository: MarkdownBacklogRepository | SqliteBacklogRepository = SqliteBacklogRepository(
-            path
-        )
-    else:
-        repository = MarkdownBacklogRepository(path)
+    repository = repository_from_settings(settings)
     project_root = Path(settings.project_root).resolve()
     allowed_roots = [str(project_root / d) for d in settings.allowed_directories]
 
@@ -244,7 +239,7 @@ def _build_backlog_tools(settings: AppSettings):
         try:
             item = repository.update_item_status(item_id, new_status)
             return f"Updated {item.item_id} - {item.title}: Status is now '{item.status.value}'."
-        except (ValueError, FileNotFoundError) as error:
+        except (ValueError, FileNotFoundError, BacklogSourceUnavailableError) as error:
             return f"Failed to update status: {error}"
 
     @tool
