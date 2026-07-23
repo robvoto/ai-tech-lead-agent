@@ -45,9 +45,11 @@ def build_agent_manifest(settings: AppSettings | None = None) -> dict[str, Any]:
         "package": "ai_tech_lead",
         "package_version": __version__,
         "role": "specialist coding lead callable through a bounded local subprocess contract",
-        "one_line": (
-            "Reads a bounded task, reasons as a tech lead, and returns a structured handoff "
-            "or execution result."
+        "purpose": (
+            "Primary responsibility: Lead and execute changes to existing software.\n"
+            "Select for: Code review, implementation, debugging, testing, refactoring, "
+            "architecture guidance, documentation changes, and backlog delivery for existing software.\n"
+            "Do not select for: Designing, staging, approving, or promoting new specialist agent packages."
         ),
         "manifest_cache_ttl_seconds": MANIFEST_CACHE_TTL_SECONDS,
         "entrypoints": {
@@ -162,22 +164,6 @@ def build_agent_manifest(settings: AppSettings | None = None) -> dict[str, Any]:
                 "full prompts, raw provider payloads, or unbounded logs."
             ),
         },
-        "capabilities": [
-            "clarify ambiguous work",
-            "review task risk",
-            "request and review plans",
-            "build a bounded coding-agent instruction",
-            "run the configured coding backend when enabled",
-            "maintain a local knowledge store",
-            "report workspace health and knowledge-store stats",
-            "emit bounded structured progress for a Hub caller",
-        ],
-        "boundaries": [
-            "does not choose work without explicit input",
-            "does not bypass approval gates",
-            "does not edit files except through the configured coding-agent runner",
-            "does not rely on Telegram as the subprocess contract",
-        ],
         "ownership": {
             "specialist_repo": (
                 "Owns specialist-internal workflow logic, prompts, status mapping, "
