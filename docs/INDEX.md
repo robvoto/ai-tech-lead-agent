@@ -21,17 +21,10 @@ Runtime backlog source:
 data/backlog.sqlite3
 ```
 
-Local workbook path:
-
-```text
-data/backlog/ai_tech_lead_backlog.xlsx
-```
-
 Rules:
 
 - The Google Sheet is the human planning backlog and the source of truth for backlog decisions.
 - The running app reads runtime backlog items from SQLite.
-- The local workbook is a historical comparison copy only. It must not be treated as current unless checked against the Google Sheet and SQLite.
 - Do not add hidden alternate backlog sources or silent source switching.
 - If a backlog source is missing, stale, inaccessible, or inconsistent, stop and ask the operator.
 

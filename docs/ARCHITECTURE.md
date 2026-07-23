@@ -99,10 +99,10 @@ Supporting modules such as `src/ai_tech_lead/backlog_graph_runner.py` call the c
   An external caller may own caller-side orchestration, paused-run bookkeeping, and resume or approval UX.
   AI Tech Lead owns the specialist-internal graph, prompts, approvals, and the mapping from internal pauses to the subprocess status contract.
   Future adapters may include web or other chat surfaces.
-- Backlog storage must stay behind a repository boundary. The current runtime backlog is `data/backlog.sqlite3`; the Excel workbook `data/backlog/ai_tech_lead_backlog.xlsx` is the human-review/planning workbook; the archived Markdown source/backup lives at `data/backlog/archive/BACKLOG.md`.
+- Backlog storage must stay behind a repository boundary. The current runtime backlog is `data/backlog.sqlite3`; the human planning backlog is the Google Sheet listed in `docs/INDEX.md`; the archived Markdown source/backup lives at `data/backlog/archive/BACKLOG.md`.
 - Backlog loading parses local task data and converts one selected item into
   graph state. It must not silently choose work.
-- Worker coding agents must not freely edit the Excel backlog. Any backlog edit must be explicitly requested, field-bounded, and owned by the human/orchestrator until a controlled backlog repository handles spreadsheet writes safely.
+- Worker coding agents must not freely edit backlog storage. Any backlog edit must be explicitly requested, field-bounded, and owned by the human/orchestrator through a controlled repository boundary.
 - The coding workflow graph owns orchestration state, approval routing, brief creation, agent-instruction creation, orchestrator-input request state, and the coding-agent execution node.
 - Coding-agent handoffs now have three explicit instruction layers:
   1. AI Tech Lead runtime core, which is reusable across projects.

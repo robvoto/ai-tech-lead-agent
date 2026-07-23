@@ -259,21 +259,13 @@ Current runtime backlog:
 data/backlog.sqlite3
 ```
 
-Human-review/planning workbook:
-
-```text
-data/backlog/ai_tech_lead_backlog.xlsx
-```
-
 Archived/source backup:
 
 ```text
 data/backlog/archive/BACKLOG.md
 ```
 
-The Excel workbook was created from the Markdown backlog because the Markdown structure had drifted: some items had rich metadata, while others were missing fields such as Status, Creator, Epic, Type, Priority, Size, Problem, Outcome, Acceptance Criteria, or Constraints.
-
-Treat `data/backlog.sqlite3` as the runtime backlog, `data/backlog/ai_tech_lead_backlog.xlsx` as the human-review/planning workbook, and `data/backlog/archive/BACKLOG.md` as historical/source backup. Runtime code reads and writes through the backlog repository boundary. Do not edit the workbook alone when the running app must see the change.
+Treat `data/backlog.sqlite3` as the current runtime backlog and the Google Sheet listed in `docs/INDEX.md` as the human planning source of truth. `data/backlog/archive/BACKLOG.md` is historical/source backup only. Runtime code reads and writes through the backlog repository boundary.
 
 Backlog selection must not be hidden.
 
@@ -291,7 +283,7 @@ load_first_backlog_item_for_demo()
 
 Do not silently select the first task in production-like flow.
 
-Worker coding agents must not freely edit `data/backlog/ai_tech_lead_backlog.xlsx`. Spreadsheet edits must be explicit, field-bounded, and human-approved.
+Worker coding agents must not freely edit backlog storage. Backlog changes must be explicit, field-bounded, and human-approved.
 
 ## Initial prototype scope
 

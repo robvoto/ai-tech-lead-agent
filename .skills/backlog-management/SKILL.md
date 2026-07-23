@@ -20,7 +20,6 @@ Use when creating, parsing, selecting, updating, or explaining backlog items.
 ## Current local backlog ownership
 - Human planning backlog decisions live in the Google Sheet listed in `docs/INDEX.md`.
 - Runtime reads and updates the local SQLite backlog at `data/backlog.sqlite3`.
-- The workbook `data/backlog/ai_tech_lead_backlog.xlsx` is a historical comparison/import source, not the live runtime source of truth.
 - Normal task selection uses Telegram, for example `/run ATL-001`.
 - There is no `--task-id` CLI flag in the current app entrypoint.
 - The old Markdown backlog format is historical only; do not author new items in that format unless a targeted migration task explicitly requires it.

@@ -87,7 +87,7 @@ def test_build_backlog_refinement_from_text_uses_cache_and_ai(monkeypatch, tmp_p
     assert "Story, Task, Chore, Bug" in prompts[0]
     assert '"size": string' in prompts[0]
     assert "XS, S, M, L, XL" in prompts[0]
-    assert "Workbook-managed columns" in prompts[0]
+    assert "Repository-managed fields" in prompts[0]
     assert "Existing" in prompts[0]
     assert result.draft.item_id == "ATL-002"
     assert result.draft.title == "Improve admin UI"

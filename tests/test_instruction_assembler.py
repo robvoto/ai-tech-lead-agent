@@ -119,7 +119,7 @@ def test_assembled_instruction_includes_backlog_ownership_rules_from_prompt_file
         settings=settings,
     )
 
-    assert "Worker coding agents must not freely edit the Excel workbook" in instruction
+    assert "Worker coding agents must not freely edit backlog storage" in instruction
     assert (
         "Final backlog completion is owned by the orchestrator after human acceptance."
         in instruction

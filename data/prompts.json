@@ -7,7 +7,7 @@
       "used_by": [
         "src/ai_tech_lead/instruction_assembler.py"
       ],
-      "template": "Backlog ownership rules:\n- Follow docs/INDEX.md for backlog source-of-truth rules before changing backlog structure or status.\n- Worker coding agents must not freely edit the Excel workbook or SQLite backlog.\n- Do not invent backlog items, statuses, priorities, or implementation scope.\n- If a backlog change is needed, change only the named item and field, and report exactly what changed.\n- Final backlog completion is owned by the orchestrator after human acceptance.\n- If the current task appears stale, duplicated, or already done, stop and report the evidence."
+      "template": "Backlog ownership rules:\n- Follow docs/INDEX.md for backlog source-of-truth rules before changing backlog structure or status.\n- Worker coding agents must not freely edit backlog storage, including the runtime SQLite backlog.\n- Do not invent backlog items, statuses, priorities, or implementation scope.\n- If a backlog change is needed, change only the named item and field, and report exactly what changed.\n- Final backlog completion is owned by the orchestrator after human acceptance.\n- If the current task appears stale, duplicated, or already done, stop and report the evidence."
     },
     {
       "key": "clarification_check",
