@@ -152,28 +152,58 @@ def check_research_requirements(
     )
 
 
+_COMPLEXITY_CHECK_ATTEMPTS = 2
+
+
 def _llm_check_complexity(
     request: str,
     settings: AppSettings,
 ) -> tuple[bool, str]:
     prompt = render_prompt(RESEARCH_COMPLEXITY_PROMPT_KEY, request=request)
-    result = call_orchestrator_llm(
-        prompt=prompt,
-        config=OrchestratorLlmConfig(
-            model=settings.orchestrator_ai_model,
-            max_output_tokens=settings.orchestrator_ai_max_output_tokens,
-            timeout_seconds=settings.orchestrator_ai_timeout_seconds,
-        ),
+    config = OrchestratorLlmConfig(
+        model=settings.orchestrator_ai_model,
+        max_output_tokens=settings.orchestrator_ai_max_output_tokens,
+        timeout_seconds=settings.orchestrator_ai_timeout_seconds,
     )
-    logger.info(
-        "Research complexity LLM: in=%d out=%d total=%d cost_total=$%.5f",
-        result.tokens_in,
-        result.tokens_out,
-        result.tokens_in + result.tokens_out,
-        result.cost_usd,
-    )
-    payload = json.loads(result.text)
-    return _parse_complexity_payload(payload)
+
+    last_error: Exception = ValueError("complexity check produced no attempts")
+    for attempt in range(1, _COMPLEXITY_CHECK_ATTEMPTS + 1):
+        result = call_orchestrator_llm(prompt=prompt, config=config)
+        logger.info(
+            "Research complexity LLM: in=%d out=%d total=%d cost_total=$%.5f",
+            result.tokens_in,
+            result.tokens_out,
+            result.tokens_in + result.tokens_out,
+            result.cost_usd,
+        )
+        try:
+            payload = _load_complexity_json(result.text)
+            return _parse_complexity_payload(payload)
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
+            last_error = error
+            logger.warning(
+                "Research complexity response invalid on attempt %d/%d: %s — raw response: %r",
+                attempt,
+                _COMPLEXITY_CHECK_ATTEMPTS,
+                error,
+                result.text,
+            )
+
+    raise last_error
+
+
+def _load_complexity_json(raw_text: str) -> dict[str, Any]:
+    """Parse plain JSON or a single Markdown-fenced JSON object."""
+
+    text = raw_text.strip()
+    if text.startswith("```") and text.endswith("```"):
+        lines = text.splitlines()
+        if len(lines) >= 3:
+            text = "\n".join(lines[1:-1]).strip()
+    payload = json.loads(text)
+    if not isinstance(payload, dict):
+        raise TypeError("complexity response must be a JSON object")
+    return payload
 
 
 def _parse_complexity_payload(payload: dict[str, Any]) -> tuple[bool, str]:
