@@ -30,11 +30,3 @@ def _isolate_knowledge_store(tmp_path, monkeypatch):
 
     monkeypatch.setattr(ks_mod, "_DEFAULT_STORE_PATH", tmp_path / "knowledge_store.sqlite3")
     monkeypatch.setattr(ks_mod, "_store", None)
-
-
-@pytest.fixture(autouse=True)
-def _isolate_approval_store(tmp_path, monkeypatch):
-    """Redirect the approval token store to a per-test temp path."""
-    import ai_tech_lead.approval_store as ap_mod
-
-    monkeypatch.setattr(ap_mod, "APPROVALS_DB", tmp_path / "pending_approvals.sqlite3")

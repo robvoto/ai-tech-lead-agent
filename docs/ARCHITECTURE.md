@@ -129,8 +129,10 @@ Supporting modules such as `src/ai_tech_lead/backlog_graph_runner.py` call the c
   returned JSON by `manifest_hash`, and refresh only when the hash changes. If the
   manifest includes `manifest_cache_ttl_seconds`, callers may use that as the
   freshness window for re-fetching the full manifest.
-- `run-agent-task` uses an in-memory LangGraph checkpointer per subprocess invocation,
-  so subprocess checkpoints are not shared across concurrent runs.
+- `run-agent-task` uses the same durable, SQLite-backed LangGraph checkpointer the
+  Telegram operator uses (`checkpointer_store.py`), keyed by `subprocess-<request_id>`.
+  A paused conversation survives across separate subprocess invocations, so a caller
+  resumes the exact paused run rather than restarting the task from scratch.
 - LangChain/LangGraph tools, when added, are executable capabilities exposed to an LLM or graph. They are different from this repository's `.skills`, which are reusable coding-agent instructions.
 - Admin UI is optional local tooling for editing settings. Browser code keeps HTML, CSS, and JavaScript separated. HTML owns structure, CSS owns presentation, and JavaScript owns behaviour. Browser JavaScript uses ES modules.
 - UI field schemas, API paths, labels, and other UI configuration should move to JSON or API-provided configuration when they become shared, large, or reused. Small local constants are acceptable only when they are explicit and easy to replace.
@@ -142,10 +144,10 @@ This section replaces the standalone `ARMY_INTEGRATION.md` page. Keep the bounde
 
 - A caller invokes AI Tech Lead through `run-agent-task`.
 - A caller discovers the callable contract through `uv run python -m ai_tech_lead manifest`.
-- Input is JSON with a task string plus bounded metadata such as `request_id`, optional Hub `run_id`, `source`, `project_root`, `execution_mode`, `human_approved`, and `approval_token`.
+- A new task is JSON with a task string plus bounded metadata such as `request_id`, optional Hub `run_id`, `source`, `project_root`, and `execution_mode`.
 - `execution_mode` is a request, not a grant. `instruction_only` is the safe default.
-- `human_approved=true` must carry a matching one-time token issued for the same request and task.
-- Output is structured JSON with status, summary, formulated task, brief, coding-agent instruction, backend used, execution flag, logs, evidence, next action, machine-readable caller action fields, and a tiny `agent_manifest` reference.
+- A paused conversation is resumed by resubmitting the same `request_id` with a `decision: {"option": ..., "text": ..., "actor": ...}` object — no `task` field needed. The option must be one of the names the paused response's `pending_decision.options` just reported; anything else is rejected.
+- Output is structured JSON with status, summary, formulated task, brief, coding-agent instruction, backend used, execution flag, logs, evidence, next action, a `pending_decision` block describing exactly what's paused and what decisions are valid right now, and a tiny `agent_manifest` reference.
 - When a caller supplies `run_id`, AI Tech Lead also emits versioned `SpecialistProgressEvent` JSONL on stdout while it runs. Normal/debug logs stay on stderr, and the final structured result remains in the caller-provided output JSON file.
 - Progress events contain `schema_version`, `run_id`, `request_id`, monotonic `sequence`, `event_type`, stable `phase`, bounded `human_summary`, `occurred_at`, and allowlisted bounded metadata.
 - Progress is operational telemetry only. It must not expose chain-of-thought, raw plan text, full prompts, secrets, raw coding-agent/provider output, or unbounded logs.
@@ -154,20 +156,17 @@ This section replaces the standalone `ARMY_INTEGRATION.md` page. Keep the bounde
 - If `run_id` is omitted, live progress is disabled and stdout remains unused by this contract.
 - Supported subprocess statuses are:
   - `success` - work completed or an instruction package is ready.
-  - `needs_clarification` - the caller should collect human text input and resubmit an updated task.
-  - `approval_required` - the caller should collect explicit approval and resubmit with `human_approved=true` plus the issued `approval_token`.
+  - `needs_clarification` - the workflow ended (not paused) needing more information, e.g. an unresolved reference. There is no conversation to resume; the caller should submit a brand new task with the answer folded in.
+  - `waiting_decision` - the workflow is genuinely paused (approval, plan/failure guidance, research approval). See `pending_decision` for the exact options; resume by resubmitting `request_id` with a `decision`.
   - `failed` - terminal failure; the caller should report the error instead of waiting for resume.
 - Callers should prefer machine-readable fields over parsing prose:
-  - `result_kind` distinguishes `instruction_package`, `execution_result`, `clarification_request`, `approval_request`, and `terminal_failure`.
-  - `caller_action` tells the caller whether to `submit_instruction`, `consume_result`, `provide_clarification`, `provide_approval`, `inspect_failure`, or `retry`.
-  - `resume_supported`, `resume_fields`, and `interrupt_kind` make resumable states explicit.
-- Specialist-internal interrupts that expect human text, such as plan guidance or repeated coding-agent failure guidance, must be translated into `needs_clarification` on this subprocess boundary instead of leaking a generic paused or blocked state.
+  - `result_kind` distinguishes `instruction_package`, `execution_result`, `clarification_request`, `decision_required`, and `terminal_failure`.
+  - `pending_decision` (present only on `waiting_decision`) carries `thread_id` (informational), `kind` (which internal pause this is — relay it, don't interpret it), `prompt` (plain-language description), and `options` (the exact, only valid `decision.option` values right now, each optionally flagged `needs_text`). This is intentionally generic: a caller never needs agent-specific knowledge of what option names mean to relay them correctly, and new pause kinds or option sets require no caller code changes.
 - A caller should rely on that bounded JSON contract rather than reading the full codebase.
 - Telegram is only an interactive operator surface; it does not replace the subprocess contract.
 - Shared-state concurrency rules:
   - duplicate concurrent `run-agent-task` calls with the same `request_id` fail loudly
     instead of overlapping silently
-  - approval-token consumption is atomic and single-use under concurrent resumes
   - real coding-agent subprocess execution is locked per `project_root`, so two runs
     cannot execute against the same repo at once even if the caller misroutes work
 

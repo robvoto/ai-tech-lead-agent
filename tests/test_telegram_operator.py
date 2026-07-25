@@ -29,6 +29,7 @@ from ai_tech_lead.backlog_repository import (
 from ai_tech_lead.backlog_sheets_repository import SheetsBacklogRepository
 from ai_tech_lead.backlog_status import BacklogStatus
 from ai_tech_lead.config import PROJECT_ROOT
+from ai_tech_lead.coding_workflow_graph import NodeName
 from ai_tech_lead.telegram_agent_graph import TelegramAgentReply
 from ai_tech_lead.telegram_operator import (
     CANONICAL_BOT_COMMANDS,
@@ -41,6 +42,7 @@ from ai_tech_lead.telegram_operator import (
     TelegramTaskStage,
     _approval_prompt,
     _backlog_request_summary,
+    _completion_message,
     _telegram_approval_reason,
     parse_telegram_command,
     parse_telegram_update,
@@ -90,6 +92,40 @@ def test_parse_code_command_preserves_multiline_request() -> None:
 
     assert command.name == TelegramCommandName.CODE
     assert command.argument == "Update docs\nAnd tests"
+
+
+def test_parse_request_changes_command_requires_text() -> None:
+    with pytest.raises(ValueError, match="requires feedback text"):
+        parse_telegram_command("/request_changes")
+
+
+def test_parse_request_changes_command_captures_feedback() -> None:
+    command = parse_telegram_command("/request_changes Keep this to docs only.")
+
+    assert command.name == TelegramCommandName.REQUEST_CHANGES
+    assert command.argument == "Keep this to docs only."
+
+
+def test_parse_ask_command_requires_text() -> None:
+    with pytest.raises(ValueError, match="requires a question"):
+        parse_telegram_command("/ask")
+
+
+def test_parse_ask_command_captures_question() -> None:
+    command = parse_telegram_command("/ask Which files will this touch?")
+
+    assert command.name == TelegramCommandName.ASK
+    assert command.argument == "Which files will this touch?"
+
+
+def test_parse_cancel_command_accepts_no_extra_text() -> None:
+    command = parse_telegram_command("/cancel")
+
+    assert command.name == TelegramCommandName.CANCEL
+    assert command.argument == ""
+
+    with pytest.raises(ValueError, match="does not accept extra text"):
+        parse_telegram_command("/cancel some text")
 
 
 def test_parse_fix_command_is_not_supported() -> None:
@@ -145,14 +181,16 @@ def test_approval_prompt_keeps_telegram_message_human() -> None:
     assert "Telegram ad hoc request" not in message
     assert "Title:" not in message
     assert "Task:" not in message
-    assert len(message.splitlines()) == 6
     assert message == (
         "Approval needed\n"
         "update docs only\n"
         "\n"
         "Risk: AI risk review is off — manual approval required.\n"
         "\n"
-        "/approve or /reject"
+        "/approve — continue\n"
+        "/request_changes <feedback> — send feedback for a revised proposal\n"
+        "/ask <question> — ask a question before deciding\n"
+        "/cancel — stop this task"
     )
 
 
@@ -175,7 +213,7 @@ def test_approval_prompt_keeps_a_long_plan_readable() -> None:
     assert "Plan:" not in message
     assert "workflow does not silently continue" not in message
     assert "Risk: Needs human approval." in message
-    assert message.endswith("/approve or /reject")
+    assert message.endswith("/cancel — stop this task")
 
 
 def test_parse_unknown_text_as_unknown_command() -> None:
@@ -288,7 +326,10 @@ def test_help_text_shows_identity_and_model() -> None:
         "  /code <text> - explicit coding workflow",
         "  /cancel_code - stop the running coding-agent subprocess",
         "  /approve - approve the waiting task/decision",
-        "  /reject - reject the waiting task/decision",
+        "  /request_changes <feedback> - send feedback on a waiting approval and get a revised proposal",
+        "  /ask <question> - ask a question about a waiting approval",
+        "  /cancel - cancel the waiting task/decision",
+        "  /reject - alias for /cancel",
         "  /sleep on|off - sleep mode: auto-run LOW/MEDIUM risk tasks",
         "Backlog:",
         "  /propose <text> - create/refine a backlog draft from an idea",
@@ -753,7 +794,7 @@ def test_approve_and_reject_still_work_for_waiting_task() -> None:
 
     approve_cmd = approve_app.invoke_calls[0][0][0]
     assert isinstance(approve_cmd, _Command)
-    assert approve_cmd.resume == {"approved": True, "approved_by": "demo-user"}
+    assert approve_cmd.resume == {"action": "approve", "approved_by": "demo-user"}
     assert "chat-1" not in approve_operator._active_tasks
     assert approve_client.messages[-1][0] == "chat-1"
     assert approve_client.messages[-1][1].startswith("Task complete:")
@@ -782,13 +823,365 @@ def test_approve_and_reject_still_work_for_waiting_task() -> None:
         "demo-user",
     )
 
-    assert reject_app.update_calls == []
-    assert reject_app.invoke_calls == []
+    # /reject on a PRE_RUN_APPROVAL task is now an alias for /cancel: it must
+    # actually resume the graph (not just abandon the thread) so the graph
+    # itself reaches END_NODE cleanly.
+    assert len(reject_app.invoke_calls) == 1
+    reject_cmd = reject_app.invoke_calls[0][0][0]
+    assert isinstance(reject_cmd, _Command)
+    assert reject_cmd.resume == {"action": "cancel"}
     assert "chat-1" not in reject_operator._active_tasks
-    assert reject_client.messages[-1] == (
-        "chat-1",
-        "Task rejected and closed: JH-001 - Local placeholder",
+
+
+def test_stage_and_message_from_snapshot_completion_verification() -> None:
+    settings = parse_settings(valid_settings_dict())
+    operator = TelegramOperator("token", settings, client=_RecordingClient())
+    app = _PausedTaskApp(
+        {"request": "Backlog item: JH-001"},
+        next_nodes=(NodeName.COMPLETION_VERIFICATION_INTERRUPT,),
+        interrupt_value={
+            "kind": "completion_verification",
+            "reason": "Requires a visual check of the button placement.",
+            "coding_agent_result": "Implemented.",
+            "changed_files": ["src/app/settings.py"],
+        },
     )
+    snapshot = app.get_state({"configurable": {"thread_id": "t"}})
+
+    stage, message = operator._stage_and_message_from_snapshot(
+        task_label="JH-001 - Add logout button",
+        request_summary="Add logout button",
+        state_snapshot=snapshot,
+    )
+
+    assert stage == TelegramTaskStage.COMPLETION_VERIFICATION
+    assert "visual check of the button placement" in message
+    assert "/approve" in message and "/reject" in message
+
+
+def test_stage_and_message_from_snapshot_failure_guidance_uses_orchestrator_input() -> None:
+    """Regression test: failure_guidance previously fell into the unrecognised-kind
+
+    fallback and was mis-treated as PRE_RUN_APPROVAL, so /approve after a coding-agent
+    failure fed the raw approval dict back into the coding agent as "guidance" instead
+    of resuming with the human's actual text.
+    """
+    settings = parse_settings(valid_settings_dict())
+    operator = TelegramOperator("token", settings, client=_RecordingClient())
+    app = _PausedTaskApp(
+        {"request": "Backlog item: JH-001"},
+        next_nodes=(NodeName.FAILURE_INTERRUPT,),
+        interrupt_value={
+            "kind": "failure_guidance",
+            "coding_agent_result": "Tests failed in CI.",
+            "retry_count": 2,
+        },
+    )
+    snapshot = app.get_state({"configurable": {"thread_id": "t"}})
+
+    stage, message = operator._stage_and_message_from_snapshot(
+        task_label="JH-001 - Fix the bug",
+        request_summary="Fix the bug",
+        state_snapshot=snapshot,
+    )
+
+    assert stage == TelegramTaskStage.ORCHESTRATOR_INPUT
+    assert "failed 2x" in message
+    assert "Tests failed in CI." in message
+
+
+def test_failure_guidance_resumes_with_plain_text_guidance() -> None:
+    settings = parse_settings(valid_settings_dict())
+    client = _RecordingClient()
+    app = _PausedTaskApp(
+        {"request": "Backlog item: JH-001", "coding_agent_success": True},
+        next_nodes=(),
+    )
+    operator = TelegramOperator("token", settings, client=client)
+    operator._active_tasks["chat-1"] = ActiveTelegramTask(
+        chat_id="chat-1",
+        task_label="JH-001 - Fix the bug",
+        request_summary="Fix the bug",
+        app=app,
+        thread_config={"configurable": {"thread_id": "telegram-chat-1-failure-guidance"}},
+        stage=TelegramTaskStage.ORCHESTRATOR_INPUT,
+    )
+
+    operator._handle_plain_text("chat-1", "Narrow the fix to the parser only.", "demo-user")
+
+    from langgraph.types import Command as _Command
+
+    resume_cmd = app.invoke_calls[0][0][0]
+    assert isinstance(resume_cmd, _Command)
+    assert resume_cmd.resume == "Narrow the fix to the parser only."
+
+
+def test_approve_confirms_completion_verification_and_finalizes() -> None:
+    settings = parse_settings(valid_settings_dict())
+    client = _RecordingClient()
+    app = _PausedTaskApp(
+        {
+            "request": "Backlog item: JH-001",
+            "coding_agent_success": True,
+            "coding_agent_result": "Implemented and verified.",
+            "verification_status": "complete",
+            "verification_reason": "Confirmed complete by human verification.",
+        }
+    )
+    operator = TelegramOperator("token", settings, client=client)
+    operator._active_tasks["chat-1"] = ActiveTelegramTask(
+        chat_id="chat-1",
+        task_label="JH-001 - Add logout button",
+        request_summary="Add logout button",
+        app=app,
+        thread_config={"configurable": {"thread_id": "telegram-chat-1-verify-confirm"}},
+        stage=TelegramTaskStage.COMPLETION_VERIFICATION,
+    )
+
+    operator._handle_command(
+        "chat-1",
+        TelegramCommand(name=TelegramCommandName.APPROVE),
+        "demo-user",
+    )
+
+    from langgraph.types import Command as _Command
+
+    resume_cmd = app.invoke_calls[0][0][0]
+    assert isinstance(resume_cmd, _Command)
+    assert resume_cmd.resume == {"decision": "confirm_complete"}
+    assert "chat-1" not in operator._active_tasks
+    assert client.messages[-1][1].startswith("Task complete:")
+
+
+def test_reject_completion_verification_carries_reason_and_finalizes() -> None:
+    settings = parse_settings(valid_settings_dict())
+    client = _RecordingClient()
+    app = _PausedTaskApp(
+        {
+            "request": "Backlog item: JH-001",
+            "coding_agent_success": True,
+            "coding_agent_result": "Implemented.",
+            "verification_status": "failed",
+            "verification_reason": "Button is misaligned.",
+        }
+    )
+    operator = TelegramOperator("token", settings, client=client)
+    operator._active_tasks["chat-1"] = ActiveTelegramTask(
+        chat_id="chat-1",
+        task_label="JH-001 - Add logout button",
+        request_summary="Add logout button",
+        app=app,
+        thread_config={"configurable": {"thread_id": "telegram-chat-1-verify-reject"}},
+        stage=TelegramTaskStage.COMPLETION_VERIFICATION,
+    )
+
+    operator._handle_command(
+        "chat-1",
+        TelegramCommand(name=TelegramCommandName.REJECT, argument="Button is misaligned."),
+        "demo-user",
+    )
+
+    from langgraph.types import Command as _Command
+
+    resume_cmd = app.invoke_calls[0][0][0]
+    assert isinstance(resume_cmd, _Command)
+    assert resume_cmd.resume == {"decision": "reject", "text": "Button is misaligned."}
+    assert "chat-1" not in operator._active_tasks
+    final_message = client.messages[-1][1]
+    assert final_message.startswith("Task needs attention:")
+    assert "Button is misaligned." in final_message
+
+
+def test_finalize_completed_task_skips_backlog_close_when_verification_failed() -> None:
+    settings = parse_settings(valid_settings_dict())
+    client = _RecordingClient()
+    operator = TelegramOperator("token", settings, client=client)
+    close_calls: list[str] = []
+    operator._close_backlog_item = lambda item_id, values: (  # type: ignore[method-assign]
+        close_calls.append(item_id) or (True, None)
+    )
+
+    operator._finalize_completed_task(
+        "chat-1",
+        "JH-001 - Add logout button",
+        {
+            "coding_agent_success": True,
+            "coding_agent_result": "Implemented.",
+            "coding_agent_timed_out": False,
+            "verification_status": "failed",
+            "verification_reason": "Button is misaligned.",
+        },
+        "JH-001",
+    )
+
+    assert close_calls == []
+    message = client.messages[-1][1]
+    assert message.startswith("Task needs attention:")
+    assert "Backlog: unchanged" in message
+
+
+def test_finalize_completed_task_closes_backlog_when_verification_complete() -> None:
+    settings = parse_settings(valid_settings_dict())
+    client = _RecordingClient()
+    operator = TelegramOperator("token", settings, client=client)
+    close_calls: list[str] = []
+    operator._close_backlog_item = lambda item_id, values: (  # type: ignore[method-assign]
+        close_calls.append(item_id) or (True, None)
+    )
+
+    operator._finalize_completed_task(
+        "chat-1",
+        "JH-001 - Add logout button",
+        {
+            "coding_agent_success": True,
+            "coding_agent_result": "Implemented.",
+            "coding_agent_timed_out": False,
+            "verification_status": "complete",
+            "verification_reason": "Verified.",
+        },
+        "JH-001",
+    )
+
+    assert close_calls == ["JH-001"]
+    message = client.messages[-1][1]
+    assert message.startswith("Task complete:")
+    assert "Backlog: Done" in message
+
+
+def test_completion_message_flags_verification_failure_even_when_coding_agent_succeeded() -> None:
+    message = _completion_message(
+        "JH-001 - Add logout button",
+        state_values={
+            "coding_agent_result": "Ran pytest, exit 0.",
+            "verification_status": "failed",
+            "verification_reason": "The logout button does not sign the user out.",
+        },
+        limit=4000,
+    )
+
+    assert message.startswith("Task needs attention:")
+    assert "does not sign the user out" in message
+
+
+def test_request_changes_command_resumes_with_feedback_and_stays_active() -> None:
+    settings = parse_settings(valid_settings_dict())
+    client = _RecordingClient()
+    app = _PausedTaskApp(
+        {
+            "request": "Backlog item: JH-001",
+            "approval_reason": "Need approval.",
+            "task_feedback": ["Keep this to docs only."],
+        },
+        next_nodes=(NodeName.APPROVAL_INTERRUPT,),
+        interrupt_value={
+            "kind": "approval",
+            "reason": "Need approval.",
+            "formulated_task": "Update docs.",
+        },
+    )
+    operator = TelegramOperator("token", settings, client=client)
+    operator._active_tasks["chat-1"] = ActiveTelegramTask(
+        chat_id="chat-1",
+        task_label="JH-001 - Local placeholder",
+        request_summary="Local placeholder",
+        app=app,
+        thread_config={"configurable": {"thread_id": "telegram-chat-1-request-changes"}},
+        stage=TelegramTaskStage.PRE_RUN_APPROVAL,
+    )
+
+    operator._handle_command(
+        "chat-1",
+        TelegramCommand(
+            name=TelegramCommandName.REQUEST_CHANGES,
+            argument="Keep this to docs only.",
+        ),
+        "demo-user",
+    )
+
+    from langgraph.types import Command as _Command
+
+    resume_cmd = app.invoke_calls[0][0][0]
+    assert isinstance(resume_cmd, _Command)
+    assert resume_cmd.resume == {"action": "request_changes", "feedback": "Keep this to docs only."}
+    # Task stays active — the approval interaction is not over.
+    assert "chat-1" in operator._active_tasks
+    assert operator._active_tasks["chat-1"].stage == TelegramTaskStage.PRE_RUN_APPROVAL
+
+
+def test_ask_command_resumes_with_question_and_shows_answer() -> None:
+    settings = parse_settings(valid_settings_dict())
+    client = _RecordingClient()
+    app = _PausedTaskApp(
+        {
+            "request": "Backlog item: JH-001",
+            "approval_reason": "Need approval.",
+            "task_feedback": [],
+        },
+        next_nodes=(NodeName.APPROVAL_INTERRUPT,),
+        interrupt_value={
+            "kind": "approval",
+            "reason": "Need approval.",
+            "formulated_task": "Update docs.",
+            "last_question": "Which files will this touch?",
+            "last_answer": "Only docs/RUNTIME_RUNBOOK.md.",
+        },
+    )
+    operator = TelegramOperator("token", settings, client=client)
+    operator._active_tasks["chat-1"] = ActiveTelegramTask(
+        chat_id="chat-1",
+        task_label="JH-001 - Local placeholder",
+        request_summary="Local placeholder",
+        app=app,
+        thread_config={"configurable": {"thread_id": "telegram-chat-1-ask"}},
+        stage=TelegramTaskStage.PRE_RUN_APPROVAL,
+    )
+
+    operator._handle_command(
+        "chat-1",
+        TelegramCommand(
+            name=TelegramCommandName.ASK,
+            argument="Which files will this touch?",
+        ),
+        "demo-user",
+    )
+
+    from langgraph.types import Command as _Command
+
+    resume_cmd = app.invoke_calls[0][0][0]
+    assert isinstance(resume_cmd, _Command)
+    assert resume_cmd.resume == {
+        "action": "ask_question",
+        "question": "Which files will this touch?",
+    }
+    assert "chat-1" in operator._active_tasks
+    last_message = client.messages[-1][1]
+    assert "Which files will this touch?" in last_message
+    assert "Only docs/RUNTIME_RUNBOOK.md." in last_message
+
+
+def test_request_changes_not_available_for_research_approval_stage() -> None:
+    settings = parse_settings(valid_settings_dict())
+    client = _RecordingClient()
+    app = _PausedTaskApp({"request": "Backlog item: JH-001"})
+    operator = TelegramOperator("token", settings, client=client)
+    operator._active_tasks["chat-1"] = ActiveTelegramTask(
+        chat_id="chat-1",
+        task_label="JH-001 - Local placeholder",
+        request_summary="Local placeholder",
+        app=app,
+        thread_config={"configurable": {"thread_id": "telegram-chat-1-research"}},
+        stage=TelegramTaskStage.RESEARCH_APPROVAL,
+    )
+
+    operator._handle_command(
+        "chat-1",
+        TelegramCommand(name=TelegramCommandName.REQUEST_CHANGES, argument="Some feedback."),
+        "demo-user",
+    )
+
+    assert app.invoke_calls == []
+    assert "not available for this approval step" in client.messages[-1][1]
+    assert "chat-1" in operator._active_tasks
 
 
 def test_telegram_operator_allows_multiple_chats_when_configured() -> None:

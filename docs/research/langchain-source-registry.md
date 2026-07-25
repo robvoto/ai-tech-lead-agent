@@ -29,3 +29,7 @@ Approved online pages may be captured as small offline research notes under `doc
 - Keep the registry bounded; do not add broad web search here.
 - Refresh a snapshot only when the source has materially changed or the note is stale.
 - Prefer replacing an outdated entry over accumulating duplicates.
+
+## Relationship to runtime source discovery
+
+`research_discovery_enabled` (off by default) lets the graph propose a candidate official source for gaps outside this registry, gated by an explicit per-URL human approval and an outbound-URL safety guard (see `docs/GRAPH_WORKFLOW.md`). It does not add broad web search to this registry — discovered URLs are fetched once, approved individually, and never written back into `research_online_source_urls`/`research_allowed_domains`. Adding an entry to this registry stays a deliberate, manual edit.

@@ -37,18 +37,19 @@ def test_build_agent_manifest_contains_core_contract_fields() -> None:
     assert manifest["entrypoints"]["bootstrap_project_pack"] == "bootstrap-project-pack"
     assert "agent_manifest" in manifest["output_contract"]["fields"]
     assert "result_kind" in manifest["output_contract"]["fields"]
-    assert "caller_action" in manifest["output_contract"]["fields"]
+    assert "pending_decision" in manifest["output_contract"]["fields"]
     assert manifest["output_contract"]["status_values"] == [
         "success",
         "needs_clarification",
-        "approval_required",
+        "waiting_decision",
         "failed",
     ]
     assert "run_id" in manifest["input_contract"]["optional"]
     assert manifest["progress_contract"]["transport"] == "stdout_jsonl"
     assert manifest["progress_contract"]["log_transport"] == "stderr"
     assert manifest["progress_contract"]["schema_version"] == 1
-    assert manifest["interaction_model"]["resume_via_resubmission"] is True
+    assert manifest["interaction_model"]["resume_via_decision"] is True
+    assert manifest["interaction_model"]["resume_via_resubmission"] is False
     assert manifest["interaction_model"]["supports_streaming"] is True
     assert manifest["ownership"]["specialist_repo"]
     assert manifest["project_pack"]["required_files"] == [

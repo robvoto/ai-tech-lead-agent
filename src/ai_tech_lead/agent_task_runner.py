@@ -11,8 +11,19 @@ Security contract
   Unknown execution_mode values fail closed.
 * requires_human_approval from the caller is ignored for the execution decision —
   that is the risk reviewer graph node's job.
-* human_approved=true requires a valid approval_token previously issued by this process.
-  Tokens are one-time use, expire after 1 hour, and are bound to the request/task pair.
+
+Resumable pauses
+-----------------
+When the workflow pauses (approval, guidance after a plan rejection or coding
+failure, or an online-research approval), the response reports a `pending_decision`
+block: a plain-language prompt plus the named options available right now, some of
+which need extra text. The paused conversation is kept durably (the same mechanism
+Telegram's bot already relies on), keyed on `request_id`. To act on it, resubmit
+`request_id` plus a `decision: {"option": ..., "text": ..., "actor": ...}` — no
+`task` field is needed on that call, and the actual paused conversation resumes
+rather than the workflow restarting from scratch. `pending_decision` is the only
+place option names are declared; nothing here hardcodes what a caller is allowed to
+send beyond "one of the options this response just listed."
 """
 
 from __future__ import annotations
@@ -24,12 +35,15 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from langgraph.types import Command
+
 from .agent_manifest import agent_manifest_reference
 from .app_settings import load_settings
 from .backlog_reference import BacklogReferenceError, resolve_backlog_reference
 from .backlog_repository import BacklogValidationError
 from .backlog_runtime_store import BacklogRuntimeStore, enqueue_and_flush_update
 from .backlog_sheets_repository import BacklogSourceUnavailableError, SheetsBacklogRepository
+from .checkpointer_store import get_checkpointer
 from .logging_setup import LOGGER_NAME
 from .progress_events import (
     ProgressReporter,
@@ -42,21 +56,40 @@ logger = logging.getLogger(LOGGER_NAME)
 
 STATUS_SUCCESS = "success"
 STATUS_NEEDS_CLARIFICATION = "needs_clarification"
-STATUS_APPROVAL_REQUIRED = "approval_required"
+STATUS_WAITING_DECISION = "waiting_decision"
 STATUS_FAILED = "failed"
 ALLOWED_EXECUTION_MODES = {"instruction_only", "execute"}
 
 RESULT_KIND_INSTRUCTION_PACKAGE = "instruction_package"
 RESULT_KIND_EXECUTION_RESULT = "execution_result"
 RESULT_KIND_CLARIFICATION_REQUEST = "clarification_request"
-RESULT_KIND_APPROVAL_REQUEST = "approval_request"
+RESULT_KIND_DECISION_REQUIRED = "decision_required"
 RESULT_KIND_TERMINAL_FAILURE = "terminal_failure"
+
+# One entry per LangGraph interrupt `kind` this runner knows how to resume, and the
+# options that pause offers. This table is the single source of truth for both what
+# gets reported to the caller and what a resumed decision is allowed to say.
+_DECISION_OPTIONS_BY_KIND: dict[str, list[dict[str, Any]]] = {
+    "approval": [
+        {"name": "approve"},
+        {"name": "request_changes", "needs_text": True},
+        {"name": "ask_question", "needs_text": True},
+        {"name": "cancel"},
+    ],
+    "plan_guidance": [{"name": "answer", "needs_text": True}],
+    "failure_guidance": [{"name": "answer", "needs_text": True}],
+    "research_approval": [{"name": "approve"}, {"name": "cancel"}],
+    "completion_verification": [
+        {"name": "confirm_complete"},
+        {"name": "reject", "needs_text": True},
+    ],
+}
 
 
 def run_agent_task(input_path: str | Path, output_path: str | Path) -> int:
     """Read a task from input_path, run the workflow, write result to output_path.
 
-    Returns 0 on success or soft outcomes (needs_clarification, approval_required).
+    Returns 0 on success or soft outcomes (needs_clarification, waiting_decision).
     Returns 1 on hard failures.
     """
     input_file = Path(input_path)
@@ -74,14 +107,25 @@ def run_agent_task(input_path: str | Path, output_path: str | Path) -> int:
 
     request_id = task_input.get("request_id") or str(uuid.uuid4())
     task_text = task_input.get("task", "").strip()
+    decision = _parse_decision(task_input.get("decision"))
     progress_reporter = progress_reporter_from_input(task_input, request_id=request_id)
 
-    if not task_text:
+    if decision is not None and not task_input.get("request_id"):
         _write_error_output(
             output_file,
             progress_reporter,
             request_id,
-            "task field is required and must not be empty.",
+            "request_id is required to resume a paused conversation with a decision.",
+            settings=None,
+        )
+        return 1
+
+    if not task_text and decision is None:
+        _write_error_output(
+            output_file,
+            progress_reporter,
+            request_id,
+            "task field is required and must not be empty (unless resuming with a decision).",
             settings=None,
         )
         return 1
@@ -185,28 +229,11 @@ def run_agent_task(input_path: str | Path, output_path: str | Path) -> int:
                 fetched_at=source_record.fetched_at,
             )
 
-        # Approval token: human_approved=true requires a valid token issued by this process.
-        human_approved = False
-        if task_input.get("human_approved"):
-            from .approval_store import consume_approval_token
-
-            token = task_input.get("approval_token", "")
-            if not consume_approval_token(token, request_id, task_text):
-                msg = "human_approved=true requires a valid, unconsumed approval_token."
-                _write_error_output(
-                    output_file,
-                    progress_reporter,
-                    request_id,
-                    msg,
-                    settings=settings,
-                )
-                return 1
-            human_approved = True
-
         progress_reporter.started()
         logger.info(
-            "[SUBPROCESS] run-agent-task request_id=%s task=%s...",
+            "[SUBPROCESS] run-agent-task request_id=%s decision=%s task=%s...",
             request_id,
+            decision.option if decision else "(none)",
             task_text[:80],
         )
 
@@ -217,7 +244,7 @@ def run_agent_task(input_path: str | Path, output_path: str | Path) -> int:
                     task=task_text,
                     execute_coding_agent=execute_coding_agent,
                     project_root=project_root,
-                    human_approved=human_approved,
+                    decision=decision,
                     progress_reporter=progress_reporter,
                     supplied_context=_build_supplied_context(
                         task_input=task_input,
@@ -229,6 +256,15 @@ def run_agent_task(input_path: str | Path, output_path: str | Path) -> int:
         except (KeyboardInterrupt, SystemExit):
             progress_reporter.cancelled()
             raise
+        except _DecisionRejected as exc:
+            _write_error_output(
+                output_file,
+                progress_reporter,
+                request_id,
+                str(exc),
+                settings=settings,
+            )
+            return 1
         except Exception as exc:
             logger.exception("[SUBPROCESS] Unexpected error running workflow")
             _write_error_output(
@@ -240,17 +276,6 @@ def run_agent_task(input_path: str | Path, output_path: str | Path) -> int:
                 settings=settings,
             )
             return 1
-
-        # Issue an approval token when the workflow asks for human approval.
-        if result.get("status") == STATUS_APPROVAL_REQUIRED:
-            from .approval_store import create_approval_token
-
-            token = create_approval_token(request_id, task_text)
-            result["approval_token"] = token
-            logger.info(
-                "[SUBPROCESS] approval_required — issued token for request_id=%s",
-                request_id,
-            )
 
         if backlog_reference is not None:
             result["backlog_sync_status"] = _sync_backlog_completion(
@@ -267,11 +292,61 @@ def run_agent_task(input_path: str | Path, output_path: str | Path) -> int:
         return (
             0
             if result.get("status")
-            in (STATUS_SUCCESS, STATUS_NEEDS_CLARIFICATION, STATUS_APPROVAL_REQUIRED)
+            in (STATUS_SUCCESS, STATUS_NEEDS_CLARIFICATION, STATUS_WAITING_DECISION)
             else 1
         )
     finally:
         request_lock.release()
+
+
+class _DecisionRejected(ValueError):
+    """A resume decision didn't match what the paused conversation is offering."""
+
+
+class _Decision:
+    __slots__ = ("option", "text", "actor")
+
+    def __init__(self, option: str, text: str, actor: str) -> None:
+        self.option = option
+        self.text = text
+        self.actor = actor
+
+
+def _parse_decision(raw_decision: Any) -> _Decision | None:
+    """Parse the caller-supplied decision, or return None if absent."""
+
+    if raw_decision is None:
+        return None
+    if not isinstance(raw_decision, dict):
+        raise _DecisionRejected("decision must be a JSON object with at least an 'option' field.")
+    option = str(raw_decision.get("option", "")).strip()
+    if not option:
+        raise _DecisionRejected("decision.option is required.")
+    text = str(raw_decision.get("text", "")).strip()
+    actor = str(raw_decision.get("actor", "")).strip()
+    return _Decision(option=option, text=text, actor=actor)
+
+
+def _merge_resource_references(task_input: dict[str, Any]) -> list[dict[str, Any]]:
+    """Fold Hub's universal `references` into the internal resource_references shape.
+
+    Hub relays `references` as an uninterpreted list of pointer strings (ticket IDs,
+    file paths, URLs, ...) — it does not know or guess what they mean. Legacy callers
+    already supply `resource_references` as dicts with an id. Both are merged into the
+    dict shape `resolve_request_context` (request_context.py) understands, without
+    resolving or interpreting either — that stays request_context's job alone.
+    """
+    merged: dict[str, dict[str, Any]] = {}
+    for reference in task_input.get("resource_references") or []:
+        if isinstance(reference, dict):
+            ref_id = str(reference.get("item_id") or reference.get("id") or "").strip()
+            if ref_id:
+                merged[ref_id] = reference
+    for reference in task_input.get("references") or []:
+        ref_id = str(reference).strip()
+        if ref_id and ref_id not in merged:
+            merged[ref_id] = {"id": ref_id}
+    return list(merged.values())
 
 
 def _build_supplied_context(
@@ -283,7 +358,7 @@ def _build_supplied_context(
 ) -> dict[str, Any]:
     context: dict[str, Any] = {
         "project_reference": task_input.get("project_reference") or {},
-        "resource_references": task_input.get("resource_references") or [],
+        "resource_references": _merge_resource_references(task_input),
         "project_root": project_root or "",
     }
     if backlog_reference is not None and source_record is not None:
@@ -332,18 +407,16 @@ def _execute_workflow(
     task: str,
     execute_coding_agent: bool,
     project_root: str | None,
-    human_approved: bool = False,
+    decision: _Decision | None = None,
     progress_reporter: ProgressReporter | None = None,
     supplied_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    from langgraph.checkpoint.memory import MemorySaver
-
     from .coding_workflow_graph import build_graph, build_initial_graph_state
 
     reporter = progress_reporter or ProgressReporter()
     reporter.phase("analysing", "Analysing the task and project context.")
     graph = build_graph(
-        checkpointer_storage=MemorySaver(),
+        checkpointer_storage=get_checkpointer(),
         execute_coding_agent_override=execute_coding_agent,
         project_root_override=project_root,
         coding_agent_progress_callback=(
@@ -354,18 +427,29 @@ def _execute_workflow(
     thread_id = f"subprocess-{request_id}"
     config = {"configurable": {"thread_id": thread_id}}
 
-    initial_state: dict[str, Any] = build_initial_graph_state(
-        task,
-        # Subprocess resubmissions are already approved; backlog-driven approval forcing stays local
-        # to the coding workflow graph and should not be reintroduced here.
-        force_approval=False,
-        supplied_context=supplied_context,
-        approved=human_approved,
-        approved_by="human-via-subprocess" if human_approved else "",
-        approval_reason="",
-    )
+    if decision is not None:
+        pending_snapshot = graph.get_state(config)
+        pending_interrupt = _pending_interrupt_value(pending_snapshot)
+        pending_kind = (
+            str(pending_interrupt.get("kind", "")).strip()
+            if isinstance(pending_interrupt, dict)
+            else ""
+        )
+        if not pending_kind or pending_kind not in _DECISION_OPTIONS_BY_KIND:
+            raise _DecisionRejected(
+                f"No paused decision found for request_id={request_id}. "
+                "It may have already been resolved, or never paused."
+            )
+        resume_payload = _map_decision_to_resume_payload(pending_kind, decision)
+        final_state = graph.invoke(Command(resume=resume_payload), config=config)
+    else:
+        initial_state: dict[str, Any] = build_initial_graph_state(
+            task,
+            force_approval=False,
+            supplied_context=supplied_context,
+        )
+        final_state = graph.invoke(initial_state, config=config)
 
-    final_state = graph.invoke(initial_state, config=config)
     state_snapshot = graph.get_state(config)
     reporter.phase("finalising", "Preparing the structured result.")
     return _map_state_to_output(
@@ -373,7 +457,106 @@ def _execute_workflow(
         final_state,
         execute_coding_agent,
         state_snapshot=state_snapshot,
+        thread_id=thread_id,
     )
+
+
+def _map_decision_to_resume_payload(kind: str, decision: _Decision) -> Any:
+    """Translate a generic decision into the resume value this graph's interrupt expects.
+
+    This is the one place AI Tech Lead's own graph-internal resume shapes are allowed
+    to leak in — callers only ever see the generic option/text contract.
+    """
+
+    options = {opt["name"]: opt for opt in _DECISION_OPTIONS_BY_KIND[kind]}
+    option_spec = options.get(decision.option)
+    if option_spec is None:
+        valid = ", ".join(sorted(options))
+        raise _DecisionRejected(
+            f"'{decision.option}' is not a valid option for a pending {kind} decision. "
+            f"Valid options: {valid}."
+        )
+    if option_spec.get("needs_text") and not decision.text:
+        raise _DecisionRejected(f"decision.text is required for option '{decision.option}'.")
+
+    if kind == "approval":
+        payload: dict[str, Any] = {"action": decision.option}
+        if decision.option == "approve":
+            payload["approved_by"] = decision.actor or "agent-caller"
+        elif decision.option == "request_changes":
+            payload["feedback"] = decision.text
+        elif decision.option == "ask_question":
+            payload["question"] = decision.text
+        return payload
+
+    if kind in {"plan_guidance", "failure_guidance"}:
+        return decision.text
+
+    if kind == "research_approval":
+        return {"approved": decision.option == "approve"}
+
+    if kind == "completion_verification":
+        if decision.option == "confirm_complete":
+            return {"decision": "confirm_complete"}
+        return {"decision": "reject", "text": decision.text}
+
+    raise _DecisionRejected(f"Unknown pending interrupt kind: {kind}")
+
+
+def _prompt_for_pending_interrupt(kind: str, payload: dict[str, Any]) -> str:
+    if kind == "approval":
+        reason = str(payload.get("reason", "")).strip()
+        formulated_task = str(payload.get("formulated_task", "")).strip()
+        last_question = str(payload.get("last_question", "")).strip()
+        last_answer = str(payload.get("last_answer", "")).strip()
+        parts = [f"Approval required: {reason}" if reason else "Approval required."]
+        if formulated_task:
+            parts.append(f"Proposed task: {formulated_task}")
+        if last_question:
+            parts.append(f"Q: {last_question}\nA: {last_answer}")
+        return "\n".join(parts)
+
+    if kind == "plan_guidance":
+        reason = str(payload.get("reason", "")).strip()
+        rejection_count = payload.get("rejection_count", 0)
+        return f"Plan needs guidance (rejected {rejection_count}x): {reason}"
+
+    if kind == "failure_guidance":
+        retry_count = payload.get("retry_count", 0)
+        result_excerpt = str(payload.get("coding_agent_result", "")).strip()[:200]
+        return f"Coding agent failed {retry_count}x and needs guidance: {result_excerpt}"
+
+    if kind == "research_approval":
+        return str(payload.get("question", "")).strip() or "Online research approval needed."
+
+    if kind == "completion_verification":
+        reason = str(payload.get("reason", "")).strip()
+        return f"Completion cannot be verified automatically and needs human review: {reason}"
+
+    return ""
+
+
+def _pending_decision_from_snapshot(
+    state_snapshot: Any | None,
+    thread_id: str,
+) -> dict[str, Any] | None:
+    """Return the generic decision descriptor for a paused, resumable interrupt."""
+
+    interrupt_value = _pending_interrupt_value(state_snapshot)
+    if interrupt_value is None:
+        return None
+    kind = str(interrupt_value.get("kind", "")).strip()
+    options = _DECISION_OPTIONS_BY_KIND.get(kind)
+    if options is None:
+        # Paused on something this runner doesn't know how to describe generically —
+        # surface that it's paused without inventing a contract that doesn't exist.
+        return {"thread_id": thread_id, "kind": kind or "unknown", "prompt": "", "options": []}
+    return {
+        "thread_id": thread_id,
+        "kind": kind,
+        "prompt": _prompt_for_pending_interrupt(kind, interrupt_value),
+        "options": options,
+    }
 
 
 def _sync_backlog_completion(
@@ -430,17 +613,17 @@ def _map_state_to_output(
     execute_coding_agent: bool,
     *,
     state_snapshot: Any | None = None,
+    thread_id: str = "",
 ) -> dict[str, Any]:
     agent_instruction = state.get("agent_instruction", "")
     formulated_task = state.get("formulated_task", "")
     brief = state.get("brief", "")
-    needs_approval = state.get("needs_approval", False)
-    approved = state.get("approved", False)
     orchestrator_input_required = state.get("orchestrator_input_required", False)
     orchestrator_input_question = state.get("orchestrator_input_question", "")
     coding_agent_success = state.get("coding_agent_success")
     coding_agent_result = state.get("coding_agent_result", "")
     restart_required = state.get("restart_required", False)
+
     pending_interrupt = _pending_interrupt_value(state_snapshot)
     pending_interrupt_kind = (
         str(pending_interrupt.get("kind", "")).strip()
@@ -448,92 +631,56 @@ def _map_state_to_output(
         else ""
     )
 
-    if pending_interrupt_kind == "plan_guidance":
-        reason = str(pending_interrupt.get("reason", "")).strip()
-        summary = "Clarification needed: human plan guidance is required."
-        if reason:
-            summary = f"{summary} Reason: {reason}"
-        status = STATUS_NEEDS_CLARIFICATION
-        next_action = "Provide plan guidance and resubmit the task."
-        result_kind = RESULT_KIND_CLARIFICATION_REQUEST
-        caller_action = "provide_clarification"
-        resume_supported = True
-        resume_fields = ["request_id", "task"]
-        interrupt_kind = pending_interrupt_kind
-    elif pending_interrupt_kind == "failure_guidance":
-        status = STATUS_NEEDS_CLARIFICATION
-        result_excerpt = str(pending_interrupt.get("coding_agent_result", "")).strip()
-        summary = (
-            "Clarification needed: human guidance is required after repeated coding-agent failures."
-        )
-        if result_excerpt:
-            summary = f"{summary} Last result: {result_excerpt[:200]}"
-        next_action = "Provide corrective guidance and resubmit the task."
-        result_kind = RESULT_KIND_CLARIFICATION_REQUEST
-        caller_action = "provide_clarification"
-        resume_supported = True
-        resume_fields = ["request_id", "task"]
-        interrupt_kind = pending_interrupt_kind
+    pending_decision: dict[str, Any] | None = None
+
+    if pending_interrupt_kind in _DECISION_OPTIONS_BY_KIND:
+        pending_decision = _pending_decision_from_snapshot(state_snapshot, thread_id)
+        status = STATUS_WAITING_DECISION
+        summary = pending_decision["prompt"] if pending_decision else "A decision is required."
+        option_names = ", ".join(opt["name"] for opt in pending_decision["options"])
+        next_action = f"Resubmit request_id with a decision. Options: {option_names}."
+        result_kind = RESULT_KIND_DECISION_REQUIRED
     elif orchestrator_input_required:
+        # No real interrupt behind this — the workflow ended rather than paused
+        # (e.g. an unresolved reference). There is nothing to resume; the only
+        # path forward is a brand new task that answers the question.
         status = STATUS_NEEDS_CLARIFICATION
         summary = f"Clarification needed: {orchestrator_input_question}"
-        next_action = f"Answer the question and resubmit: {orchestrator_input_question}"
+        next_action = f"Answer the question and submit a new task: {orchestrator_input_question}"
         result_kind = RESULT_KIND_CLARIFICATION_REQUEST
-        caller_action = "provide_clarification"
-        resume_supported = True
-        resume_fields = ["request_id", "task"]
-        interrupt_kind = "orchestrator_question"
-    elif needs_approval and not approved:
-        status = STATUS_APPROVAL_REQUIRED
-        summary = f"Approval required: {state.get('approval_reason', '')}"
-        next_action = (
-            "Approve via Telegram, then resubmit with human_approved=true and the approval_token."
-        )
-        result_kind = RESULT_KIND_APPROVAL_REQUEST
-        caller_action = "provide_approval"
-        resume_supported = True
-        resume_fields = ["request_id", "task", "human_approved", "approval_token"]
-        interrupt_kind = "approval_required"
     elif restart_required:
         status = STATUS_FAILED
         summary = "Agent workflow requires a restart."
         next_action = "Retry the task from scratch."
         result_kind = RESULT_KIND_TERMINAL_FAILURE
-        caller_action = "retry"
-        resume_supported = False
-        resume_fields = []
-        interrupt_kind = "restart_required"
     elif agent_instruction:
-        if coding_agent_success is True:
+        verification_status = state.get("verification_status", "")
+        if coding_agent_success is True and verification_status == "failed":
+            status = STATUS_FAILED
+            verification_reason = state.get("verification_reason", "")
+            summary = f"AI Tech Lead completion verification failed: {verification_reason[:200]}"
+            next_action = "Review the unresolved verification issue."
+            result_kind = RESULT_KIND_TERMINAL_FAILURE
+        elif coding_agent_success is True:
             status = STATUS_SUCCESS
-            summary = "Task completed successfully by the coding agent."
+            summary = "Task completed and verified by the AI Tech Lead."
+            next_action = "Review output."
             result_kind = RESULT_KIND_EXECUTION_RESULT
-            caller_action = "consume_result"
         elif coding_agent_success is False:
             status = STATUS_FAILED
             summary = f"Coding agent failed: {coding_agent_result[:200]}"
+            next_action = "Submit instruction to coding backend."
             result_kind = RESULT_KIND_TERMINAL_FAILURE
-            caller_action = "inspect_failure"
         else:
             status = STATUS_SUCCESS
             summary = "Instruction generated. Ready for coding agent execution."
+            next_action = "Submit instruction to coding backend."
             result_kind = RESULT_KIND_INSTRUCTION_PACKAGE
-            caller_action = "submit_instruction"
-        next_action = (
-            "Review output." if coding_agent_success else "Submit instruction to coding backend."
-        )
-        resume_supported = False
-        resume_fields = []
-        interrupt_kind = ""
     else:
         status = STATUS_FAILED
         summary = "Workflow completed without producing an instruction."
         next_action = "Check logs and retry with more specific task description."
         result_kind = RESULT_KIND_TERMINAL_FAILURE
-        caller_action = "retry"
-        resume_supported = False
-        resume_fields = []
-        interrupt_kind = ""
 
     return {
         "request_id": request_id,
@@ -548,10 +695,7 @@ def _map_state_to_output(
         "evidence": list(state.get("research_source_titles", [])),
         "next_action": next_action,
         "result_kind": result_kind,
-        "caller_action": caller_action,
-        "resume_supported": resume_supported,
-        "resume_fields": resume_fields,
-        "interrupt_kind": interrupt_kind,
+        "pending_decision": pending_decision,
         "backlog_sync_status": "not_applicable",
     }
 
@@ -588,10 +732,7 @@ def _error_response(request_id: str, message: str, detail: str = "") -> dict[str
         "evidence": [],
         "next_action": "Fix the error and retry.",
         "result_kind": RESULT_KIND_TERMINAL_FAILURE,
-        "caller_action": "retry",
-        "resume_supported": False,
-        "resume_fields": [],
-        "interrupt_kind": "",
+        "pending_decision": None,
         "backlog_sync_status": "not_applicable",
     }
 

@@ -17,16 +17,23 @@ from langgraph.types import interrupt
 
 from .app_settings import load_settings
 from .coding_agent_runner import CodingAgentCancellationToken, run_coding_agent
+from .completion_verifier import CompletionVerificationUnavailable, verify_completion
 from .instruction_assembler import build_agent_instruction
 from .logging_setup import LOGGER_NAME
+from .operator_question import answer_operator_question
 from .plan_reviewer import PlanReviewUnavailable, review_plan
 from .prompt_loader import PLAN_REQUEST_INSTRUCTION_PROMPT_KEY, render_prompt
+from .request_context import resolve_request_context, understand_request
 from .research_cache import save_online_source_to_cache
 from .research_checker import check_research_requirements
+from .research_code_context import collect_code_context, format_code_context_for_prompt
+from .research_discovery import discover_official_source
 from .research_sources import collect_online_research_sources
-from .request_context import resolve_request_context, understand_request
 from .risk_reviewer import review_task_risk
 from .tech_lead_analyst import analyse_task
+
+APPROVAL_MAX_REVISION_CYCLES = 5
+COMPLETION_VERIFICATION_MAX_CORRECTIONS = 1
 
 logger = logging.getLogger(LOGGER_NAME)
 
@@ -40,6 +47,7 @@ class NodeName(StrEnum):
     UNDERSTAND_AND_BOUND_REQUEST = "1a_understand_and_bound_request"
     RESOLVE_CONTEXT = "1b_resolve_context"
     CHECK_RESEARCH = "1c_check_research"
+    DISCOVER_RESEARCH_SOURCE = "1c1_discover_research_source"
     RESEARCH_INTERRUPT = "1c_research_interrupt"
     COLLECT_RESEARCH_EVIDENCE = "1d_collect_research_evidence"
     REVIEW_RISK = "2_review_risk"
@@ -51,6 +59,8 @@ class NodeName(StrEnum):
     CREATE_AGENT_INSTRUCTION = "5_create_agent_instruction"
     RUN_CODING_AGENT = "6_run_coding_agent"
     FAILURE_INTERRUPT = "6b_failure_interrupt"
+    VERIFY_COMPLETION = "6c_verify_completion"
+    COMPLETION_VERIFICATION_INTERRUPT = "6d_completion_verification_interrupt"
     END_NODE = "7_end_node"
 
 
@@ -79,7 +89,14 @@ class GraphState(TypedDict):
     risk_level: str
     approved: bool
     approved_by: str
+    approval_action: str
+    approval_revision_count: int
+    approval_last_question: str
+    approval_last_answer: str
     research_evidence_required: bool
+    research_gap_question: str
+    discovered_source_url: str
+    discovered_source_title: str
     research_source_titles: list[str]
     research_source_locations: list[str]
     research_source_summaries: list[str]
@@ -103,6 +120,10 @@ class GraphState(TypedDict):
     coding_agent_returncode: int | None
     coding_agent_timed_out: bool
     coding_agent_performed_by: str
+    verification_status: str
+    verification_reason: str
+    verification_correction: str
+    verification_attempt_count: int
 
 
 def build_initial_graph_state(
@@ -141,7 +162,14 @@ def build_initial_graph_state(
         "risk_level": "",
         "approved": approved,
         "approved_by": approved_by,
+        "approval_action": "",
+        "approval_revision_count": 0,
+        "approval_last_question": "",
+        "approval_last_answer": "",
         "research_evidence_required": False,
+        "research_gap_question": "",
+        "discovered_source_url": "",
+        "discovered_source_title": "",
         "research_source_titles": [],
         "research_source_locations": [],
         "research_source_summaries": [],
@@ -165,6 +193,10 @@ def build_initial_graph_state(
         "coding_agent_returncode": None,
         "coding_agent_timed_out": False,
         "coding_agent_performed_by": "",
+        "verification_status": "",
+        "verification_reason": "",
+        "verification_correction": "",
+        "verification_attempt_count": 0,
     }
 
 
@@ -205,7 +237,9 @@ def resolve_context_node(state: GraphState) -> dict[str, Any]:
     if question:
         result.update({
             "orchestrator_input_required": True,
-            "orchestrator_input_reason": "A referenced project resource could not be resolved safely.",
+            "orchestrator_input_reason": (
+                "A referenced project resource could not be resolved safely."
+            ),
             "orchestrator_input_question": question,
         })
     return result
@@ -218,15 +252,26 @@ def route_after_resolve_context(state: GraphState) -> str:
 
 
 def check_research_node(state: GraphState) -> dict[str, Any]:
-    """Check research evidence requirements for complex tasks."""
+    """Identify a knowledge gap, if any, and check research evidence requirements."""
 
     _log_node_start("1b", "CHECK_RESEARCH", "Check research evidence requirements")
     settings = load_settings()
+    code_context_root = str(state.get("resolved_project_root", "")).strip() or None
+    if code_context_root:
+        logger.info(
+            "[LEARN] Code context will scan resolved target project root: %s",
+            code_context_root,
+        )
 
-    result = check_research_requirements(state.get("bounded_request", "") or state["request"], settings)
+    result = check_research_requirements(
+        state.get("bounded_request", "") or state["request"],
+        settings,
+        code_context_root=code_context_root,
+    )
 
     partial: dict[str, Any] = {
-        "research_evidence_required": result.is_complex,
+        "research_evidence_required": result.has_gap,
+        "research_gap_question": result.gap_question,
         "research_source_titles": list(result.usable_source_titles),
         "research_source_locations": list(result.usable_source_locations),
         "research_source_summaries": list(result.usable_source_summaries),
@@ -234,22 +279,30 @@ def check_research_node(state: GraphState) -> dict[str, Any]:
     }
 
     if result.online_research_needed:
+        domains_text = (
+            ", ".join(settings.research_allowed_domains)
+            if settings.research_allowed_domains
+            else "no domains configured"
+        )
         question = (
             f"Local docs found {result.sources_found} relevant source(s) "
-            f"(minimum {settings.research_min_local_sources} required) for this complex task.\n"
-            f"Reason: {result.complexity_reason}\n"
-            "Do you want me to fetch the approved LangChain docs next?"
+            f"(minimum {settings.research_min_local_sources} required) for this knowledge gap:\n"
+            f"\"{result.gap_question}\"\n"
+            f"Reason: {result.gap_reason}\n"
+            f"Do you want me to fetch from the approved online source registry next "
+            f"(bounded to: {domains_text})?"
         )
         partial["orchestrator_input_required"] = True
-        partial["orchestrator_input_reason"] = result.complexity_reason
+        partial["orchestrator_input_reason"] = result.gap_reason
         partial["orchestrator_input_question"] = question
         logger.info(
-            "[LEARN] Research interrupt required: sources_found=%d reason=%s",
+            "[LEARN] Research interrupt required: sources_found=%d gap_question=%s reason=%s",
             result.sources_found,
-            result.complexity_reason,
+            result.gap_question,
+            result.gap_reason,
         )
     else:
-        if result.is_complex:
+        if result.has_gap:
             logger.info(
                 "[LEARN] Research evidence satisfied: %d local source(s) available: %s",
                 result.sources_found,
@@ -261,6 +314,40 @@ def check_research_node(state: GraphState) -> dict[str, Any]:
             )
 
     return partial
+
+
+def discover_research_source_node(state: GraphState) -> dict[str, Any]:
+    """Try to discover a candidate official source for the identified gap.
+
+    Only reached because check_research_node already decided online research
+    is needed. This node never itself decides to skip the human approval
+    gate — it only changes what that gate asks about. Falls back to
+    check_research_node's existing bounded-registry question when discovery
+    is off, errors, or finds no safe candidate.
+    """
+
+    _log_node_start("1c1", "DISCOVER_RESEARCH_SOURCE", "Discover a candidate official source")
+    settings = load_settings()
+    gap_question = str(state.get("research_gap_question", "")).strip()
+
+    candidate = discover_official_source(gap_question, settings)
+    if candidate is None:
+        logger.info("[LEARN] No discovered source candidate; keeping bounded-registry question.")
+        return {}
+
+    question = (
+        "I found a candidate official documentation page for this knowledge gap:\n"
+        f"\"{gap_question}\"\n"
+        f"{candidate.title} — {candidate.url}\n"
+        "Do you approve fetching this specific URL? No other URL will be fetched "
+        "without separate approval."
+    )
+    logger.info("[LEARN] Discovered source candidate for approval: %s", candidate.url)
+    return {
+        "discovered_source_url": candidate.url,
+        "discovered_source_title": candidate.title,
+        "orchestrator_input_question": question,
+    }
 
 
 def research_interrupt_node(state: GraphState) -> dict[str, Any]:
@@ -286,8 +373,8 @@ def route_after_check_research(state: GraphState) -> str:
     _log_decision_start("1b", "ROUTE_AFTER_CHECK_RESEARCH", "Route after research evidence check")
 
     if state.get("research_evidence_required") and not state.get("online_research_approved", True):
-        logger.info("Decision: research interrupt needed -> RESEARCH_INTERRUPT")
-        return NodeName.RESEARCH_INTERRUPT
+        logger.info("Decision: research interrupt needed -> DISCOVER_RESEARCH_SOURCE")
+        return NodeName.DISCOVER_RESEARCH_SOURCE
 
     logger.info("Decision: no research interrupt -> REVIEW_RISK")
     return NodeName.REVIEW_RISK
@@ -325,7 +412,14 @@ def collect_research_evidence_node(state: GraphState) -> dict[str, Any]:
         state.get("online_research_approved", False),
     )
 
-    online_sources = collect_online_research_sources(state.get("bounded_request", "") or state["request"], settings)
+    gap_question = (
+        state.get("research_gap_question", "")
+        or state.get("bounded_request", "")
+        or state["request"]
+    )
+    discovered_url = str(state.get("discovered_source_url", "")).strip()
+    extra_urls = [discovered_url] if discovered_url else None
+    online_sources = collect_online_research_sources(gap_question, settings, extra_urls=extra_urls)
     online_titles = [source.title for source in online_sources]
     online_locations = [source.location for source in online_sources]
     online_summaries = [source.summary for source in online_sources]
@@ -338,6 +432,7 @@ def collect_research_evidence_node(state: GraphState) -> dict[str, Any]:
             location=source.location,
             summary=source.summary,
             excerpt=source.excerpt,
+            question=gap_question,
             project_root=Path(settings.project_root),
         )
     )
@@ -483,19 +578,54 @@ def route_after_tech_lead_analyse(state: GraphState) -> str:
 
 
 def route_after_approval(state: GraphState) -> str:
-    """Choose the next LangGraph node name after human approval is received."""
+    """Choose the next LangGraph node name after a human approval decision."""
 
     _log_decision_start(
         "approval", "ROUTE_AFTER_APPROVAL", "Choose next graph path after human decision"
     )
 
-    if state["approved"]:
-        logger.info("Decision: approved=True -> REQUEST_PLAN")
-        return NodeName.REQUEST_PLAN
+    action = state.get("approval_action", "approve")
 
-    logger.info("Decision: approved=False -> END_NODE")
-    return NodeName.END_NODE
+    if action == "cancel":
+        logger.info("Decision: action=cancel -> END_NODE")
+        return NodeName.END_NODE
 
+    if action == "ask_question":
+        logger.info("Decision: action=ask_question -> APPROVAL_INTERRUPT")
+        return NodeName.APPROVAL_INTERRUPT
+
+    if action == "request_changes":
+        revision_count = int(state.get("approval_revision_count", 0))
+        if revision_count >= APPROVAL_MAX_REVISION_CYCLES:
+            logger.info(
+                "Decision: revision limit reached (%d/%d) -> END_NODE",
+                revision_count,
+                APPROVAL_MAX_REVISION_CYCLES,
+            )
+            return NodeName.END_NODE
+        logger.info(
+            "Decision: action=request_changes (%d/%d) -> TECH_LEAD_ANALYSE",
+            revision_count,
+            APPROVAL_MAX_REVISION_CYCLES,
+        )
+        return NodeName.TECH_LEAD_ANALYSE
+
+    logger.info("Decision: action=approve -> REQUEST_PLAN")
+    return NodeName.REQUEST_PLAN
+
+
+
+def _target_project_root(state: GraphState, settings: Any) -> Path:
+    """Return the workflow's resolved target root, falling back only for local self-runs.
+
+    ``resolved_project_root`` is produced by the context-resolution step and, for
+    subprocess callers, originates from the allowlist-validated project root.
+    Project-aware nodes must use this helper instead of independently reading
+    ``settings.project_root``.
+    """
+
+    resolved = str(state.get("resolved_project_root", "")).strip()
+    return Path(resolved or settings.project_root).resolve()
 
 def request_plan_node(
     state: GraphState,
@@ -541,9 +671,10 @@ def request_plan_node(
         task_feedback=feedback_section,
         correction_feedback=correction_section,
     )
+    target_project_root = _target_project_root(state, settings)
     result = run_coding_agent(
         agent_instruction=instruction,
-        project_root=Path(settings.project_root),
+        project_root=target_project_root,
         settings=settings,
     )
     plan_text = result.stdout.strip()
@@ -690,20 +821,124 @@ def route_after_review_plan(state: GraphState) -> str:
     return NodeName.REQUEST_PLAN
 
 
+_APPROVAL_ACTIONS = {"approve", "request_changes", "ask_question", "cancel"}
+
+
+def _parse_approval_action(result: Any) -> str:
+    """Return the requested action, failing closed to "cancel" on anything unrecognized.
+
+    This is a human-approval gate, so an ambiguous or malformed resume value
+    must never be treated as approval.
+    """
+
+    if isinstance(result, dict):
+        action = str(result.get("action", "")).strip().lower()
+        if action in _APPROVAL_ACTIONS:
+            return action
+    return "cancel"
+
+
+def _extract_resume_field(result: Any, key: str) -> str:
+    if isinstance(result, dict):
+        return str(result.get(key, "")).strip()
+    return ""
+
+
 def approval_interrupt_node(state: GraphState) -> dict[str, Any]:
-    """Pause for human approval before creating a coding-agent instruction."""
+    """Pause for human approval, and handle request-changes/ask-question/cancel.
+
+    Four resume actions: approve, request_changes, ask_question, cancel. An
+    unrecognized resume value fails closed to cancel. request_changes appends
+    to task_feedback and loops back to TECH_LEAD_ANALYSE to regenerate the
+    proposal. ask_question answers using request/project/code/research context
+    already in state, then loops back to this same node so the same four
+    choices are shown again with the answer visible.
+    """
 
     _log_node_start("4/7", "APPROVAL_INTERRUPT", "Pause for human approval")
     approval_reason = str(state.get("approval_reason", "")).strip()
     formulated_task = str(state.get("formulated_task", "")).strip()
+    last_question = str(state.get("approval_last_question", "")).strip()
+    last_answer = str(state.get("approval_last_answer", "")).strip()
+
+    interrupt_value: dict[str, Any] = {
+        "kind": "approval",
+        "reason": approval_reason,
+        "formulated_task": formulated_task,
+    }
+    if last_question:
+        interrupt_value["last_question"] = last_question
+        interrupt_value["last_answer"] = last_answer
+
     logger.info("Approval interrupt: reason=%s", approval_reason)
-    result = interrupt(
-        {"kind": "approval", "reason": approval_reason, "formulated_task": formulated_task}
+    result = interrupt(interrupt_value)
+    action = _parse_approval_action(result)
+
+    if action == "approve":
+        approved_by = _extract_resume_field(result, "approved_by")
+        logger.info("Approval interrupt resumed: action=approve approved_by=%s", approved_by)
+        return {
+            "approved": True,
+            "approved_by": approved_by,
+            "approval_action": "approve",
+            "approval_last_question": "",
+            "approval_last_answer": "",
+        }
+
+    if action == "cancel":
+        logger.info("Approval interrupt resumed: action=cancel")
+        return {
+            "approved": False,
+            "approved_by": "",
+            "approval_action": "cancel",
+            "approval_last_question": "",
+            "approval_last_answer": "",
+        }
+
+    if action == "request_changes":
+        feedback = _extract_resume_field(result, "feedback")
+        new_revision_count = int(state.get("approval_revision_count", 0)) + 1
+        logger.info(
+            "Approval interrupt resumed: action=request_changes revision_count=%d",
+            new_revision_count,
+        )
+        return {
+            "approved": False,
+            "approval_action": "request_changes",
+            "task_feedback": [feedback] if feedback else [],
+            "approval_revision_count": new_revision_count,
+            "approval_last_question": "",
+            "approval_last_answer": "",
+        }
+
+    # action == "ask_question"
+    question = _extract_resume_field(result, "question")
+    settings = load_settings()
+    request_text = state.get("bounded_request", "") or state["request"]
+    code_context_root = str(state.get("resolved_project_root", "")).strip() or None
+    code_context_text = format_code_context_for_prompt(
+        collect_code_context(request_text, settings, project_root_override=code_context_root)
     )
-    approved = bool(result.get("approved", False)) if isinstance(result, dict) else bool(result)
-    approved_by = str(result.get("approved_by", "")) if isinstance(result, dict) else ""
-    logger.info("Approval interrupt resumed: approved=%s approved_by=%s", approved, approved_by)
-    return {"approved": approved, "approved_by": approved_by}
+    research_evidence = _format_research_evidence(
+        state.get("research_source_titles", []),
+        state.get("research_source_locations", []),
+        state.get("research_source_summaries", []),
+    )
+    answer = answer_operator_question(
+        question=question,
+        request=request_text,
+        resolved_project_identity=state.get("resolved_project_identity", ""),
+        resolved_project_root=state.get("resolved_project_root", ""),
+        code_context=code_context_text,
+        research_evidence=research_evidence,
+        settings=settings,
+    )
+    logger.info("Approval interrupt resumed: action=ask_question")
+    return {
+        "approval_action": "ask_question",
+        "approval_last_question": question,
+        "approval_last_answer": answer,
+    }
 
 
 def create_agent_instruction_node(state: GraphState) -> dict[str, Any]:
@@ -711,11 +946,17 @@ def create_agent_instruction_node(state: GraphState) -> dict[str, Any]:
 
     _log_node_start("5/7", "CREATE_AGENT_INSTRUCTION", "Create coding-agent instruction")
     settings = load_settings()
-    correction = state.get("coding_agent_correction", "").strip() or None
+    correction = (
+        state.get("coding_agent_correction", "").strip()
+        or state.get("verification_correction", "").strip()
+        or None
+    )
     if correction:
         logger.info(
-            "Including failure correction in instruction (retry_count=%d)",
+            "Including correction in instruction (coding_agent_retry_count=%d, "
+            "verification_attempt_count=%d)",
             state.get("coding_agent_retry_count", 0),
+            state.get("verification_attempt_count", 0),
         )
     research_evidence = _format_research_evidence(
         state.get("research_source_titles", []),
@@ -732,7 +973,7 @@ def create_agent_instruction_node(state: GraphState) -> dict[str, Any]:
         needs_approval=state["needs_approval"],
         approved=state["approved"],
         settings=settings,
-        project_root=Path(settings.project_root),
+        project_root=_target_project_root(state, settings),
         research_evidence=research_evidence,
         agent_correction=correction,
     )
@@ -856,8 +1097,15 @@ def run_coding_agent_node(
     settings = load_settings()
     if execute_coding_agent_override is not None:
         settings = replace(settings, execute_coding_agent=execute_coding_agent_override)
+    target_project_root = _target_project_root(state, settings)
     if project_root_override is not None:
-        settings = replace(settings, project_root=project_root_override)
+        override_root = Path(project_root_override).resolve()
+        resolved_project_root = str(state.get("resolved_project_root", "")).strip()
+        if resolved_project_root and override_root != target_project_root:
+            raise ValueError(
+                "project_root_override does not match the workflow's resolved target project root."
+            )
+        target_project_root = override_root
 
     # Approval context: explains who/what authorised this run
     needs_approval = state["needs_approval"]
@@ -878,7 +1126,7 @@ def run_coding_agent_node(
     logger.info("[LEARN] Approval reason: %s", _short_reason(state["approval_reason"]))
     logger.info("Coding agent command: %s", settings.coding_agent_command)
     logger.info("Coding agent execution enabled: %s", settings.execute_coding_agent)
-    logger.info("Working directory: %s", settings.project_root)
+    logger.info("Working directory: %s", target_project_root)
 
     if settings.execute_coding_agent:
         logger.info("[LEARN] Starting coding agent subprocess now. This may take several minutes.")
@@ -890,7 +1138,7 @@ def run_coding_agent_node(
 
     runner_kwargs = {
         "agent_instruction": state["agent_instruction"],
-        "project_root": Path(settings.project_root),
+        "project_root": target_project_root,
         "settings": settings,
         "progress_callback": progress_callback,
         "use_pty": True,
@@ -904,7 +1152,7 @@ def run_coding_agent_node(
     except Exception:
         logger.exception(
             "Coding agent execution failed before producing a result project_root=%s",
-            settings.project_root,
+            target_project_root,
         )
         raise
     command = getattr(result, "command", ())
@@ -992,8 +1240,8 @@ def route_after_run_coding_agent(state: GraphState) -> str:
     _log_decision_start("6", "ROUTE_AFTER_RUN_CODING_AGENT", "Route after coding agent run")
 
     if state.get("coding_agent_success"):
-        logger.info("Decision: success -> END_NODE")
-        return NodeName.END_NODE
+        logger.info("Decision: success -> VERIFY_COMPLETION")
+        return NodeName.VERIFY_COMPLETION
 
     retry_count = state.get("coding_agent_retry_count", 0)
     if retry_count < 2:
@@ -1002,6 +1250,119 @@ def route_after_run_coding_agent(state: GraphState) -> str:
 
     logger.info("Decision: failure retry_count=%d >= 2 -> FAILURE_INTERRUPT", retry_count)
     return NodeName.FAILURE_INTERRUPT
+
+
+def verify_completion_node(state: GraphState) -> dict[str, Any]:
+    """AI Tech Lead verifies the coding agent's completed work against the approved task."""
+
+    _log_node_start("6c", "VERIFY_COMPLETION", "Verify completed work against the approved task")
+    settings = load_settings()
+    attempt_count = state.get("verification_attempt_count", 0)
+    prior_correction = state.get("verification_correction", "")
+
+    try:
+        decision = verify_completion(
+            bounded_request=state.get("bounded_request", "") or state["request"],
+            formulated_task=state.get("formulated_task", ""),
+            brief=state.get("brief", ""),
+            plan_text=state.get("plan_text", ""),
+            acceptance_criteria=settings.acceptance_criteria,
+            changed_files=state.get("coding_agent_changed_files", ()),
+            coding_agent_result=state.get("coding_agent_result", ""),
+            settings=settings,
+            prior_correction=prior_correction,
+        )
+    except CompletionVerificationUnavailable as error:
+        logger.warning("Completion verification unavailable: %s", error)
+        return {
+            "verification_status": "human_verification_required",
+            "verification_reason": f"Verification unavailable: {error}",
+            "verification_correction": "",
+        }
+
+    logger.info(
+        "Completion verification decision: status=%s attempt_count=%d reason=%s",
+        decision.status,
+        attempt_count,
+        _short_reason(decision.reason),
+    )
+
+    if (
+        decision.status == "correction_required"
+        and attempt_count >= COMPLETION_VERIFICATION_MAX_CORRECTIONS
+    ):
+        logger.info(
+            "Decision: correction limit reached (%d) -> failed", COMPLETION_VERIFICATION_MAX_CORRECTIONS
+        )
+        return {
+            "verification_status": "failed",
+            "verification_reason": decision.reason,
+            "verification_correction": "",
+        }
+
+    updates: dict[str, Any] = {
+        "verification_status": decision.status,
+        "verification_reason": decision.reason,
+        "verification_correction": (
+            decision.correction if decision.status == "correction_required" else ""
+        ),
+    }
+    if decision.status == "correction_required":
+        updates["verification_attempt_count"] = attempt_count + 1
+    return updates
+
+
+def completion_verification_interrupt_node(state: GraphState) -> dict[str, Any]:
+    """Pause for a human decision when completion cannot be proven automatically."""
+
+    _log_node_start(
+        "6d", "COMPLETION_VERIFICATION_INTERRUPT", "Pause for human completion decision"
+    )
+    reason = state.get("verification_reason", "")
+    result = interrupt(
+        {
+            "kind": "completion_verification",
+            "reason": reason,
+            "coding_agent_result": state.get("coding_agent_result", ""),
+            "changed_files": list(state.get("coding_agent_changed_files", ())),
+        }
+    )
+    decision = result.get("decision") if isinstance(result, dict) else None
+    if decision == "confirm_complete":
+        logger.info("Completion verification interrupt resumed: confirmed complete by human")
+        return {
+            "verification_status": "complete",
+            "verification_reason": "Confirmed complete by human verification.",
+        }
+
+    rejection_text = str(result.get("text", "")).strip() if isinstance(result, dict) else str(result)
+    logger.info(
+        "Completion verification interrupt resumed: rejected, reason=%s", rejection_text[:120]
+    )
+    return {
+        "verification_status": "failed",
+        "verification_reason": rejection_text or "Rejected by human verification.",
+    }
+
+
+def route_after_verify_completion(state: GraphState) -> str:
+    """Route after completion verification: complete/failed -> end, unclear -> human, else retry."""
+
+    _log_decision_start(
+        "6c", "ROUTE_AFTER_VERIFY_COMPLETION", "Route after completion verification"
+    )
+    status = state.get("verification_status", "")
+
+    if status == "human_verification_required":
+        logger.info("Decision: human_verification_required -> COMPLETION_VERIFICATION_INTERRUPT")
+        return NodeName.COMPLETION_VERIFICATION_INTERRUPT
+
+    if status == "correction_required":
+        logger.info("Decision: correction_required -> CREATE_AGENT_INSTRUCTION")
+        return NodeName.CREATE_AGENT_INSTRUCTION
+
+    logger.info("Decision: %s -> END_NODE", status or "complete")
+    return NodeName.END_NODE
 
 
 def end_node(state: GraphState) -> dict[str, Any]:
@@ -1018,6 +1379,13 @@ def end_node(state: GraphState) -> dict[str, Any]:
         logger.info("Coding agent: %s", coding_agent_result.splitlines()[0])
     else:
         logger.info("Coding agent: not run")
+    verification_status = state.get("verification_status", "")
+    if verification_status:
+        logger.info(
+            "Completion verification: %s — %s",
+            verification_status,
+            _short_reason(state.get("verification_reason", "")),
+        )
     logger.info("---END---")
     return {"restart_required": state.get("restart_required", False)}
 
@@ -1037,6 +1405,7 @@ def build_graph(
     workflow.add_node(NodeName.UNDERSTAND_AND_BOUND_REQUEST, understand_and_bound_request_node)
     workflow.add_node(NodeName.RESOLVE_CONTEXT, resolve_context_node)
     workflow.add_node(NodeName.CHECK_RESEARCH, check_research_node)
+    workflow.add_node(NodeName.DISCOVER_RESEARCH_SOURCE, discover_research_source_node)
     workflow.add_node(NodeName.RESEARCH_INTERRUPT, research_interrupt_node)
     workflow.add_node(NodeName.COLLECT_RESEARCH_EVIDENCE, collect_research_evidence_node)
     workflow.add_node(NodeName.REVIEW_RISK, review_risk_node)
@@ -1066,6 +1435,10 @@ def build_graph(
         ),
     )
     workflow.add_node(NodeName.FAILURE_INTERRUPT, failure_interrupt_node)
+    workflow.add_node(NodeName.VERIFY_COMPLETION, verify_completion_node)
+    workflow.add_node(
+        NodeName.COMPLETION_VERIFICATION_INTERRUPT, completion_verification_interrupt_node
+    )
     workflow.add_node(NodeName.END_NODE, end_node)
 
     workflow.add_edge(START, NodeName.READ_REQUEST)
@@ -1083,10 +1456,11 @@ def build_graph(
         NodeName.CHECK_RESEARCH,
         route_after_check_research,
         {
-            NodeName.RESEARCH_INTERRUPT: NodeName.RESEARCH_INTERRUPT,
+            NodeName.DISCOVER_RESEARCH_SOURCE: NodeName.DISCOVER_RESEARCH_SOURCE,
             NodeName.REVIEW_RISK: NodeName.REVIEW_RISK,
         },
     )
+    workflow.add_edge(NodeName.DISCOVER_RESEARCH_SOURCE, NodeName.RESEARCH_INTERRUPT)
     workflow.add_conditional_edges(
         NodeName.RESEARCH_INTERRUPT,
         route_after_research_interrupt,
@@ -1110,6 +1484,8 @@ def build_graph(
         route_after_approval,
         {
             NodeName.REQUEST_PLAN: NodeName.REQUEST_PLAN,
+            NodeName.TECH_LEAD_ANALYSE: NodeName.TECH_LEAD_ANALYSE,
+            NodeName.APPROVAL_INTERRUPT: NodeName.APPROVAL_INTERRUPT,
             NodeName.END_NODE: NodeName.END_NODE,
         },
     )
@@ -1130,12 +1506,22 @@ def build_graph(
         NodeName.RUN_CODING_AGENT,
         route_after_run_coding_agent,
         {
-            NodeName.END_NODE: NodeName.END_NODE,
+            NodeName.VERIFY_COMPLETION: NodeName.VERIFY_COMPLETION,
             NodeName.CREATE_AGENT_INSTRUCTION: NodeName.CREATE_AGENT_INSTRUCTION,
             NodeName.FAILURE_INTERRUPT: NodeName.FAILURE_INTERRUPT,
         },
     )
     workflow.add_edge(NodeName.FAILURE_INTERRUPT, NodeName.CREATE_AGENT_INSTRUCTION)
+    workflow.add_conditional_edges(
+        NodeName.VERIFY_COMPLETION,
+        route_after_verify_completion,
+        {
+            NodeName.END_NODE: NodeName.END_NODE,
+            NodeName.CREATE_AGENT_INSTRUCTION: NodeName.CREATE_AGENT_INSTRUCTION,
+            NodeName.COMPLETION_VERIFICATION_INTERRUPT: NodeName.COMPLETION_VERIFICATION_INTERRUPT,
+        },
+    )
+    workflow.add_edge(NodeName.COMPLETION_VERIFICATION_INTERRUPT, NodeName.END_NODE)
     workflow.add_edge(NodeName.END_NODE, END)
 
     return workflow.compile(checkpointer=checkpointer_storage)

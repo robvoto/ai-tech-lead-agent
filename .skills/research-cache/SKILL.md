@@ -23,6 +23,7 @@ Avoid redundant web fetches and reinventing solutions that professionals have al
 ---
 topic: <short topic name>
 date: <YYYY-MM-DD>
+question: <the specific question this note answers, e.g. "What are Telegram Bot API's official rate-limit and retry rules?">
 sources:
   - <url 1>
   - <url 2>
@@ -45,4 +46,8 @@ sources:
 - One file per research topic. Update existing files rather than creating duplicates.
 - Keep summaries short — this is a cache, not a report.
 - Always record sources so findings can be reverified later.
+- Always record `question` — the specific external fact the note answers. Lookups match against this field first, not just the summary text, so a vague or missing question makes the note hard to reuse.
 - If a cached finding is more than 6 months old and the topic evolves fast (LLM tooling, APIs), note it may be stale before relying on it.
+
+## Note on the automated fetch path
+Notes written automatically by `1d_collect_research_evidence` (see `docs/GRAPH_WORKFLOW.md`) only populate `topic`/`date`/`question`/`sources` and a plain `## Summary` — they skip `Options found`/`Recommendation`/`Raw notes` because that automated path fetches raw docs without synthesizing them into those sections. Use this manual template's full structure when you do the synthesis yourself.

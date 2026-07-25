@@ -9,8 +9,10 @@ It does not perform open-ended web search or unbounded crawling.
 
 from __future__ import annotations
 
+import ipaddress
 import logging
 import re
+import socket
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from datetime import date
@@ -18,7 +20,8 @@ from html.parser import HTMLParser
 from pathlib import Path
 from typing import Iterable
 from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
+from urllib.parse import urlparse
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from .app_settings import AppSettings
 from .logging_setup import LOGGER_NAME
@@ -29,6 +32,85 @@ from .research_cache import (
 )
 
 logger = logging.getLogger(LOGGER_NAME)
+
+
+class ResearchUrlSafetyError(ValueError):
+    """Raised when a URL fails the outbound research fetch safety checks."""
+
+
+def validate_outbound_research_url(url: str) -> None:
+    """Reject URLs that are unsafe to fetch from this process (SSRF guard).
+
+    Applies to every outbound research fetch, whether the URL came from the
+    static approved-source list or from runtime source discovery: only
+    http(s) URLs whose hostname resolves exclusively to public, routable
+    addresses are allowed. Fails closed if any single resolved address is
+    private/loopback/link-local/reserved/multicast/unspecified — a hostname
+    that resolves to a mix of public and private addresses is rejected
+    outright rather than picking the "safe" one.
+    """
+
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"}:
+        raise ResearchUrlSafetyError(f"Unsafe URL scheme for research fetch: {url}")
+
+    hostname = parsed.hostname
+    if not hostname:
+        raise ResearchUrlSafetyError(f"Research fetch URL has no hostname: {url}")
+
+    try:
+        addr_infos = socket.getaddrinfo(hostname, None)
+    except OSError as error:
+        raise ResearchUrlSafetyError(
+            f"Unable to resolve host for research fetch URL {url}: {error}"
+        ) from error
+
+    if not addr_infos:
+        raise ResearchUrlSafetyError(f"No addresses resolved for research fetch URL: {url}")
+
+    for addr_info in addr_infos:
+        raw_address = addr_info[4][0].split("%", 1)[0]
+        ip_address = ipaddress.ip_address(raw_address)
+        if (
+            ip_address.is_private
+            or ip_address.is_loopback
+            or ip_address.is_link_local
+            or ip_address.is_reserved
+            or ip_address.is_multicast
+            or ip_address.is_unspecified
+        ):
+            raise ResearchUrlSafetyError(
+                f"Research fetch URL resolves to a disallowed address "
+                f"({ip_address}): {url}"
+            )
+
+
+class _SafeRedirectHandler(HTTPRedirectHandler):
+    """Re-validates every redirect target through the same SSRF guard."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: D102
+        validate_outbound_research_url(newurl)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+_RESEARCH_FETCH_OPENER = build_opener(_SafeRedirectHandler)
+_FETCH_READ_CHUNK_BYTES = 65536
+
+
+def _read_bounded_response(response, *, max_bytes: int, url: str) -> bytes:
+    chunks: list[bytes] = []
+    total_bytes = 0
+    while True:
+        chunk = response.read(_FETCH_READ_CHUNK_BYTES)
+        if not chunk:
+            break
+        total_bytes += len(chunk)
+        if total_bytes > max_bytes:
+            raise ValueError(
+                f"Research fetch response exceeded {max_bytes} bytes: {url}"
+            )
+        chunks.append(chunk)
+    return b"".join(chunks)
 
 _DOC_INDEX_ENTRY_PATTERN = re.compile(r"^-\s+`(?P<path>[^`]+)`\s*-\s*(?P<summary>.+)$")
 
@@ -115,12 +197,20 @@ def collect_local_research_sources(
 def collect_online_research_sources(
     request: str,
     settings: AppSettings,
+    *,
+    extra_urls: list[str] | None = None,
 ) -> list[ResearchSource]:
-    """Fetch a bounded set of approved online documentation pages in parallel."""
+    """Fetch a bounded set of approved online documentation pages in parallel.
+
+    `extra_urls` (e.g. a runtime-discovered, human-approved source) is
+    fetched alongside the static approved-source list, through the same
+    guarded fetch path, but is never persisted into that static list.
+    """
 
     request_terms = _request_terms(request)
     _log_research_request("Online research selection", request, request_terms)
-    selected_urls = settings.research_online_source_urls[: settings.research_max_online_source_urls]
+    combined_urls = list(dict.fromkeys((extra_urls or []) + settings.research_online_source_urls))
+    selected_urls = combined_urls[: settings.research_max_online_source_urls]
     logger.debug(
         "[LEARN] Online research candidate URLs (%d): %s",
         len(selected_urls),
@@ -134,6 +224,7 @@ def collect_online_research_sources(
                 url,
                 timeout_seconds=settings.research_fetch_timeout_seconds,
                 max_excerpt_chars=settings.research_max_excerpt_chars,
+                max_fetch_bytes=settings.research_max_fetch_bytes,
             )
         except (HTTPError, URLError, TimeoutError, ValueError) as error:
             logger.warning("[LEARN] Online research source failed: %s (%s)", url, error)
@@ -311,7 +402,9 @@ def _score_research_cache_entries(
         summary = refreshed_entry.summary.strip()
         excerpt = _truncate_text(refreshed_entry.body.strip(), max_excerpt_chars)
         relative_location = _relative_path_text(entry.path, project_root)
-        searchable_text = " ".join([refreshed_entry.title, summary, excerpt, relative_location])
+        searchable_text = " ".join(
+            [refreshed_entry.title, refreshed_entry.question, summary, excerpt, relative_location]
+        )
         score = _score_text(request_terms, searchable_text)
         source = ResearchSource(
             title=refreshed_entry.title,
@@ -354,6 +447,7 @@ def _refresh_stale_research_cache_entry(
             source_url,
             timeout_seconds=settings.research_fetch_timeout_seconds,
             max_excerpt_chars=settings.research_max_excerpt_chars,
+            max_fetch_bytes=settings.research_max_fetch_bytes,
         )
     except (HTTPError, URLError, TimeoutError, ValueError) as error:
         logger.warning("[LEARN] Stale research cache refresh failed: %s (%s)", source_url, error)
@@ -369,6 +463,7 @@ def _refresh_stale_research_cache_entry(
             location=source_url,
             summary=summary,
             excerpt=excerpt,
+            question=entry.question,
             today=date.today(),
         )
     except OSError as error:
@@ -397,7 +492,10 @@ def _fetch_online_source(
     *,
     timeout_seconds: int,
     max_excerpt_chars: int,
+    max_fetch_bytes: int,
 ) -> ResearchSource:
+    validate_outbound_research_url(url)
+
     request = Request(
         url,
         headers={
@@ -406,10 +504,17 @@ def _fetch_online_source(
         },
         method="GET",
     )
-    with urlopen(request, timeout=timeout_seconds) as response:
+    with _RESEARCH_FETCH_OPENER.open(request, timeout=timeout_seconds) as response:
         content_type = response.headers.get_content_type()
         charset = response.headers.get_content_charset() or "utf-8"
-        raw_body = response.read().decode(charset, errors="replace")
+        content_length = response.headers.get("Content-Length")
+        if content_length is not None and int(content_length) > max_fetch_bytes:
+            raise ValueError(
+                f"Research fetch response too large ({content_length} bytes): {url}"
+            )
+        raw_body = _read_bounded_response(
+            response, max_bytes=max_fetch_bytes, url=url
+        ).decode(charset, errors="replace")
 
     title, summary, excerpt = _extract_online_document_fields(
         raw_body,

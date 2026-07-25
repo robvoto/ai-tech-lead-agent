@@ -1,15 +1,14 @@
 """Tests for agent_task_runner security model and I/O contract.
 
 The workflow graph is always stubbed out — these tests verify the security
-layer (input validation, project_root allowlist, execution gate, approval
-tokens) without requiring LLM calls or a real LangGraph runtime.
+layer (input validation, project_root allowlist, execution gate, decision
+resume mapping) without requiring LLM calls or a real LangGraph runtime.
 """
 
 from __future__ import annotations
 
 import io
 import json
-import time
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -28,18 +27,22 @@ from test_backlog_sheets_repository import (
 
 import ai_tech_lead.backlog_sheets_repository as sheets_mod
 from ai_tech_lead.agent_task_runner import (
-    STATUS_APPROVAL_REQUIRED,
     STATUS_FAILED,
     STATUS_NEEDS_CLARIFICATION,
     STATUS_SUCCESS,
+    STATUS_WAITING_DECISION,
+    _build_supplied_context,
+    _DecisionRejected,
     _execute_workflow,
+    _map_decision_to_resume_payload,
     _map_state_to_output,
+    _parse_decision,
     _validate_project_root,
     run_agent_task,
 )
 from ai_tech_lead.app_settings import parse_settings
-from ai_tech_lead.approval_store import consume_approval_token, create_approval_token
 from ai_tech_lead.progress_events import ProgressReporter, StdoutJsonlProgressSink
+from ai_tech_lead.request_context import resolve_request_context
 from ai_tech_lead.runtime_lock import RuntimeLockBusyError
 
 # ---------------------------------------------------------------------------
@@ -74,18 +77,15 @@ def _success_output(instruction: str = "do it") -> dict[str, Any]:
         "evidence": [],
         "next_action": "Submit instruction to coding backend.",
         "result_kind": "instruction_package",
-        "caller_action": "submit_instruction",
-        "resume_supported": False,
-        "resume_fields": [],
-        "interrupt_kind": "",
+        "pending_decision": None,
     }
 
 
-def _approval_required_output(reason: str = "risky change") -> dict[str, Any]:
-    """Minimal output dict that _execute_workflow returns when approval is needed."""
+def _waiting_decision_output(reason: str = "risky change") -> dict[str, Any]:
+    """Minimal output dict that _execute_workflow returns when a decision is needed."""
     return {
         "request_id": "",
-        "status": STATUS_APPROVAL_REQUIRED,
+        "status": STATUS_WAITING_DECISION,
         "summary": f"Approval required: {reason}",
         "formulated_task": "",
         "brief": "",
@@ -94,14 +94,19 @@ def _approval_required_output(reason: str = "risky change") -> dict[str, Any]:
         "execution_performed": False,
         "logs": [],
         "evidence": [],
-        "next_action": (
-            "Approve via Telegram, then resubmit with human_approved=true and the approval_token."
-        ),
-        "result_kind": "approval_request",
-        "caller_action": "provide_approval",
-        "resume_supported": True,
-        "resume_fields": ["request_id", "task", "human_approved", "approval_token"],
-        "interrupt_kind": "approval_required",
+        "next_action": "Resubmit request_id with a decision. Options: approve, cancel.",
+        "result_kind": "decision_required",
+        "pending_decision": {
+            "thread_id": "subprocess-req",
+            "kind": "approval",
+            "prompt": f"Approval required: {reason}",
+            "options": [
+                {"name": "approve"},
+                {"name": "request_changes", "needs_text": True},
+                {"name": "ask_question", "needs_text": True},
+                {"name": "cancel"},
+            ],
+        },
     }
 
 
@@ -148,10 +153,7 @@ def _execution_success_output(summary: str = "Task completed successfully.") -> 
         "evidence": [],
         "next_action": "Review output.",
         "result_kind": "execution_result",
-        "caller_action": "consume_result",
-        "resume_supported": False,
-        "resume_fields": [],
-        "interrupt_kind": "",
+        "pending_decision": None,
     }
 
 
@@ -209,6 +211,42 @@ def test_unreadable_input_file_returns_failed(
     result = _read_output(output_file)
     assert rc == 1
     assert result["status"] == STATUS_FAILED
+
+
+def test_decision_without_request_id_returns_failed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = _make_fake_workflow(monkeypatch, _success_output())
+    _stub_settings(monkeypatch)
+
+    input_file, output_file = _write_input(
+        tmp_path, {"decision": {"option": "approve"}}
+    )
+    rc = run_agent_task(input_file, output_file)
+
+    result = _read_output(output_file)
+    assert rc == 1
+    assert result["status"] == STATUS_FAILED
+    assert "request_id" in result["summary"].lower()
+    assert calls == []
+
+
+def test_decision_without_task_does_not_require_task(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Resuming with a decision must not require a task field."""
+    calls = _make_fake_workflow(monkeypatch, _success_output())
+    _stub_settings(monkeypatch)
+
+    input_file, output_file = _write_input(
+        tmp_path,
+        {"request_id": "req-resume", "decision": {"option": "approve"}},
+    )
+    rc = run_agent_task(input_file, output_file)
+
+    assert rc == 0
+    assert len(calls) == 1
+    assert calls[0]["decision"].option == "approve"
 
 
 # ---------------------------------------------------------------------------
@@ -429,211 +467,282 @@ def test_duplicate_request_id_returns_failed_without_running_workflow(
 
 
 # ---------------------------------------------------------------------------
-# Approval token
+# Decision parsing and resume mapping
 # ---------------------------------------------------------------------------
 
 
-class TestApprovalStore:
-    def test_issued_token_can_be_consumed(self) -> None:
-        token = create_approval_token("req-1", "fix the bug")
-        assert consume_approval_token(token, "req-1", "fix the bug") is True
-
-    def test_token_is_single_use(self) -> None:
-        token = create_approval_token("req-2", "fix the bug")
-        consume_approval_token(token, "req-2", "fix the bug")
-        assert consume_approval_token(token, "req-2", "fix the bug") is False
-
-    def test_unknown_token_is_rejected(self) -> None:
-        assert consume_approval_token("not-a-real-token", "req-unknown", "fix the bug") is False
-
-    def test_empty_token_is_rejected(self) -> None:
-        assert consume_approval_token("", "req-unknown", "fix the bug") is False
-
-    def test_expired_token_is_rejected(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        import ai_tech_lead.approval_store as ap_mod
-
-        token = create_approval_token("req-3", "fix the bug")
-
-        # Advance time past TTL
-        monkeypatch.setattr(ap_mod, "TOKEN_TTL_SECONDS", -1)
-        future_time = int(time.time()) + 7200
-        monkeypatch.setattr("ai_tech_lead.approval_store.time.time", lambda: float(future_time))
-
-        assert consume_approval_token(token, "req-3", "fix the bug") is False
-
-    def test_token_is_bound_to_request_and_task(self) -> None:
-        token = create_approval_token("req-4", "fix the bug")
-
-        assert consume_approval_token(token, "req-4", "fix the wrong bug") is False
-        assert consume_approval_token(token, "req-5", "fix the bug") is False
-        assert consume_approval_token(token, "req-4", "fix the bug") is True
-
-    def test_token_is_single_use_under_concurrent_consumers(self) -> None:
-        from concurrent.futures import ThreadPoolExecutor
-
-        token = create_approval_token("req-race-1", "fix the bug")
-
-        with ThreadPoolExecutor(max_workers=2) as executor:
-            results = list(
-                executor.map(
-                    lambda _: consume_approval_token(token, "req-race-1", "fix the bug"),
-                    range(2),
-                )
-            )
-
-        assert results.count(True) == 1
-        assert results.count(False) == 1
+def test_parse_decision_returns_none_when_absent() -> None:
+    assert _parse_decision(None) is None
 
 
-def test_human_approved_without_token_is_rejected(
+def test_parse_decision_requires_option() -> None:
+    with pytest.raises(_DecisionRejected, match="option"):
+        _parse_decision({"text": "no option here"})
+
+
+def test_parse_decision_rejects_non_dict() -> None:
+    with pytest.raises(_DecisionRejected):
+        _parse_decision("approve")
+
+
+def test_parse_decision_reads_fields() -> None:
+    decision = _parse_decision({"option": "approve", "text": "", "actor": "agent-x"})
+    assert decision is not None
+    assert decision.option == "approve"
+    assert decision.actor == "agent-x"
+
+
+def test_map_decision_rejects_option_not_offered_for_kind() -> None:
+    decision = _parse_decision({"option": "self_destruct"})
+    with pytest.raises(_DecisionRejected, match="not a valid option"):
+        _map_decision_to_resume_payload("approval", decision)
+
+
+def test_map_decision_requires_text_when_option_needs_it() -> None:
+    decision = _parse_decision({"option": "request_changes"})
+    with pytest.raises(_DecisionRejected, match="text is required"):
+        _map_decision_to_resume_payload("approval", decision)
+
+
+def test_map_decision_approve_maps_to_graph_payload() -> None:
+    decision = _parse_decision({"option": "approve", "actor": "agent-x"})
+    payload = _map_decision_to_resume_payload("approval", decision)
+    assert payload == {"action": "approve", "approved_by": "agent-x"}
+
+
+def test_map_decision_approve_defaults_actor() -> None:
+    decision = _parse_decision({"option": "approve"})
+    payload = _map_decision_to_resume_payload("approval", decision)
+    assert payload == {"action": "approve", "approved_by": "agent-caller"}
+
+
+def test_map_decision_request_changes_carries_feedback() -> None:
+    decision = _parse_decision({"option": "request_changes", "text": "Docs only please."})
+    payload = _map_decision_to_resume_payload("approval", decision)
+    assert payload == {"action": "request_changes", "feedback": "Docs only please."}
+
+
+def test_map_decision_ask_question_carries_question() -> None:
+    decision = _parse_decision({"option": "ask_question", "text": "Which files change?"})
+    payload = _map_decision_to_resume_payload("approval", decision)
+    assert payload == {"action": "ask_question", "question": "Which files change?"}
+
+
+def test_map_decision_cancel_maps_to_graph_payload() -> None:
+    decision = _parse_decision({"option": "cancel"})
+    payload = _map_decision_to_resume_payload("approval", decision)
+    assert payload == {"action": "cancel"}
+
+
+def test_map_decision_plan_guidance_is_plain_text() -> None:
+    decision = _parse_decision({"option": "answer", "text": "Keep it to one file."})
+    payload = _map_decision_to_resume_payload("plan_guidance", decision)
+    assert payload == "Keep it to one file."
+
+
+def test_map_decision_failure_guidance_is_plain_text() -> None:
+    decision = _parse_decision({"option": "answer", "text": "Retry with a narrower fix."})
+    payload = _map_decision_to_resume_payload("failure_guidance", decision)
+    assert payload == "Retry with a narrower fix."
+
+
+def test_map_decision_research_approval_approve() -> None:
+    decision = _parse_decision({"option": "approve"})
+    payload = _map_decision_to_resume_payload("research_approval", decision)
+    assert payload == {"approved": True}
+
+
+def test_map_decision_research_approval_cancel() -> None:
+    decision = _parse_decision({"option": "cancel"})
+    payload = _map_decision_to_resume_payload("research_approval", decision)
+    assert payload == {"approved": False}
+
+
+def test_map_decision_completion_verification_confirm_complete() -> None:
+    decision = _parse_decision({"option": "confirm_complete"})
+    payload = _map_decision_to_resume_payload("completion_verification", decision)
+    assert payload == {"decision": "confirm_complete"}
+
+
+def test_map_decision_completion_verification_reject_carries_text() -> None:
+    decision = _parse_decision({"option": "reject", "text": "The button still crashes."})
+    payload = _map_decision_to_resume_payload("completion_verification", decision)
+    assert payload == {"decision": "reject", "text": "The button still crashes."}
+
+
+def test_map_decision_completion_verification_reject_requires_text() -> None:
+    decision = _parse_decision({"option": "reject"})
+    with pytest.raises(_DecisionRejected, match="text is required"):
+        _map_decision_to_resume_payload("completion_verification", decision)
+
+
+# ---------------------------------------------------------------------------
+# Resuming a paused conversation end to end (fake graph)
+# ---------------------------------------------------------------------------
+
+
+class _FakeInterrupt:
+    def __init__(self, value: dict[str, Any]) -> None:
+        self.value = value
+
+
+class _FakeTask:
+    def __init__(self, value: dict[str, Any]) -> None:
+        self.interrupts = (_FakeInterrupt(value),)
+
+
+class _FakeSnapshot:
+    def __init__(self, value: dict[str, Any] | None, *, paused: bool = True) -> None:
+        self.next = ("paused",) if paused else ()
+        self.tasks = (_FakeTask(value),) if value is not None else ()
+
+
+class _FakeResumableGraph:
+    """Fake graph that remembers whether it was resumed vs freshly invoked."""
+
+    def __init__(self, pending_value: dict[str, Any]) -> None:
+        self._pending_value = pending_value
+        self.invoke_calls: list[Any] = []
+        self.resumed = False
+
+    def get_state(self, _config: dict[str, Any]) -> _FakeSnapshot:
+        if self.resumed:
+            return _FakeSnapshot(None, paused=False)
+        return _FakeSnapshot(self._pending_value, paused=True)
+
+    def invoke(self, value: Any, *, config: dict[str, Any]) -> dict[str, Any]:
+        self.invoke_calls.append(value)
+        from langgraph.types import Command
+
+        if isinstance(value, Command):
+            self.resumed = True
+            return {
+                "agent_instruction": "",
+                "formulated_task": "",
+                "brief": "",
+                "orchestrator_input_required": False,
+                "orchestrator_input_question": "",
+                "coding_agent_success": None,
+                "coding_agent_result": "",
+                "restart_required": False,
+                "task_feedback": [],
+                "research_source_titles": [],
+                "coding_agent_performed_by": "none",
+            }
+        return {
+            "agent_instruction": "",
+            "formulated_task": "",
+            "brief": "",
+            "orchestrator_input_required": False,
+            "orchestrator_input_question": "",
+            "coding_agent_success": None,
+            "coding_agent_result": "",
+            "restart_required": False,
+            "task_feedback": [],
+            "research_source_titles": [],
+            "coding_agent_performed_by": "none",
+        }
+
+
+def test_execute_workflow_resumes_with_command_when_decision_given(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    graph = _FakeResumableGraph(
+        {"kind": "approval", "reason": "risky", "formulated_task": "Do the thing"}
+    )
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.build_graph", lambda **_kwargs: graph
+    )
+
+    decision = _parse_decision({"option": "approve", "actor": "agent-x"})
+    _execute_workflow(
+        request_id="req-resume-graph",
+        task="",
+        execute_coding_agent=False,
+        project_root=None,
+        decision=decision,
+    )
+
+    from langgraph.types import Command
+
+    assert len(graph.invoke_calls) == 1
+    resumed_command = graph.invoke_calls[0]
+    assert isinstance(resumed_command, Command)
+    assert resumed_command.resume == {"action": "approve", "approved_by": "agent-x"}
+
+
+def test_execute_workflow_rejects_decision_when_nothing_pending(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _NoPendingGraph:
+        def get_state(self, _config: dict[str, Any]) -> _FakeSnapshot:
+            return _FakeSnapshot(None, paused=False)
+
+        def invoke(self, *_args: Any, **_kwargs: Any) -> dict[str, Any]:
+            raise AssertionError("invoke should not be called")
+
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.build_graph",
+        lambda **_kwargs: _NoPendingGraph(),
+    )
+
+    decision = _parse_decision({"option": "approve"})
+    with pytest.raises(_DecisionRejected, match="No paused decision"):
+        _execute_workflow(
+            request_id="req-nothing-pending",
+            task="",
+            execute_coding_agent=False,
+            project_root=None,
+            decision=decision,
+        )
+
+
+def test_decision_resume_flows_through_run_agent_task(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    calls = _make_fake_workflow(monkeypatch, _success_output())
+    graph = _FakeResumableGraph({"kind": "approval", "reason": "risky", "formulated_task": ""})
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.build_graph", lambda **_kwargs: graph
+    )
     _stub_settings(monkeypatch)
 
     input_file, output_file = _write_input(
         tmp_path,
-        {"task": "fix bug", "human_approved": True},  # no approval_token
+        {
+            "request_id": "req-full-resume",
+            "decision": {"option": "cancel"},
+        },
+    )
+    rc = run_agent_task(input_file, output_file)
+
+    assert rc == 1  # workflow output here has no agent_instruction -> terminal failure shape
+    from langgraph.types import Command
+
+    assert len(graph.invoke_calls) == 1
+    assert isinstance(graph.invoke_calls[0], Command)
+    assert graph.invoke_calls[0].resume == {"action": "cancel"}
+
+
+def test_invalid_decision_option_returns_failed_without_crashing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    graph = _FakeResumableGraph({"kind": "approval", "reason": "risky", "formulated_task": ""})
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.build_graph", lambda **_kwargs: graph
+    )
+    _stub_settings(monkeypatch)
+
+    input_file, output_file = _write_input(
+        tmp_path,
+        {"request_id": "req-bad-option", "decision": {"option": "yolo"}},
     )
     rc = run_agent_task(input_file, output_file)
 
     result = _read_output(output_file)
     assert rc == 1
     assert result["status"] == STATUS_FAILED
-    assert "approval_token" in result["summary"].lower()
-    assert calls == []
-
-
-def test_human_approved_with_invalid_token_is_rejected(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    calls = _make_fake_workflow(monkeypatch, _success_output())
-    _stub_settings(monkeypatch)
-
-    input_file, output_file = _write_input(
-        tmp_path,
-        {"task": "fix bug", "human_approved": True, "approval_token": "invalid-uuid"},
-    )
-    rc = run_agent_task(input_file, output_file)
-
-    result = _read_output(output_file)
-    assert rc == 1
-    assert result["status"] == STATUS_FAILED
-    assert calls == []
-
-
-def test_human_approved_with_valid_token_succeeds(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    calls = _make_fake_workflow(monkeypatch, _success_output())
-    _stub_settings(monkeypatch)
-
-    token = create_approval_token("req-flow-1", "fix the bug")
-
-    input_file, output_file = _write_input(
-        tmp_path,
-        {
-            "request_id": "req-flow-1",
-            "task": "fix the bug",
-            "human_approved": True,
-            "approval_token": token,
-        },
-    )
-    rc = run_agent_task(input_file, output_file)
-
-    assert rc == 0
-    assert len(calls) == 1
-    assert calls[0]["human_approved"] is True
-
-
-def test_human_approved_token_must_match_request_and_task(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    calls = _make_fake_workflow(monkeypatch, _success_output())
-    _stub_settings(monkeypatch)
-
-    token = create_approval_token("req-bind-1", "fix the bug")
-
-    input_file, output_file = _write_input(
-        tmp_path,
-        {
-            "request_id": "req-bind-1",
-            "task": "fix the wrong bug",
-            "human_approved": True,
-            "approval_token": token,
-        },
-    )
-    rc = run_agent_task(input_file, output_file)
-
-    result = _read_output(output_file)
-    assert rc == 1
-    assert result["status"] == STATUS_FAILED
-    assert "approval_token" in result["summary"].lower()
-    assert calls == []
-
-
-def test_approval_required_response_includes_token(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    _make_fake_workflow(monkeypatch, _approval_required_output("risky migration"))
-    _stub_settings(monkeypatch)
-
-    input_file, output_file = _write_input(
-        tmp_path,
-        {"request_id": "req-approval-1", "task": "drop a table"},
-    )
-    rc = run_agent_task(input_file, output_file)
-
-    result = _read_output(output_file)
-    assert rc == 0
-    assert result["status"] == STATUS_APPROVAL_REQUIRED
-    assert "approval_token" in result, (
-        "approval_token must be present in approval_required responses"
-    )
-    token = result["approval_token"]
-    assert len(token) == 36, "token must be a UUID"
-    # Token should be consumable exactly once
-    assert consume_approval_token(token, "req-approval-1", "drop a table") is True
-    assert consume_approval_token(token, "req-approval-1", "drop a table") is False
-
-
-def test_approval_token_cannot_be_reused_across_calls(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Second call with the same token must be rejected even if output said approval_required."""
-    _make_fake_workflow(monkeypatch, _success_output())
-    _stub_settings(monkeypatch)
-
-    # Issue a real token
-    token = create_approval_token("req-reuse", "fix the bug")
-
-    # First approved call — consumes the token
-    i1, o1 = _write_input(
-        tmp_path / "first",
-        {
-            "request_id": "req-reuse",
-            "task": "fix bug",
-            "human_approved": True,
-            "approval_token": token,
-        },
-    )
-    run_agent_task(i1, o1)
-
-    # Second approved call with the same token — must be rejected
-    i2, o2 = _write_input(
-        tmp_path / "second",
-        {
-            "request_id": "req-reuse",
-            "task": "fix bug",
-            "human_approved": True,
-            "approval_token": token,
-        },
-    )
-    rc = run_agent_task(i2, o2)
-
-    result = _read_output(o2)
-    assert rc == 1
-    assert result["status"] == STATUS_FAILED
+    assert "not a valid option" in result["summary"]
+    assert graph.invoke_calls == []
 
 
 # ---------------------------------------------------------------------------
@@ -674,10 +783,7 @@ def test_successful_response_includes_all_required_fields(
         "evidence",
         "next_action",
         "result_kind",
-        "caller_action",
-        "resume_supported",
-        "resume_fields",
-        "interrupt_kind",
+        "pending_decision",
         "agent_manifest",
     }
     assert required_keys.issubset(result.keys())
@@ -686,31 +792,13 @@ def test_successful_response_includes_all_required_fields(
     assert result["agent_manifest"]["manifest_command"] == "uv run python -m ai_tech_lead manifest"
 
 
-class _FakeInterrupt:
-    def __init__(self, value: dict[str, Any]) -> None:
-        self.value = value
-
-
-class _FakeTask:
-    def __init__(self, value: dict[str, Any]) -> None:
-        self.interrupts = (_FakeInterrupt(value),)
-
-
-class _FakeSnapshot:
-    def __init__(self, value: dict[str, Any]) -> None:
-        self.next = ("paused",)
-        self.tasks = (_FakeTask(value),)
-
-
-def test_map_state_to_output_maps_plan_interrupt_to_needs_clarification() -> None:
+def test_map_state_to_output_maps_plan_interrupt_to_waiting_decision() -> None:
     result = _map_state_to_output(
         "req-plan",
         {
             "agent_instruction": "",
             "formulated_task": "Fix the task",
             "brief": "",
-            "needs_approval": False,
-            "approved": False,
             "orchestrator_input_required": False,
             "orchestrator_input_question": "",
             "coding_agent_success": False,
@@ -728,26 +816,24 @@ def test_map_state_to_output_maps_plan_interrupt_to_needs_clarification() -> Non
                 "rejection_count": 0,
             }
         ),
+        thread_id="subprocess-req-plan",
     )
 
-    assert result["status"] == STATUS_NEEDS_CLARIFICATION
-    assert "plan guidance" in result["summary"].lower()
+    assert result["status"] == STATUS_WAITING_DECISION
     assert "Plan reviewer unavailable" in result["summary"]
-    assert result["result_kind"] == "clarification_request"
-    assert result["caller_action"] == "provide_clarification"
-    assert result["resume_supported"] is True
-    assert result["interrupt_kind"] == "plan_guidance"
+    assert result["result_kind"] == "decision_required"
+    assert result["pending_decision"]["kind"] == "plan_guidance"
+    assert result["pending_decision"]["options"] == [{"name": "answer", "needs_text": True}]
+    assert result["pending_decision"]["thread_id"] == "subprocess-req-plan"
 
 
-def test_map_state_to_output_maps_failure_interrupt_to_needs_clarification() -> None:
+def test_map_state_to_output_maps_failure_interrupt_to_waiting_decision() -> None:
     result = _map_state_to_output(
         "req-failure",
         {
             "agent_instruction": "",
             "formulated_task": "Fix the task",
             "brief": "",
-            "needs_approval": False,
-            "approved": False,
             "orchestrator_input_required": False,
             "orchestrator_input_question": "",
             "coding_agent_success": False,
@@ -764,14 +850,185 @@ def test_map_state_to_output_maps_failure_interrupt_to_needs_clarification() -> 
                 "retry_count": 2,
             }
         ),
+        thread_id="subprocess-req-failure",
+    )
+
+    assert result["status"] == STATUS_WAITING_DECISION
+    assert "Tests failed in CI" in result["summary"]
+    assert result["result_kind"] == "decision_required"
+    assert result["pending_decision"]["kind"] == "failure_guidance"
+
+
+def test_map_state_to_output_maps_approval_interrupt_with_four_options() -> None:
+    result = _map_state_to_output(
+        "req-approval",
+        {
+            "agent_instruction": "",
+            "formulated_task": "Update docs",
+            "brief": "",
+            "orchestrator_input_required": False,
+            "orchestrator_input_question": "",
+            "coding_agent_success": False,
+            "coding_agent_result": "",
+            "restart_required": False,
+            "task_feedback": [],
+            "research_source_titles": [],
+        },
+        False,
+        state_snapshot=_FakeSnapshot(
+            {"kind": "approval", "reason": "High risk task.", "formulated_task": "Update docs"}
+        ),
+        thread_id="subprocess-req-approval",
+    )
+
+    assert result["status"] == STATUS_WAITING_DECISION
+    option_names = {opt["name"] for opt in result["pending_decision"]["options"]}
+    assert option_names == {"approve", "request_changes", "ask_question", "cancel"}
+
+
+def test_map_state_to_output_maps_research_approval() -> None:
+    result = _map_state_to_output(
+        "req-research",
+        {
+            "agent_instruction": "",
+            "formulated_task": "",
+            "brief": "",
+            "orchestrator_input_required": True,
+            "orchestrator_input_question": "Should I fetch approved docs?",
+            "coding_agent_success": False,
+            "coding_agent_result": "",
+            "restart_required": False,
+            "task_feedback": [],
+            "research_source_titles": [],
+        },
+        False,
+        state_snapshot=_FakeSnapshot(
+            {"kind": "research_approval", "question": "Should I fetch approved docs?"}
+        ),
+        thread_id="subprocess-req-research",
+    )
+
+    assert result["status"] == STATUS_WAITING_DECISION
+    assert result["pending_decision"]["kind"] == "research_approval"
+    option_names = {opt["name"] for opt in result["pending_decision"]["options"]}
+    assert option_names == {"approve", "cancel"}
+
+
+def test_map_state_to_output_maps_completion_verification_interrupt() -> None:
+    result = _map_state_to_output(
+        "req-verify",
+        {
+            "agent_instruction": "implement it",
+            "formulated_task": "Add a logout button",
+            "brief": "",
+            "orchestrator_input_required": False,
+            "orchestrator_input_question": "",
+            "coding_agent_success": True,
+            "coding_agent_result": "Implemented and ran pytest.",
+            "restart_required": False,
+            "task_feedback": [],
+            "research_source_titles": [],
+            "verification_status": "human_verification_required",
+            "verification_reason": "Requires a visual check of the button placement.",
+        },
+        False,
+        state_snapshot=_FakeSnapshot(
+            {
+                "kind": "completion_verification",
+                "reason": "Requires a visual check of the button placement.",
+                "coding_agent_result": "Implemented and ran pytest.",
+                "changed_files": ["src/app/settings.py"],
+            }
+        ),
+        thread_id="subprocess-req-verify",
+    )
+
+    assert result["status"] == STATUS_WAITING_DECISION
+    assert result["result_kind"] == "decision_required"
+    assert result["pending_decision"]["kind"] == "completion_verification"
+    option_names = {opt["name"] for opt in result["pending_decision"]["options"]}
+    assert option_names == {"confirm_complete", "reject"}
+    assert "visual check" in result["pending_decision"]["prompt"]
+
+
+def test_map_state_to_output_reports_failed_when_verification_fails_after_success() -> None:
+    """A coding agent that exits cleanly but fails AI Tech Lead verification is not a success."""
+    result = _map_state_to_output(
+        "req-verify-failed",
+        {
+            "agent_instruction": "implement it",
+            "formulated_task": "Add a logout button",
+            "brief": "",
+            "orchestrator_input_required": False,
+            "orchestrator_input_question": "",
+            "coding_agent_success": True,
+            "coding_agent_result": "Implemented.",
+            "restart_required": False,
+            "task_feedback": [],
+            "research_source_titles": [],
+            "verification_status": "failed",
+            "verification_reason": "The logout button does not sign the user out.",
+        },
+        False,
+        state_snapshot=None,
+        thread_id="subprocess-req-verify-failed",
+    )
+
+    assert result["status"] == STATUS_FAILED
+    assert result["result_kind"] == "terminal_failure"
+    assert "does not sign the user out" in result["summary"]
+
+
+def test_map_state_to_output_reports_success_when_verification_complete() -> None:
+    result = _map_state_to_output(
+        "req-verify-complete",
+        {
+            "agent_instruction": "implement it",
+            "formulated_task": "Add a logout button",
+            "brief": "",
+            "orchestrator_input_required": False,
+            "orchestrator_input_question": "",
+            "coding_agent_success": True,
+            "coding_agent_result": "Implemented.",
+            "restart_required": False,
+            "task_feedback": [],
+            "research_source_titles": [],
+            "verification_status": "complete",
+            "verification_reason": "Acceptance criteria satisfied.",
+        },
+        False,
+        state_snapshot=None,
+        thread_id="subprocess-req-verify-complete",
+    )
+
+    assert result["status"] == STATUS_SUCCESS
+    assert result["result_kind"] == "execution_result"
+
+
+def test_map_state_to_output_dead_end_clarification_has_no_pending_decision() -> None:
+    """An unresolved reference ends the graph — there is nothing to resume."""
+    result = _map_state_to_output(
+        "req-clarify",
+        {
+            "agent_instruction": "",
+            "formulated_task": "",
+            "brief": "",
+            "orchestrator_input_required": True,
+            "orchestrator_input_question": "What does AF-052 refer to?",
+            "coding_agent_success": False,
+            "coding_agent_result": "",
+            "restart_required": False,
+            "task_feedback": [],
+            "research_source_titles": [],
+        },
+        False,
+        state_snapshot=None,
+        thread_id="subprocess-req-clarify",
     )
 
     assert result["status"] == STATUS_NEEDS_CLARIFICATION
-    assert "repeated coding-agent failures" in result["summary"]
-    assert "Tests failed in CI" in result["summary"]
+    assert result["pending_decision"] is None
     assert result["result_kind"] == "clarification_request"
-    assert result["caller_action"] == "provide_clarification"
-    assert result["interrupt_kind"] == "failure_guidance"
 
 
 def test_map_state_to_output_uses_failed_for_terminal_agent_failure() -> None:
@@ -781,8 +1038,6 @@ def test_map_state_to_output_uses_failed_for_terminal_agent_failure() -> None:
             "agent_instruction": "run this",
             "formulated_task": "Fix the task",
             "brief": "",
-            "needs_approval": False,
-            "approved": False,
             "orchestrator_input_required": False,
             "orchestrator_input_question": "",
             "coding_agent_success": False,
@@ -797,7 +1052,6 @@ def test_map_state_to_output_uses_failed_for_terminal_agent_failure() -> None:
     assert result["status"] == STATUS_FAILED
     assert "Coding agent failed" in result["summary"]
     assert result["result_kind"] == "terminal_failure"
-    assert result["caller_action"] == "inspect_failure"
 
 
 # ---------------------------------------------------------------------------
@@ -945,8 +1199,6 @@ def test_execute_workflow_translates_existing_graph_progress_callbacks(
                 "agent_instruction": "implement it",
                 "formulated_task": "Implement the change",
                 "brief": "bounded brief",
-                "needs_approval": False,
-                "approved": False,
                 "orchestrator_input_required": False,
                 "orchestrator_input_question": "",
                 "coding_agent_success": None,
@@ -1155,7 +1407,7 @@ def test_backlog_reference_reuses_existing_snapshot_on_resubmission(
     _install_fake_sheets_client(
         monkeypatch, "spreadsheet-a", _row("ATL-001", "Existing item", status="Backlog")
     )
-    _make_fake_workflow(monkeypatch, _approval_required_output())
+    _make_fake_workflow(monkeypatch, _waiting_decision_output())
     input_file, output_file = _write_input(
         tmp_path,
         {
@@ -1181,3 +1433,81 @@ def test_backlog_reference_reuses_existing_snapshot_on_resubmission(
     assert second_snapshot is not None
     assert second_snapshot.request_id == first_snapshot.request_id
     assert second_snapshot.item_id == "ATL-001"
+
+
+# ---------------------------------------------------------------------------
+# Hub reference normalization (universal `references` vs legacy `resource_references`)
+# ---------------------------------------------------------------------------
+
+
+def test_hub_references_are_normalized_into_resource_references() -> None:
+    context = _build_supplied_context(
+        task_input={"references": ["AF-052", "docs/runbook.md"]},
+        project_root=None,
+        backlog_reference=None,
+        source_record=None,
+    )
+
+    assert context["resource_references"] == [
+        {"id": "AF-052"},
+        {"id": "docs/runbook.md"},
+    ]
+
+
+def test_legacy_resource_references_still_work_alongside_hub_references() -> None:
+    context = _build_supplied_context(
+        task_input={
+            "resource_references": [{"item_id": "AF-052", "title": "legacy title"}],
+            "references": ["AF-052", "AH-010"],
+        },
+        project_root=None,
+        backlog_reference=None,
+        source_record=None,
+    )
+
+    # The legacy dict for AF-052 is kept as-is (not overwritten by Hub's bare string);
+    # AH-010 is added from Hub's references since no legacy entry supplied it.
+    assert context["resource_references"] == [
+        {"item_id": "AF-052", "title": "legacy title"},
+        {"id": "AH-010"},
+    ]
+
+
+def test_hub_style_references_reach_the_existing_context_resolver() -> None:
+    """A Hub `references` payload must resolve through resolve_request_context exactly
+    like a legacy `resource_references` payload would — the AI Tech Lead boundary only
+    normalizes shape; request_context.py remains the sole place resolution happens."""
+    supplied_context = _build_supplied_context(
+        task_input={"references": ["AF-052"]},
+        project_root=None,
+        backlog_reference=None,
+        source_record=None,
+    )
+
+    result = resolve_request_context(
+        "Code AF-052 for Agent Factory", supplied_context=supplied_context
+    )
+
+    assert result["unresolved_references"] == []
+    assert result["resolved_resource_references"] == ["AF-052"]
+    assert result["clarification_question"] == ""
+
+
+def test_hub_reference_not_matching_request_text_stays_unresolved() -> None:
+    """A Hub reference that doesn't correspond to anything detected in the request text
+    must not mask an unrelated unresolved reference — clarification still fires for it."""
+    supplied_context = _build_supplied_context(
+        task_input={"references": ["docs/runbook.md"]},
+        project_root=None,
+        backlog_reference=None,
+        source_record=None,
+    )
+
+    result = resolve_request_context(
+        "Code AF-052 for Agent Factory", supplied_context=supplied_context
+    )
+
+    assert result["unresolved_references"] == ["AF-052"]
+    assert result["clarification_question"] == (
+        "What does AF-052 refer to, and where should I retrieve it from?"
+    )

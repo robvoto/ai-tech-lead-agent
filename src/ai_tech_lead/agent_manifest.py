@@ -24,7 +24,7 @@ _REQUIRED_DOCS = [
 _SUPPORTED_OUTPUT_STATUSES = [
     "success",
     "needs_clarification",
-    "approval_required",
+    "waiting_decision",
     "failed",
 ]
 
@@ -64,19 +64,26 @@ def build_agent_manifest(settings: AppSettings | None = None) -> dict[str, Any]:
             "backlog_sync_recovery": "backlog-sync-recover",
         },
         "input_contract": {
-            "required": ["task"],
+            "required_for_new_task": ["task"],
+            "required_to_resume": ["request_id", "decision"],
             "optional": [
                 "request_id",
                 "run_id",
                 "source",
                 "project_root",
                 "execution_mode",
-                "human_approved",
-                "approval_token",
+                "decision",
                 "backlog_reference",
                 "project_reference",
                 "resource_references",
+                "references",
             ],
+            "decision_shape": {
+                "option": "required — must match one of the option names the paused "
+                "response's pending_decision.options just reported",
+                "text": "required only if the chosen option's needs_text is true",
+                "actor": "optional — free-text identity of who or what is deciding",
+            },
             "execution_modes": ["instruction_only", "execute"],
             "context_resolution": (
                 "AI Tech Lead understands and bounds the request, resolves explicit project/resource "
@@ -104,13 +111,19 @@ def build_agent_manifest(settings: AppSettings | None = None) -> dict[str, Any]:
                 "evidence",
                 "next_action",
                 "result_kind",
-                "caller_action",
-                "resume_supported",
-                "resume_fields",
-                "interrupt_kind",
+                "pending_decision",
                 "backlog_sync_status",
                 "agent_manifest",
             ],
+            "pending_decision_shape": {
+                "thread_id": "opaque; informational only, not required on the resume call",
+                "kind": "which internal pause this is (not meaningful to interpret, "
+                "only to relay)",
+                "prompt": "plain-language description of what's paused, to show a human "
+                "or pass to another agent",
+                "options": "list of {name, needs_text}; the exact and only valid "
+                "decision.option values for this pause",
+            },
             "backlog_sync_status_values": [
                 "not_applicable",
                 "synced",
@@ -122,45 +135,45 @@ def build_agent_manifest(settings: AppSettings | None = None) -> dict[str, Any]:
         "status_contract": {
             "success": {
                 "terminal": True,
-                "caller_action": "consume_result",
                 "notes": (
                     "Returned when execution completed or when an instruction package is ready. "
                     "Use result_kind to distinguish which."
                 ),
             },
             "needs_clarification": {
-                "terminal": False,
-                "caller_action": "provide_clarification",
+                "terminal": True,
                 "notes": (
-                    "Returned for resumable human-text interruptions such as plan guidance, "
-                    "clarifying questions, or repeated coding-agent failure guidance."
+                    "Returned when the request ended needing more information but there is no "
+                    "paused conversation to resume (e.g. an unresolved reference). Submit a new "
+                    "task with the answer folded in — there is nothing to send a decision against."
                 ),
             },
-            "approval_required": {
+            "waiting_decision": {
                 "terminal": False,
-                "caller_action": "provide_approval",
                 "notes": (
-                    "Returned when explicit human approval is required. Resume with the "
-                    "issued approval_token and human_approved=true."
+                    "Returned whenever the workflow is genuinely paused (approval, plan or "
+                    "failure guidance, research approval, completion verification). See "
+                    "pending_decision for exactly what options are valid right now. Resume by "
+                    "resubmitting request_id with a decision — no task field needed."
                 ),
             },
             "failed": {
                 "terminal": True,
-                "caller_action": "inspect_failure",
                 "notes": "Returned for terminal failures that should not be treated as resumable.",
             },
         },
         "interaction_model": {
             "primary_interface": "bounded local JSON subprocess",
             "discovery_pattern": "manifest-style handshake inspired by an A2A agent card",
-            "task_pattern": "request/response with resumable human interrupts",
+            "task_pattern": "request/response with a durable, resumable paused conversation",
             "supports_streaming": True,
             "streaming_scope": (
                 "Structured progress events stream on stdout when run_id is supplied; "
                 "the final result remains in the output JSON file."
             ),
             "supports_push_notifications": False,
-            "resume_via_resubmission": True,
+            "resume_via_decision": True,
+            "resume_via_resubmission": False,
             "tool_protocol_note": (
                 "Use MCP for tools/resources behind this agent. Use this manifest and "
                 "run-agent-task for the caller boundary."
@@ -194,8 +207,8 @@ def build_agent_manifest(settings: AppSettings | None = None) -> dict[str, Any]:
                 "instruction assembly, and reusable runtime skills."
             ),
             "caller": (
-                "Owns transport, user/session orchestration, and collecting human input "
-                "or approvals before resubmission."
+                "Owns transport, user/session orchestration, and collecting the human or "
+                "agent decision before sending it back as a resume."
             ),
         },
         "project_pack": {

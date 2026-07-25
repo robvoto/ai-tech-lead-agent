@@ -1,16 +1,84 @@
 from __future__ import annotations
 
 import logging
+import socket
 from dataclasses import replace
 from pathlib import Path
+
+import pytest
 
 from helpers import valid_settings_dict
 
 from ai_tech_lead.app_settings import parse_settings
 from ai_tech_lead.research_sources import (
+    ResearchUrlSafetyError,
     collect_local_research_sources,
     collect_online_research_sources,
+    validate_outbound_research_url,
 )
+
+
+class _FakeHeaders:
+    def __init__(self, *, content_type: str = "text/html", content_length: str | None = None) -> None:
+        self._content_type = content_type
+        self._content_length = content_length
+
+    def get_content_type(self) -> str:
+        return self._content_type
+
+    def get_content_charset(self) -> str:
+        return "utf-8"
+
+    def get(self, key: str, default=None):
+        if key == "Content-Length":
+            return self._content_length
+        return default
+
+
+class _FakeResponse:
+    def __init__(self, body: str, *, content_type: str = "text/html") -> None:
+        self.headers = _FakeHeaders(content_type=content_type)
+        self._body = body.encode("utf-8")
+        self._offset = 0
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def read(self, size: int = -1) -> bytes:
+        if size is None or size < 0:
+            chunk = self._body[self._offset :]
+            self._offset = len(self._body)
+            return chunk
+        chunk = self._body[self._offset : self._offset + size]
+        self._offset += len(chunk)
+        return chunk
+
+
+class _FakeOpener:
+    def __init__(self, fetch_fn) -> None:
+        self._fetch_fn = fetch_fn
+
+    def open(self, request, timeout=None):
+        return self._fetch_fn(request, timeout)
+
+
+def _fake_getaddrinfo_public(_host, _port):
+    return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0))]
+
+
+def _patch_public_dns(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "ai_tech_lead.research_sources.socket.getaddrinfo", _fake_getaddrinfo_public
+    )
+
+
+def _patch_opener(monkeypatch, fetch_fn) -> None:
+    monkeypatch.setattr(
+        "ai_tech_lead.research_sources._RESEARCH_FETCH_OPENER", _FakeOpener(fetch_fn)
+    )
 
 
 def test_collect_local_research_sources_uses_local_indexes(tmp_path: Path, caplog) -> None:
@@ -89,32 +157,11 @@ def test_collect_online_research_sources_fetches_bounded_docs(monkeypatch, caplo
         research_fetch_timeout_seconds=5,
     )
 
-    class _Headers:
-        def get_content_type(self) -> str:
-            return "text/html"
-
-        def get_content_charset(self) -> str:
-            return "utf-8"
-
-    class _Response:
-        def __init__(self, body: str) -> None:
-            self.headers = _Headers()
-            self._body = body.encode("utf-8")
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-        def read(self) -> bytes:
-            return self._body
-
     seen_urls: list[str] = []
 
-    def fake_urlopen(request, timeout):
+    def fake_fetch(request, timeout):
         seen_urls.append(request.full_url)
-        return _Response(
+        return _FakeResponse(
             "<html><head><title>LangGraph interrupts</title></head>"
             "<body>"
             "<header>Docs nav</header>"
@@ -129,7 +176,8 @@ def test_collect_online_research_sources_fetches_bounded_docs(monkeypatch, caplo
             "</body></html>"
         )
 
-    monkeypatch.setattr("ai_tech_lead.research_sources.urlopen", fake_urlopen)
+    _patch_public_dns(monkeypatch)
+    _patch_opener(monkeypatch, fake_fetch)
 
     sources = collect_online_research_sources("LangGraph interrupt docs", settings)
 
@@ -159,35 +207,16 @@ def test_collect_online_research_sources_handles_markdown_text(monkeypatch) -> N
         research_fetch_timeout_seconds=5,
     )
 
-    class _Headers:
-        def get_content_type(self) -> str:
-            return "text/markdown"
-
-        def get_content_charset(self) -> str:
-            return "utf-8"
-
-    class _Response:
-        def __init__(self, body: str) -> None:
-            self.headers = _Headers()
-            self._body = body.encode("utf-8")
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-        def read(self) -> bytes:
-            return self._body
-
-    def fake_urlopen(request, timeout):
-        return _Response(
+    def fake_fetch(request, timeout):
+        return _FakeResponse(
             "# LangGraph checkpointers\n\n"
             "Checkpointers persist graph state.\n\n"
-            "- Resume with Command.\n"
+            "- Resume with Command.\n",
+            content_type="text/markdown",
         )
 
-    monkeypatch.setattr("ai_tech_lead.research_sources.urlopen", fake_urlopen)
+    _patch_public_dns(monkeypatch)
+    _patch_opener(monkeypatch, fake_fetch)
 
     sources = collect_online_research_sources("LangGraph checkpointers", settings)
 
@@ -237,36 +266,16 @@ def test_collect_local_research_sources_refreshes_stale_cache_entries(
         research_fetch_timeout_seconds=5,
     )
 
-    class _Headers:
-        def get_content_type(self) -> str:
-            return "text/html"
-
-        def get_content_charset(self) -> str:
-            return "utf-8"
-
-    class _Response:
-        def __init__(self, body: str) -> None:
-            self.headers = _Headers()
-            self._body = body.encode("utf-8")
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-        def read(self) -> bytes:
-            return self._body
-
-    def fake_urlopen(request, timeout):
+    def fake_fetch(request, timeout):
         assert request.full_url == "https://docs.langchain.com/oss/python/langgraph/interrupts"
-        return _Response(
+        return _FakeResponse(
             "<html><head><title>Refreshed LangGraph note</title></head>"
             "<body><main><p>Fresh summary text.</p></main></body></html>"
         )
 
     caplog.set_level(logging.INFO)
-    monkeypatch.setattr("ai_tech_lead.research_sources.urlopen", fake_urlopen)
+    _patch_public_dns(monkeypatch)
+    _patch_opener(monkeypatch, fake_fetch)
 
     sources = collect_local_research_sources("LangGraph stale note", settings)
 
@@ -278,3 +287,137 @@ def test_collect_local_research_sources_refreshes_stale_cache_entries(
     assert "Fresh summary text." in updated_note
     assert "Refreshed LangGraph note" in updated_note
     assert "Refreshed stale research cache entry" in caplog.text
+
+
+def test_validate_outbound_research_url_accepts_public_https(monkeypatch) -> None:
+    _patch_public_dns(monkeypatch)
+    validate_outbound_research_url("https://docs.example.com/page")
+
+
+def test_validate_outbound_research_url_rejects_bad_scheme() -> None:
+    with pytest.raises(ResearchUrlSafetyError):
+        validate_outbound_research_url("ftp://docs.example.com/page")
+
+
+def test_validate_outbound_research_url_rejects_missing_hostname() -> None:
+    with pytest.raises(ResearchUrlSafetyError):
+        validate_outbound_research_url("https:///no-host")
+
+
+def test_validate_outbound_research_url_rejects_loopback(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "ai_tech_lead.research_sources.socket.getaddrinfo",
+        lambda _host, _port: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 0))],
+    )
+    with pytest.raises(ResearchUrlSafetyError):
+        validate_outbound_research_url("https://localhost/page")
+
+
+def test_validate_outbound_research_url_rejects_private_range(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "ai_tech_lead.research_sources.socket.getaddrinfo",
+        lambda _host, _port: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.0.0.5", 0))],
+    )
+    with pytest.raises(ResearchUrlSafetyError):
+        validate_outbound_research_url("https://internal.example.com/page")
+
+
+def test_validate_outbound_research_url_rejects_cloud_metadata_ip(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "ai_tech_lead.research_sources.socket.getaddrinfo",
+        lambda _host, _port: [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("169.254.169.254", 0))
+        ],
+    )
+    with pytest.raises(ResearchUrlSafetyError):
+        validate_outbound_research_url("https://metadata.example.com/latest")
+
+
+def test_validate_outbound_research_url_fails_closed_on_mixed_public_and_private(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        "ai_tech_lead.research_sources.socket.getaddrinfo",
+        lambda _host, _port: [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0)),
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.0.0.5", 0)),
+        ],
+    )
+    with pytest.raises(ResearchUrlSafetyError):
+        validate_outbound_research_url("https://mixed.example.com/page")
+
+
+def test_validate_outbound_research_url_rejects_dns_failure(monkeypatch) -> None:
+    def fake_getaddrinfo(_host, _port):
+        raise OSError("name resolution failed")
+
+    monkeypatch.setattr("ai_tech_lead.research_sources.socket.getaddrinfo", fake_getaddrinfo)
+    with pytest.raises(ResearchUrlSafetyError):
+        validate_outbound_research_url("https://does-not-resolve.example.com/page")
+
+
+def test_safe_redirect_handler_blocks_redirect_to_private_ip(monkeypatch) -> None:
+    from ai_tech_lead.research_sources import _SafeRedirectHandler
+
+    def fake_getaddrinfo(host, port):
+        if host == "evil.example.com":
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.0.0.5", 0))]
+        return _fake_getaddrinfo_public(host, port)
+
+    monkeypatch.setattr("ai_tech_lead.research_sources.socket.getaddrinfo", fake_getaddrinfo)
+    handler = _SafeRedirectHandler()
+
+    with pytest.raises(ResearchUrlSafetyError):
+        handler.redirect_request(None, None, 302, "Found", {}, "https://evil.example.com/steal")
+
+
+def test_collect_online_research_sources_skips_oversized_response(monkeypatch, caplog) -> None:
+    caplog.set_level(logging.WARNING)
+    settings = replace(
+        parse_settings(valid_settings_dict()),
+        research_online_source_urls=[
+            "https://docs.langchain.com/oss/python/langgraph/interrupts",
+        ],
+        research_max_online_source_urls=1,
+        research_fetch_timeout_seconds=5,
+        research_max_fetch_bytes=10,
+    )
+
+    def fake_fetch(request, timeout):
+        return _FakeResponse("<html>" + ("x" * 100) + "</html>")
+
+    _patch_public_dns(monkeypatch)
+    _patch_opener(monkeypatch, fake_fetch)
+
+    sources = collect_online_research_sources("LangGraph interrupt docs", settings)
+
+    assert sources == []
+    assert "Online research source failed" in caplog.text
+
+
+def test_collect_online_research_sources_skips_response_over_content_length_cap(
+    monkeypatch, caplog
+) -> None:
+    caplog.set_level(logging.WARNING)
+    settings = replace(
+        parse_settings(valid_settings_dict()),
+        research_online_source_urls=[
+            "https://docs.langchain.com/oss/python/langgraph/interrupts",
+        ],
+        research_max_online_source_urls=1,
+        research_fetch_timeout_seconds=5,
+        research_max_fetch_bytes=10,
+    )
+
+    def fake_fetch(request, timeout):
+        response = _FakeResponse("<html>" + ("x" * 100) + "</html>")
+        response.headers = _FakeHeaders(content_length="1000")
+        return response
+
+    _patch_public_dns(monkeypatch)
+    _patch_opener(monkeypatch, fake_fetch)
+
+    sources = collect_online_research_sources("LangGraph interrupt docs", settings)
+
+    assert sources == []
+    assert "Online research source failed" in caplog.text

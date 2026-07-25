@@ -88,9 +88,13 @@ cd /home/robvoto/projects/ai-tech-lead
 uv run python -m ai_tech_lead run-agent-task --input-json /tmp/subprocess-task.json --output-json /tmp/subprocess-result.json
 ```
 
-The input JSON must include `task`. Common optional fields are `request_id`, Hub `run_id`,
-`source`, `project_root`, `execution_mode`, `human_approved`, `approval_token`, and
-`backlog_reference`.
+A new task's input JSON must include `task`. Common optional fields are `request_id`, Hub
+`run_id`, `source`, `project_root`, `execution_mode`, and `backlog_reference`.
+
+To resume a paused conversation, resubmit the same `request_id` with `decision:
+{"option": "...", "text": "...", "actor": "..."}` instead of `task` — the option must be
+one of the names the paused response's `pending_decision.options` reported. `text` is
+required only when that option is marked `needs_text`.
 
 - `backlog_reference` is an explicit pointer to one row in one Google Sheet backlog:
   `{"project_key": "...", "spreadsheet_id": "...", "sheet_name": "...", "item_id": "..."}`.
@@ -111,12 +115,16 @@ The input JSON must include `task`. Common optional fields are `request_id`, Hub
 - Safe default: omit `execution_mode` or set it to `instruction_only`.
 - Use `execution_mode: execute` only when the caller explicitly wants coding-agent execution and
   local settings allow it.
-- `project_root` is accepted only when it matches one of `settings.allowed_project_roots`.
-- If `human_approved` is true, the request must include the matching one-time `approval_token`
-  previously issued for the same `request_id` and task.
-- Subprocess responses use `success`, `needs_clarification`, `approval_required`, and `failed`.
-- Human-text pauses inside the specialist workflow, such as plan guidance or repeated failure guidance, are surfaced here as `needs_clarification`.
-- External callers should read `uv run python -m ai_tech_lead manifest` and use the response fields `result_kind`, `caller_action`, `resume_supported`, `resume_fields`, and `interrupt_kind` instead of scraping `summary` text.
+- `project_root` is accepted only when it matches one of `settings.allowed_project_roots`
+  (also required again on a resume call, since the graph is rebuilt each invocation).
+- Subprocess responses use `success`, `needs_clarification`, `waiting_decision`, and `failed`.
+- Every genuine pause inside the specialist workflow — approval, plan guidance, repeated
+  failure guidance, research approval — is surfaced as `waiting_decision` with a
+  `pending_decision` block describing what's paused and the named options available.
+  `needs_clarification` is reserved for the one case with no conversation to resume: an
+  unresolved reference, where the workflow ended rather than paused.
+- External callers should read `uv run python -m ai_tech_lead manifest` and use the response
+  fields `result_kind` and `pending_decision` instead of scraping `summary` text.
 - Concurrent `run-agent-task` calls are allowed only when they do not collide on the
   same runtime lock scope. Duplicate `request_id` runs fail fast, and real coding-agent
   execution is locked per target `project_root`.

@@ -65,68 +65,126 @@ def _make_fake_source(title: str, location: str = "/fake/path.md") -> ResearchSo
     )
 
 
-def test_check_research_requirements_simple_task_skips_cache(monkeypatch) -> None:
+def test_check_research_requirements_no_gap_skips_cache(monkeypatch) -> None:
     settings = replace(parse_settings(valid_settings_dict()), orchestrator_ai_enabled=True)
 
     monkeypatch.setattr(
-        "ai_tech_lead.research_checker._llm_check_complexity",
-        lambda _req, _settings: (False, "Simple bug fix."),
+        "ai_tech_lead.research_checker._llm_check_knowledge_gap",
+        lambda _req, _settings, _code_context: (False, "", "No external fact required for this typo fix."),
     )
 
     result = check_research_requirements("Fix typo in README", settings)
 
-    assert result.is_complex is False
+    assert result.has_gap is False
     assert result.online_research_needed is False
     assert result.sources_found == 0
 
 
-def test_check_research_requirements_complex_with_two_sources_continues(
-    monkeypatch,
-    caplog,
-) -> None:
-    caplog.set_level(logging.INFO)
+def test_check_research_requirements_large_task_with_no_gap_skips_cache(monkeypatch) -> None:
+    """A task can be architecturally significant yet need no external research."""
+
     settings = replace(parse_settings(valid_settings_dict()), orchestrator_ai_enabled=True)
 
     monkeypatch.setattr(
-        "ai_tech_lead.research_checker._llm_check_complexity",
-        lambda _req, _settings: (True, "Involves LangGraph interrupt nodes."),
+        "ai_tech_lead.research_checker._llm_check_knowledge_gap",
+        lambda _req, _settings, _code_context: (
+            False,
+            "",
+            "Large refactor, but everything needed is already known from the codebase.",
+        ),
     )
     monkeypatch.setattr(
         "ai_tech_lead.research_checker.collect_local_research_sources",
-        lambda _request, _settings: [
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("local cache should not be searched when no gap was identified")
+        ),
+    )
+
+    result = check_research_requirements(
+        "Refactor the entire backlog runtime storage layer", settings
+    )
+
+    assert result.has_gap is False
+    assert result.online_research_needed is False
+
+
+def test_check_research_requirements_small_task_with_real_gap_checks_cache(monkeypatch) -> None:
+    """A small task can still hinge on one unfamiliar external fact."""
+
+    settings = replace(parse_settings(valid_settings_dict()), orchestrator_ai_enabled=True)
+
+    monkeypatch.setattr(
+        "ai_tech_lead.research_checker._llm_check_knowledge_gap",
+        lambda _req, _settings, _code_context: (
+            True,
+            "What are Telegram Bot API's official rate-limit and retry rules?",
+            "Retry behaviour must match Telegram's documented rules.",
+        ),
+    )
+    monkeypatch.setattr(
+        "ai_tech_lead.research_checker.collect_local_research_sources",
+        lambda _gap_question, _settings: [
             _make_fake_source("LangGraph approval"),
             _make_fake_source("Backlog patterns"),
         ],
     )
 
-    result = check_research_requirements("Add CLARIFICATION_GATE to workflow", settings)
+    result = check_research_requirements("Add retry handling to the Telegram client", settings)
 
-    assert result.is_complex is True
+    assert result.has_gap is True
+    assert result.gap_question == "What are Telegram Bot API's official rate-limit and retry rules?"
     assert result.sources_found == 2
     assert result.online_research_needed is False
-    assert len(result.usable_source_titles) == 2
-    assert (
-        "Research gate summary: complex=yes local_sources=2 "
-        "min_required=2 online_approval_needed=no"
-        in caplog.text
+
+
+def test_check_research_requirements_searches_cache_by_gap_question_not_raw_request(
+    monkeypatch,
+) -> None:
+    settings = replace(parse_settings(valid_settings_dict()), orchestrator_ai_enabled=True)
+    seen_queries: list[str] = []
+
+    monkeypatch.setattr(
+        "ai_tech_lead.research_checker._llm_check_knowledge_gap",
+        lambda _req, _settings, _code_context: (
+            True,
+            "What are Telegram Bot API's official rate-limit and retry rules?",
+            "Retry behaviour must match Telegram's documented rules.",
+        ),
     )
 
+    def fake_collect_local_research_sources(query, _settings):
+        seen_queries.append(query)
+        return []
 
-def test_check_research_requirements_complex_with_one_source_triggers_gate(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "ai_tech_lead.research_checker.collect_local_research_sources",
+        fake_collect_local_research_sources,
+    )
+
+    check_research_requirements("Add retry handling to the Telegram client", settings)
+
+    assert seen_queries == ["What are Telegram Bot API's official rate-limit and retry rules?"]
+
+
+def test_check_research_requirements_gap_with_one_source_triggers_gate(monkeypatch) -> None:
     settings = replace(parse_settings(valid_settings_dict()), orchestrator_ai_enabled=True)
 
     monkeypatch.setattr(
-        "ai_tech_lead.research_checker._llm_check_complexity",
-        lambda _req, _settings: (True, "Involves LangGraph interrupt nodes."),
+        "ai_tech_lead.research_checker._llm_check_knowledge_gap",
+        lambda _req, _settings, _code_context: (
+            True,
+            "What are LangGraph's official interrupt semantics?",
+            "Involves LangGraph interrupt nodes.",
+        ),
     )
     monkeypatch.setattr(
         "ai_tech_lead.research_checker.collect_local_research_sources",
-        lambda _request, _settings: [_make_fake_source("LangGraph approval")],
+        lambda _gap_question, _settings: [_make_fake_source("LangGraph approval")],
     )
 
     result = check_research_requirements("Add CLARIFICATION_GATE to workflow", settings)
 
-    assert result.is_complex is True
+    assert result.has_gap is True
     assert result.sources_found == 1
     assert result.online_research_needed is True
 
@@ -136,57 +194,61 @@ def test_check_research_requirements_ai_disabled_requires_approval() -> None:
 
     result = check_research_requirements("Add interrupt gate to LangGraph workflow", settings)
 
-    assert result.is_complex is True
+    assert result.has_gap is True
     assert result.online_research_needed is True
-    assert "requiring human approval" in result.complexity_reason.lower()
+    assert "requiring human approval" in result.gap_reason.lower()
 
 
 def test_check_research_requirements_llm_unavailable_requires_approval(monkeypatch) -> None:
     settings = replace(parse_settings(valid_settings_dict()), orchestrator_ai_enabled=True)
 
     monkeypatch.setattr(
-        "ai_tech_lead.research_checker._llm_check_complexity",
-        lambda _req, _settings: (_ for _ in ()).throw(OrchestratorLlmError("offline")),
+        "ai_tech_lead.research_checker._llm_check_knowledge_gap",
+        lambda _req, _settings, _code_context: (_ for _ in ()).throw(OrchestratorLlmError("offline")),
     )
 
     result = check_research_requirements("Add interrupt gate to LangGraph workflow", settings)
 
-    assert result.is_complex is True
+    assert result.has_gap is True
     assert result.online_research_needed is True
-    assert "unavailable" in result.complexity_reason.lower()
+    assert "unavailable" in result.gap_reason.lower()
 
 
 def test_check_research_requirements_invalid_llm_response_requires_approval(monkeypatch) -> None:
     settings = replace(parse_settings(valid_settings_dict()), orchestrator_ai_enabled=True)
 
     monkeypatch.setattr(
-        "ai_tech_lead.research_checker._llm_check_complexity",
-        lambda _req, _settings: (_ for _ in ()).throw(ValueError("bad payload")),
+        "ai_tech_lead.research_checker._llm_check_knowledge_gap",
+        lambda _req, _settings, _code_context: (_ for _ in ()).throw(ValueError("bad payload")),
     )
 
     result = check_research_requirements("Add interrupt gate to LangGraph workflow", settings)
 
-    assert result.is_complex is True
+    assert result.has_gap is True
     assert result.online_research_needed is True
-    assert "invalid" in result.complexity_reason.lower()
+    assert "invalid" in result.gap_reason.lower()
 
 
 def test_check_research_requirements_online_not_triggered_without_approval(monkeypatch) -> None:
     settings = replace(parse_settings(valid_settings_dict()), orchestrator_ai_enabled=True)
 
     monkeypatch.setattr(
-        "ai_tech_lead.research_checker._llm_check_complexity",
-        lambda _req, _settings: (True, "Complex: LangGraph persistence."),
+        "ai_tech_lead.research_checker._llm_check_knowledge_gap",
+        lambda _req, _settings, _code_context: (
+            True,
+            "What does LangGraph persistence require for checkpointing?",
+            "Complex: LangGraph persistence.",
+        ),
     )
     monkeypatch.setattr(
         "ai_tech_lead.research_checker.collect_local_research_sources",
-        lambda _request, _settings: [],
+        lambda _gap_question, _settings: [],
     )
 
     result = check_research_requirements("Add checkpointing to workflow", settings)
 
     assert result.online_research_needed is True
-    assert result.is_complex is True
+    assert result.has_gap is True
     assert result.sources_found == 0
 
 
@@ -199,6 +261,7 @@ def test_save_online_source_to_cache_writes_note_and_index(tmp_path: Path) -> No
         summary="Interrupts pause graph execution and resume with Command.",
         excerpt="",
         project_root=tmp_path,
+        question="What are LangGraph's official interrupt semantics?",
         today=date(2026, 6, 15),
     )
 
@@ -208,6 +271,7 @@ def test_save_online_source_to_cache_writes_note_and_index(tmp_path: Path) -> No
     content = note_path.read_text(encoding="utf-8")
     assert "topic: LangGraph interrupts" in content
     assert "date: 2026-06-15" in content
+    assert "question: What are LangGraph's official interrupt semantics?" in content
     assert "https://docs.langchain.com/oss/python/langgraph/interrupts" in content
     assert "## Summary" in content
     assert "Interrupts pause graph execution" in content
@@ -215,6 +279,25 @@ def test_save_online_source_to_cache_writes_note_and_index(tmp_path: Path) -> No
     index_content = (research_dir / "INDEX.md").read_text(encoding="utf-8")
     assert "langgraph-interrupts.md" in index_content
     assert "Interrupts pause graph execution" in index_content
+
+    entries = load_research_cache_entries(index_path=research_dir / "INDEX.md", today=date(2026, 6, 15))
+    assert entries[0].question == "What are LangGraph's official interrupt semantics?"
+
+
+def test_save_online_source_to_cache_question_is_optional(tmp_path: Path) -> None:
+    saved = save_online_source_to_cache(
+        title="Backlog patterns",
+        location="https://docs.langchain.com/oss/python/langchain/structured-output",
+        summary="Use structured output for backlog drafts.",
+        excerpt="",
+        project_root=tmp_path,
+        today=date(2026, 6, 15),
+    )
+
+    assert saved is True
+    note_path = tmp_path / "docs" / "research" / "backlog-patterns.md"
+    content = note_path.read_text(encoding="utf-8")
+    assert "question:" not in content
 
 
 def test_save_online_source_to_cache_skips_duplicate_url(tmp_path: Path, caplog) -> None:

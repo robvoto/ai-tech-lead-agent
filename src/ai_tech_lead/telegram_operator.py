@@ -97,7 +97,14 @@ CANONICAL_BOT_COMMAND_SECTIONS: tuple[tuple[str, tuple[_BotCommand, ...]], ...] 
             _BotCommand("code", "<text>", "explicit coding workflow"),
             _BotCommand("cancel_code", "", "stop the running coding-agent subprocess"),
             _BotCommand("approve", "", "approve the waiting task/decision"),
-            _BotCommand("reject", "", "reject the waiting task/decision"),
+            _BotCommand(
+                "request_changes",
+                "<feedback>",
+                "send feedback on a waiting approval and get a revised proposal",
+            ),
+            _BotCommand("ask", "<question>", "ask a question about a waiting approval"),
+            _BotCommand("cancel", "", "cancel the waiting task/decision"),
+            _BotCommand("reject", "", "alias for /cancel"),
             _BotCommand("sleep", "on|off", "sleep mode: auto-run LOW/MEDIUM risk tasks"),
         ),
     ),
@@ -145,6 +152,9 @@ class TelegramCommandName(StrEnum):
     STATUS = "status"
     APPROVE = "approve"
     REJECT = "reject"
+    REQUEST_CHANGES = "request_changes"
+    ASK = "ask"
+    CANCEL = "cancel"
     CANCEL_CODE = "cancel_code"
     SLEEP = "sleep"
     LIST = "list"
@@ -160,6 +170,7 @@ class TelegramTaskStage(StrEnum):
     PRE_RUN_APPROVAL = "pre_run_approval"
     RESEARCH_APPROVAL = "research_approval"
     ORCHESTRATOR_INPUT = "orchestrator_input"
+    COMPLETION_VERIFICATION = "completion_verification"
     RUNNING = "running"
 
 
@@ -560,7 +571,7 @@ class TelegramOperator:
             logger.info("Telegram action: approve requested in chat %s.", chat_id)
             if self._handle_backlog_draft_decision(chat_id, approved=True):
                 return
-            if self._handle_pre_run_approval(chat_id, sender=sender, approved=True):
+            if self._handle_pre_run_approval(chat_id, sender=sender, action="approve"):
                 return
             self._send_message(
                 chat_id,
@@ -569,15 +580,41 @@ class TelegramOperator:
             )
             return
 
-        if command.name == TelegramCommandName.REJECT:
-            logger.info("Telegram action: reject requested in chat %s.", chat_id)
+        if command.name in {TelegramCommandName.REJECT, TelegramCommandName.CANCEL}:
+            logger.info("Telegram action: cancel requested in chat %s.", chat_id)
             if self._handle_backlog_draft_decision(chat_id, approved=False):
                 return
-            if self._handle_pre_run_approval(chat_id, sender=sender, approved=False):
+            if self._handle_pre_run_approval(
+                chat_id, sender=sender, action="cancel", text=command.argument
+            ):
                 return
             self._send_message(
                 chat_id,
-                "No active task is waiting, so there is nothing to reject.",
+                "No active task is waiting, so there is nothing to cancel.",
+            )
+            return
+
+        if command.name == TelegramCommandName.REQUEST_CHANGES:
+            logger.info("Telegram action: request_changes requested in chat %s.", chat_id)
+            if self._handle_pre_run_approval(
+                chat_id, sender=sender, action="request_changes", text=command.argument
+            ):
+                return
+            self._send_message(
+                chat_id,
+                "No approval is waiting, so there is nothing to request changes on.",
+            )
+            return
+
+        if command.name == TelegramCommandName.ASK:
+            logger.info("Telegram action: ask requested in chat %s.", chat_id)
+            if self._handle_pre_run_approval(
+                chat_id, sender=sender, action="ask_question", text=command.argument
+            ):
+                return
+            self._send_message(
+                chat_id,
+                "No approval is waiting, so there is no question to ask about.",
             )
             return
 
@@ -738,12 +775,13 @@ class TelegramOperator:
                 return
 
             # For approval/research stages, route to the conversational agent.
-            # The graph only resumes via /approve or /reject.
+            # The graph only resumes via a slash command (/approve, /request_changes,
+            # /ask, /cancel for pre-run approval; /approve or /cancel for research).
             if not self._settings.orchestrator_ai_enabled:
                 self._send_message(
                     chat_id,
                     f"Task is paused: {active_task.task_label}\n"
-                    "Use /approve or /reject to continue.",
+                    "Use /approve, /request_changes, /ask, or /cancel to continue.",
                 )
                 return
 
@@ -1181,7 +1219,11 @@ class TelegramOperator:
         state_values: dict[str, Any],
         backlog_item_id: str | None,
     ) -> None:
-        success = bool(state_values.get("coding_agent_success", False))
+        coding_agent_success = bool(state_values.get("coding_agent_success", False))
+        verification_status = str(state_values.get("verification_status", "")).strip()
+        # The coding agent exiting cleanly is not enough — the backlog only closes once
+        # the AI Tech Lead has verified the work against the approved task.
+        success = coding_agent_success and verification_status == "complete"
         timed_out = bool(state_values.get("coding_agent_timed_out", False))
         backlog_status_line = "not tracked"
         backlog_update_alert: str | None = None
@@ -1343,57 +1385,123 @@ class TelegramOperator:
         lines.append("Still expected: reply with the missing detail, /approve, or /reject.")
         return "\n".join(lines)
 
-    def _handle_pre_run_approval(self, chat_id: str, *, sender: str, approved: bool) -> bool:
+    def _handle_pre_run_approval(
+        self,
+        chat_id: str,
+        *,
+        sender: str,
+        action: str,
+        text: str = "",
+    ) -> bool:
+        """Handle a human decision on a paused pre-run, research, or completion-verification interrupt.
+
+        `action` is one of "approve", "request_changes", "ask_question", "cancel".
+        `request_changes` and `ask_question` only apply to the PRE_RUN_APPROVAL
+        stage (the coding-workflow's `4_approval_interrupt`) — RESEARCH_APPROVAL and
+        COMPLETION_VERIFICATION keep their own binary approve/cancel contract, with
+        `text` carrying the rejection reason for COMPLETION_VERIFICATION.
+        """
         active_task = self._active_tasks.get(chat_id)
         if active_task is None:
             logger.warning(
                 "Telegram approval: no active task found for chat %s (sender=%s). "
                 "Possible cause: process restarted mid-task and lost in-memory state, "
-                "or the task already completed/was rejected before this /approve arrived.",
+                "or the task already completed/was cancelled before this command arrived.",
                 chat_id,
                 sender,
             )
             return False
-        if approved and active_task.stage not in {
+
+        if action != "cancel" and active_task.stage not in {
             TelegramTaskStage.PRE_RUN_APPROVAL,
             TelegramTaskStage.RESEARCH_APPROVAL,
+            TelegramTaskStage.COMPLETION_VERIFICATION,
         }:
             logger.warning(
-                "Telegram approval: /approve received for chat %s but task '%s' is in stage=%s, "
+                "Telegram approval: /%s received for chat %s but task '%s' is in stage=%s, "
                 "not an approval-waiting stage. "
                 "Expected PRE_RUN_APPROVAL or RESEARCH_APPROVAL. "
                 "Possible cause: task is still running (RUNNING stage) or already past approval.",
+                action,
                 chat_id,
                 active_task.task_label,
                 active_task.stage,
             )
             return False
 
-        if not approved:
-            # Discard the task — no need to resume the graph since the app is discarded.
-            self._active_tasks.pop(chat_id, None)
-            logger.info("Telegram approval: task rejected and closed: %s", active_task.task_label)
-            self._send_message(chat_id, f"Task rejected and closed: {active_task.task_label}")
+        if action in {"request_changes", "ask_question"} and (
+            active_task.stage != TelegramTaskStage.PRE_RUN_APPROVAL
+        ):
+            self._send_message(
+                chat_id,
+                f"/{'request_changes' if action == 'request_changes' else 'ask'} is not "
+                "available for this approval step. Use /approve or /cancel.",
+            )
             return True
 
-        resume_value = (
-            {"approved": True}
-            if active_task.stage == TelegramTaskStage.RESEARCH_APPROVAL
-            else {"approved": True, "approved_by": sender}
-        )
+        if action == "cancel":
+            if active_task.stage == TelegramTaskStage.COMPLETION_VERIFICATION:
+                reason = text.strip() or "Rejected without a stated reason."
+                resume_value: dict[str, Any] = {"decision": "reject", "text": reason}
+                self._send_message(chat_id, "Noted — reporting this as unresolved...")
+            elif active_task.stage != TelegramTaskStage.PRE_RUN_APPROVAL:
+                # Unchanged existing behaviour for other stages: discard without resuming.
+                self._active_tasks.pop(chat_id, None)
+                logger.info(
+                    "Telegram approval: task cancelled and closed: %s", active_task.task_label
+                )
+                self._send_message(chat_id, f"Task cancelled and closed: {active_task.task_label}")
+                return True
+            else:
+                resume_value = {"action": "cancel"}
+                self._send_message(chat_id, "Cancelled. Stopping the task...")
+        elif action == "approve":
+            if active_task.stage == TelegramTaskStage.COMPLETION_VERIFICATION:
+                resume_value = {"decision": "confirm_complete"}
+                self._send_message(chat_id, "Confirmed complete. Closing the task...")
+            else:
+                resume_value = (
+                    {"approved": True}
+                    if active_task.stage == TelegramTaskStage.RESEARCH_APPROVAL
+                    else {"action": "approve", "approved_by": sender}
+                )
+                self._send_message(chat_id, "Approved. Resuming...")
+        elif action == "request_changes":
+            feedback = text.strip()
+            if not feedback:
+                self._send_message(
+                    chat_id,
+                    "/request_changes requires feedback text, e.g. "
+                    "/request_changes Keep this to docs only.",
+                )
+                return True
+            resume_value = {"action": "request_changes", "feedback": feedback}
+            self._send_message(chat_id, "Got it — sending feedback for a revised proposal...")
+        else:  # action == "ask_question"
+            question = text.strip()
+            if not question:
+                self._send_message(
+                    chat_id,
+                    "/ask requires a question, e.g. /ask Which files will this touch?",
+                )
+                return True
+            resume_value = {"action": "ask_question", "question": question}
+            self._send_message(chat_id, "Let me check on that...")
+
         logger.info(
-            "Telegram approval: resuming task %s with approved=True (stage=%s sender=%s)",
+            "Telegram approval: resuming task %s with action=%s (stage=%s sender=%s)",
             active_task.task_label,
+            action,
             active_task.stage,
             sender,
         )
-        self._send_message(chat_id, "Approved. Resuming...")
         try:
             active_task.app.invoke(Command(resume=resume_value), config=active_task.thread_config)
             state_snapshot = active_task.app.get_state(active_task.thread_config)
         except Exception:
             logger.exception(
-                "Failed to resume Telegram task after approval from %s: %s",
+                "Failed to resume Telegram task after %s from %s: %s",
+                action,
                 sender,
                 active_task.task_label,
             )
@@ -1508,17 +1616,38 @@ class TelegramOperator:
             sections.append("Reply with guidance to retry, or /reject to abort.")
             return TelegramTaskStage.ORCHESTRATOR_INPUT, "\n\n".join(sections)
 
+        if kind == "failure_guidance":
+            retry_count = int(interrupt_value.get("retry_count", 0))
+            result_summary = str(interrupt_value.get("coding_agent_result", "")).strip()
+            sections = [f"Coding agent failed {retry_count}x: {task_label}"]
+            if result_summary:
+                sections.append(f"Result: {_summarize_text(result_summary, limit=200)}")
+            sections.append("Reply with guidance to retry, or /reject to abort.")
+            return TelegramTaskStage.ORCHESTRATOR_INPUT, "\n\n".join(sections)
+
         if kind == "approval":
             approval_reason = str(interrupt_value.get("reason", "")).strip()
             formulated_task = str(interrupt_value.get("formulated_task", "")).strip()
+            last_question = str(interrupt_value.get("last_question", "")).strip()
+            last_answer = str(interrupt_value.get("last_answer", "")).strip()
             message = _approval_prompt(
                 task_label=task_label,
                 request_summary=request_summary,
                 approval_reason=approval_reason,
                 formulated_task=formulated_task,
+                last_question=last_question,
+                last_answer=last_answer,
                 limit=self._settings.telegram_max_message_chars,
             )
             return TelegramTaskStage.PRE_RUN_APPROVAL, message
+
+        if kind == "completion_verification":
+            reason = str(interrupt_value.get("reason", "")).strip()
+            sections = [f"Can't verify this is fully done: {task_label}"]
+            if reason:
+                sections.append(_summarize_text(reason, limit=200))
+            sections.append("Reply /approve to confirm complete, or /reject <reason> to flag it.")
+            return TelegramTaskStage.COMPLETION_VERIFICATION, "\n\n".join(sections)
 
         # Fallback: unrecognised interrupt kind — use state values for best-effort message
         logger.warning(
@@ -1810,12 +1939,31 @@ def parse_telegram_command(text: str) -> TelegramCommand:
         TelegramCommandName.CANCEL_CODE,
         TelegramCommandName.APPROVE,
         TelegramCommandName.REJECT,
+        TelegramCommandName.CANCEL,
         TelegramCommandName.COUNT,
     }:
         if argument:
             raise ValueError(f"/{command_name} does not accept extra text.")
         return TelegramCommand(
             name=TelegramCommandName(command_name),
+            raw_text=normalized_text,
+        )
+
+    if command_name == TelegramCommandName.REQUEST_CHANGES:
+        if not argument.strip():
+            raise ValueError("/request_changes requires feedback text.")
+        return TelegramCommand(
+            name=TelegramCommandName.REQUEST_CHANGES,
+            argument=argument,
+            raw_text=normalized_text,
+        )
+
+    if command_name == TelegramCommandName.ASK:
+        if not argument.strip():
+            raise ValueError("/ask requires a question.")
+        return TelegramCommand(
+            name=TelegramCommandName.ASK,
+            argument=argument,
             raw_text=normalized_text,
         )
 
@@ -2034,10 +2182,23 @@ def _approval_prompt(
     approval_reason: str,
     *,
     formulated_task: str = "",
+    last_question: str = "",
+    last_answer: str = "",
     limit: int,
 ) -> str:
     reason = _telegram_approval_reason(approval_reason)
-    sections = [f"Approval needed\n{request_summary}", f"Risk: {reason}", "/approve or /reject"]
+    sections = [f"Approval needed\n{request_summary}", f"Risk: {reason}"]
+    if last_question:
+        sections.append(
+            f"Q: {_summarize_text(last_question, limit=200)}\n"
+            f"A: {_summarize_text(last_answer, limit=400)}"
+        )
+    sections.append(
+        "/approve — continue\n"
+        "/request_changes <feedback> — send feedback for a revised proposal\n"
+        "/ask <question> — ask a question before deciding\n"
+        "/cancel — stop this task"
+    )
     return _truncate_text("\n\n".join(sections), limit)
 
 
@@ -2125,7 +2286,14 @@ def _completion_message(
     extra_lines: list[str] | None = None,
 ) -> str:
     coding_agent_result = str(state_values.get("coding_agent_result", "")).strip()
-    header = f"Task timed out: {task_label}" if timed_out else f"Task complete: {task_label}"
+    verification_status = str(state_values.get("verification_status", "")).strip()
+    verification_reason = str(state_values.get("verification_reason", "")).strip()
+    if timed_out:
+        header = f"Task timed out: {task_label}"
+    elif verification_status == "failed":
+        header = f"Task needs attention: {task_label}"
+    else:
+        header = f"Task complete: {task_label}"
     if not coding_agent_result:
         return _truncate_text(header, limit)
 
@@ -2141,6 +2309,8 @@ def _completion_message(
 
     body = "\n".join(summary_lines).strip() or coding_agent_result.splitlines()[0]
     lines = [header, body]
+    if verification_status == "failed" and verification_reason:
+        lines.append(f"Verification: {_summarize_text(verification_reason, limit=200)}")
     if backlog_status_line:
         lines.append(f"Backlog: {backlog_status_line}")
     if backlog_update_alert:

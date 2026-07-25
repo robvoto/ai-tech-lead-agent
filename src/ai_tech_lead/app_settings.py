@@ -40,6 +40,12 @@ class AppSettings:
     research_max_online_source_urls: int
     research_fetch_timeout_seconds: int
     research_max_excerpt_chars: int
+    research_max_fetch_bytes: int
+    research_code_context_enabled: bool
+    research_max_code_context_files: int
+    research_discovery_enabled: bool
+    research_discovery_timeout_seconds: int
+    research_discovery_max_candidates: int
     knowledge_store_path: str
     telegram_transport: str
     telegram_api_base_url: str
@@ -156,6 +162,36 @@ def parse_settings(raw_settings: dict[str, Any]) -> AppSettings:
         research_max_excerpt_chars=_required_positive_int(
             raw_settings,
             "research_max_excerpt_chars",
+        ),
+        research_max_fetch_bytes=_optional_positive_int(
+            raw_settings,
+            "research_max_fetch_bytes",
+            default=2_000_000,
+        ),
+        research_code_context_enabled=_optional_bool(
+            raw_settings,
+            "research_code_context_enabled",
+            default=True,
+        ),
+        research_max_code_context_files=_optional_positive_int(
+            raw_settings,
+            "research_max_code_context_files",
+            default=5,
+        ),
+        research_discovery_enabled=_optional_bool(
+            raw_settings,
+            "research_discovery_enabled",
+            default=False,
+        ),
+        research_discovery_timeout_seconds=_optional_positive_int(
+            raw_settings,
+            "research_discovery_timeout_seconds",
+            default=20,
+        ),
+        research_discovery_max_candidates=_optional_positive_int(
+            raw_settings,
+            "research_discovery_max_candidates",
+            default=3,
         ),
         knowledge_store_path=_optional_string(
             raw_settings,
@@ -293,6 +329,12 @@ def settings_to_dict(settings: AppSettings) -> dict[str, Any]:
         "research_max_online_source_urls": settings.research_max_online_source_urls,
         "research_fetch_timeout_seconds": settings.research_fetch_timeout_seconds,
         "research_max_excerpt_chars": settings.research_max_excerpt_chars,
+        "research_max_fetch_bytes": settings.research_max_fetch_bytes,
+        "research_code_context_enabled": settings.research_code_context_enabled,
+        "research_max_code_context_files": settings.research_max_code_context_files,
+        "research_discovery_enabled": settings.research_discovery_enabled,
+        "research_discovery_timeout_seconds": settings.research_discovery_timeout_seconds,
+        "research_discovery_max_candidates": settings.research_discovery_max_candidates,
         "knowledge_store_path": settings.knowledge_store_path,
         "telegram_transport": settings.telegram_transport,
         "telegram_api_base_url": settings.telegram_api_base_url,

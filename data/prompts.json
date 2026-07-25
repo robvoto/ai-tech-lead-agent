@@ -24,6 +24,15 @@
       "template": "Summarise the completed work for a human operator. Be concise. Include changed files, validation evidence, and any follow-up risk. Do not claim success without evidence."
     },
     {
+      "key": "completion_verification",
+      "prompt_class": "template",
+      "purpose": "Decide whether completed coding-agent work is genuinely done against the approved task, plan, and acceptance criteria.",
+      "used_by": [
+        "src/ai_tech_lead/completion_verifier.py"
+      ],
+      "template": "Compare the coding agent's completed work against the approved task and decide whether it is genuinely finished. Return only valid JSON with this schema: {\"status\": \"complete\"|\"correction_required\"|\"human_verification_required\", \"reason\": string, \"correction\": string}.\n\nMark complete only if the acceptance criteria are satisfied, the reported validation/tests pass, and there are no material out-of-scope changes. Optional improvements or nice-to-have suggestions must never block completion — note them in reason but still mark complete if the required work is done.\n\nMark correction_required only when you can name exactly one specific unmet requirement; put that single instruction in correction and leave correction empty otherwise.\n\nMark human_verification_required when the result cannot be confidently proven from the evidence below, for example when it depends on a visual, subjective, or external check you cannot perform.\n\nApproved task:\n{formulated_task}\n\nApproved technical direction:\n{brief}\n\nApproved plan:\n{plan_text}\n\nAcceptance criteria:\n{acceptance_criteria}\n\nOriginal request:\n{bounded_request}\n\nChanged files:\n{changed_files}\n\nCoding agent's completion report (includes the validation/test commands and results it ran):\n{coding_agent_result}\n\nPrior correction sent to the coding agent (empty if this is the first check):\n{prior_correction}"
+    },
+    {
       "key": "plan_request_instruction",
       "prompt_class": "template",
       "purpose": "Ask the coding agent for a short implementation plan before execution.",
@@ -51,13 +60,22 @@
       "template": "You are reviewing implementation risk for the AI Tech Lead orchestrator. Return only valid JSON with this schema: {\"needs_approval\": boolean, \"risk_level\": \"LOW|MEDIUM|HIGH\", \"reason\": string, \"confidence\": number}.\n\nUse HIGH for destructive actions, security-sensitive changes, broad architecture changes, unknown scope, or changes that could affect unattended execution. Use MEDIUM for normal code changes with bounded scope. Use LOW for docs, tests, or clearly safe small changes.\n\nTask:\n{request}"
     },
     {
-      "key": "research_complexity",
+      "key": "research_knowledge_gap",
       "prompt_class": "template",
-      "purpose": "Decide whether a task needs local or online research evidence before continuing.",
+      "purpose": "Identify the specific external knowledge gap, if any, that must be resolved with research evidence before this task can proceed.",
       "used_by": [
         "src/ai_tech_lead/research_checker.py"
       ],
-      "template": "Classify whether this task is complex enough to require research evidence before implementation. Return only valid JSON with this schema: {\"is_complex\": boolean, \"reason\": string}.\n\nMark complex when the task touches architecture, LangGraph/LangChain behaviour, security, persistence, agent routing, cost controls, or anything likely to have changed in current docs. Mark simple for small local wording, test, or formatting changes.\n\nTask:\n{request}"
+      "template": "Identify whether completing this task depends on a specific external fact you cannot answer confidently from the request text and the existing code shown below. This is not about how large or architecturally significant the task is. Return only valid JSON with this schema: {\"has_gap\": boolean, \"gap_question\": string, \"reason\": string}.\n\nSet has_gap to true only when the task depends on a specific external fact you are not confident about (for example: an official API's current retry/rate-limit rules, a library's current behaviour, a security or compliance requirement). When true, gap_question must state that exact question in a form that could be looked up (e.g. \"What are Telegram Bot API's official rate-limit and retry rules?\"). Set has_gap to false, and leave gap_question empty, whenever the task can be completed correctly using only general knowledge, the request text, or the existing code below — even if the task is large, touches many files, or is architecturally significant.\n\nRelevant existing code in this repo (only trust this if it clearly answers the gap — a keyword match alone does not resolve it):\n{code_context}\n\nTask:\n{request}"
+    },
+    {
+      "key": "operator_question_answer",
+      "prompt_class": "instruction",
+      "purpose": "Answer a human operator's question asked during the approval interrupt, grounded only in the given context.",
+      "used_by": [
+        "src/ai_tech_lead/operator_question.py"
+      ],
+      "template": "You are the AI Tech Lead orchestrator. The human operator asked a question before deciding whether to approve a proposed task. Answer their question directly and concisely, using only the context below. If the context does not contain enough information to answer confidently, say so plainly instead of guessing.\n\nOperator question:\n{question}\n\nRequest:\n{request}\n\nProject: {project}\n\nExisting code context (only trust this if it is clearly relevant):\n{code_context}\n\nResearch evidence:\n{research_evidence}\n\nAnswer:"
     },
     {
       "key": "telegram_agent_system",

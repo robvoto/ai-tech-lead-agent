@@ -36,6 +36,7 @@ class ResearchCacheEntry:
     summary: str
     body: str
     sources: list[str]
+    question: str
     refreshed_on: date | None
     freshness_risk: str
 
@@ -79,6 +80,7 @@ def load_research_cache_entries(
                 summary=match.group("summary").strip(),
                 body=_extract_summary_body(note_path.read_text(encoding="utf-8")),
                 sources=_parse_sources(note_data.get("sources")),
+                question=str(note_data.get("question", "")).strip(),
                 refreshed_on=refreshed_on,
                 freshness_risk=freshness_risk,
             )
@@ -108,6 +110,8 @@ def format_research_cache_for_prompt(
     for entry in entries:
         blocks.append(f"- {entry.path.name}")
         blocks.append(f"  Title: {entry.title}")
+        if entry.question:
+            blocks.append(f"  Question: {entry.question}")
         blocks.append(f"  Summary: {entry.summary}")
         blocks.append(f"  Freshness risk: {entry.freshness_risk}")
         if entry.sources:
@@ -127,6 +131,7 @@ def save_online_source_to_cache(
     summary: str,
     excerpt: str,
     project_root: Path,
+    question: str = "",
     today: date | None = None,
 ) -> bool:
     """Write an online research source as a local cache note.
@@ -169,6 +174,7 @@ def save_online_source_to_cache(
         location=location,
         summary=summary,
         excerpt=excerpt,
+        question=question,
         today=current_day,
     )
 
@@ -183,14 +189,17 @@ def write_research_cache_note(
     location: str,
     summary: str,
     excerpt: str,
+    question: str = "",
     today: date | None = None,
 ) -> None:
     """Write or overwrite one cached research note and keep the index in sync."""
 
     current_day = today or date.today()
     body_text = summary.strip() or excerpt.strip() or "No summary available."
+    question_text = question.strip()
+    question_line = f"question: {question_text}\n" if question_text else ""
     note_content = (
-        f"---\ntopic: {title}\ndate: {current_day}\nsources:\n  - {location}\n---\n\n"
+        f"---\ntopic: {title}\ndate: {current_day}\n{question_line}sources:\n  - {location}\n---\n\n"
         f"## Summary\n{body_text}\n"
     )
     note_path.write_text(note_content, encoding="utf-8")

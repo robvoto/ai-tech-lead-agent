@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import replace
+from pathlib import Path
 from types import SimpleNamespace
 
 from helpers import valid_settings_dict
@@ -13,21 +14,37 @@ from ai_tech_lead.coding_workflow_graph import (
     NodeName,
     build_graph,
     build_initial_graph_state,
+    check_research_node,
     collect_research_evidence_node,
+    create_agent_instruction_node,
+    discover_research_source_node,
     request_plan_node,
     resolve_context_node,
-    route_after_resolve_context,
-    understand_and_bound_request_node,
     route_after_approval,
     route_after_check_research,
     route_after_research_interrupt,
+    route_after_resolve_context,
     route_after_review_plan,
     route_after_tech_lead_analyse,
+    route_after_verify_completion,
     run_coding_agent_node,
+    understand_and_bound_request_node,
 )
+from ai_tech_lead.completion_verifier import CompletionVerificationDecision
 from ai_tech_lead.plan_reviewer import PlanReviewDecision
 from ai_tech_lead.risk_reviewer import RiskReviewDecision
 from ai_tech_lead.tech_lead_analyst import TechLeadAnalysis
+
+
+def _mock_verify_completion_complete(monkeypatch) -> None:
+    """Skip the real AI Tech Lead completion check in tests that only exercise routing."""
+
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.verify_completion",
+        lambda **_kwargs: CompletionVerificationDecision(
+            status="complete", reason="Verified for test purposes.", correction=""
+        ),
+    )
 
 
 def graph_state(**overrides: object) -> dict[str, object]:
@@ -36,6 +53,7 @@ def graph_state(**overrides: object) -> dict[str, object]:
         "brief": "",
         "force_approval": False,
         "research_evidence_required": False,
+        "research_gap_question": "",
         "research_source_titles": [],
         "research_source_locations": [],
         "research_source_summaries": [],
@@ -47,6 +65,10 @@ def graph_state(**overrides: object) -> dict[str, object]:
         "needs_approval": False,
         "approval_reason": "Safe local work.",
         "approved": False,
+        "approval_action": "",
+        "approval_revision_count": 0,
+        "approval_last_question": "",
+        "approval_last_answer": "",
         "formulated_task": "",
         "plan_text": "",
         "plan_approved": False,
@@ -94,19 +116,21 @@ class _FakeAgentResult:
 
 def _research_result(
     *,
-    is_complex: bool,
+    has_gap: bool,
+    gap_question: str = "",
     sources_found: int = 0,
     online_research_needed: bool = False,
-    complexity_reason: str = "Simple task.",
+    gap_reason: str = "No external knowledge gap identified.",
     titles: list[str] | None = None,
     locations: list[str] | None = None,
     summaries: list[str] | None = None,
 ) -> SimpleNamespace:
     return SimpleNamespace(
-        is_complex=is_complex,
+        has_gap=has_gap,
+        gap_question=gap_question,
         sources_found=sources_found,
         online_research_needed=online_research_needed,
-        complexity_reason=complexity_reason,
+        gap_reason=gap_reason,
         usable_source_titles=titles or [],
         usable_source_locations=locations or [],
         usable_source_summaries=summaries or [],
@@ -180,8 +204,14 @@ def test_routes_follow_explicit_approval_state() -> None:
         == NodeName.REQUEST_PLAN
     )
     assert route_after_tech_lead_analyse(graph_state(needs_approval=False)) == NodeName.REQUEST_PLAN
-    assert route_after_approval(graph_state(approved=True)) == NodeName.REQUEST_PLAN
-    assert route_after_approval(graph_state(approved=False)) == NodeName.END_NODE
+    assert (
+        route_after_approval(graph_state(approved=True, approval_action="approve"))
+        == NodeName.REQUEST_PLAN
+    )
+    assert (
+        route_after_approval(graph_state(approved=False, approval_action="cancel"))
+        == NodeName.END_NODE
+    )
 
 
 def test_route_after_check_research_simple_task_skips_gate() -> None:
@@ -202,7 +232,7 @@ def test_route_after_check_research_complex_with_insufficient_sources_gates() ->
         research_evidence_required=True,
         online_research_approved=False,
     )
-    assert route_after_check_research(state) == NodeName.RESEARCH_INTERRUPT
+    assert route_after_check_research(state) == NodeName.DISCOVER_RESEARCH_SOURCE
 
 
 def test_route_after_research_interrupt_rejection_ends_workflow() -> None:
@@ -213,6 +243,99 @@ def test_route_after_research_interrupt_rejection_ends_workflow() -> None:
 def test_route_after_research_interrupt_approval_continues() -> None:
     state = graph_state(online_research_approved=True)
     assert route_after_research_interrupt(state) == NodeName.COLLECT_RESEARCH_EVIDENCE
+
+
+def test_check_research_node_passes_resolved_project_root_as_code_context_root(
+    monkeypatch,
+) -> None:
+    """The code-context scan must target the resolved task project, not this repo."""
+
+    settings = parse_settings(valid_settings_dict())
+    monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.load_settings", lambda: settings)
+
+    seen_kwargs: dict = {}
+
+    def fake_check_research_requirements(request, _settings, **kwargs):
+        seen_kwargs.update(kwargs)
+        return _research_result(has_gap=False)
+
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.check_research_requirements",
+        fake_check_research_requirements,
+    )
+
+    state = graph_state(resolved_project_root="/repos/some-other-project")
+    check_research_node(state)
+
+    assert seen_kwargs["code_context_root"] == "/repos/some-other-project"
+
+
+def test_check_research_node_code_context_root_none_when_unresolved(monkeypatch) -> None:
+    settings = parse_settings(valid_settings_dict())
+    monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.load_settings", lambda: settings)
+
+    seen_kwargs: dict = {}
+
+    def fake_check_research_requirements(request, _settings, **kwargs):
+        seen_kwargs.update(kwargs)
+        return _research_result(has_gap=False)
+
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.check_research_requirements",
+        fake_check_research_requirements,
+    )
+
+    state = graph_state()
+    check_research_node(state)
+
+    assert seen_kwargs["code_context_root"] is None
+
+
+def test_discover_research_source_node_names_candidate_in_question(monkeypatch) -> None:
+    settings = replace(parse_settings(valid_settings_dict()), research_discovery_enabled=True)
+    monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.load_settings", lambda: settings)
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.discover_official_source",
+        lambda _gap_question, _settings: SimpleNamespace(
+            url="https://core.telegram.org/bots/api",
+            title="Telegram Bot API",
+        ),
+    )
+
+    state = graph_state(
+        research_gap_question="What are Telegram Bot API's official retry rules?",
+        orchestrator_input_question="Fetch from the approved online source registry?",
+    )
+
+    result = discover_research_source_node(state)
+
+    assert result["discovered_source_url"] == "https://core.telegram.org/bots/api"
+    assert result["discovered_source_title"] == "Telegram Bot API"
+    assert "https://core.telegram.org/bots/api" in result["orchestrator_input_question"]
+    assert "Telegram Bot API" in result["orchestrator_input_question"]
+
+
+def test_discover_research_source_node_falls_back_when_no_candidate(monkeypatch) -> None:
+    settings = replace(parse_settings(valid_settings_dict()), research_discovery_enabled=False)
+    monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.load_settings", lambda: settings)
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.discover_official_source",
+        lambda _gap_question, _settings: None,
+    )
+
+    original_question = (
+        "Fetch from the approved online source registry "
+        "(bounded to: docs.langchain.com)?"
+    )
+    state = graph_state(
+        research_gap_question="What are Telegram Bot API's official retry rules?",
+        orchestrator_input_question=original_question,
+    )
+
+    result = discover_research_source_node(state)
+
+    assert result == {}
+    assert state["orchestrator_input_question"] == original_question
 
 
 def test_collect_research_evidence_node_appends_online_docs(monkeypatch, caplog) -> None:
@@ -232,7 +355,7 @@ def test_collect_research_evidence_node_appends_online_docs(monkeypatch, caplog)
     monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.load_settings", fake_load_settings)
     monkeypatch.setattr(
         "ai_tech_lead.coding_workflow_graph.collect_online_research_sources",
-        lambda _request, _settings: [
+        lambda _request, _settings, **_kwargs: [
             _Source(
                 "LangGraph interrupts",
                 "https://docs.langchain.com/oss/python/langgraph/interrupts",
@@ -264,6 +387,65 @@ def test_collect_research_evidence_node_appends_online_docs(monkeypatch, caplog)
         "new_cache_notes=0 reused_cache_sources=1"
         in caplog.text
     )
+
+
+def test_collect_research_evidence_node_passes_discovered_url_as_extra(monkeypatch) -> None:
+    settings = replace(parse_settings(valid_settings_dict()), orchestrator_ai_enabled=True)
+    monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.load_settings", lambda: settings)
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.save_online_source_to_cache",
+        lambda **_kwargs: False,
+    )
+
+    seen_kwargs: dict = {}
+
+    def fake_collect_online_research_sources(request, _settings, **kwargs):
+        seen_kwargs["request"] = request
+        seen_kwargs.update(kwargs)
+        return []
+
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.collect_online_research_sources",
+        fake_collect_online_research_sources,
+    )
+
+    state = graph_state(
+        online_research_approved=True,
+        discovered_source_url="https://core.telegram.org/bots/api",
+    )
+
+    collect_research_evidence_node(state)
+
+    assert seen_kwargs["extra_urls"] == ["https://core.telegram.org/bots/api"]
+
+
+def test_collect_research_evidence_node_no_extra_urls_when_nothing_discovered(
+    monkeypatch,
+) -> None:
+    settings = replace(parse_settings(valid_settings_dict()), orchestrator_ai_enabled=True)
+    monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.load_settings", lambda: settings)
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.save_online_source_to_cache",
+        lambda **_kwargs: False,
+    )
+
+    seen_kwargs: dict = {}
+
+    def fake_collect_online_research_sources(request, _settings, **kwargs):
+        seen_kwargs["request"] = request
+        seen_kwargs.update(kwargs)
+        return []
+
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.collect_online_research_sources",
+        fake_collect_online_research_sources,
+    )
+
+    state = graph_state(online_research_approved=True)
+
+    collect_research_evidence_node(state)
+
+    assert seen_kwargs["extra_urls"] is None
 
 
 def test_run_coding_agent_node_override_can_disable_execution(monkeypatch) -> None:
@@ -464,10 +646,11 @@ def test_graph_runs_to_disabled_coding_agent_result(monkeypatch) -> None:
         return settings
 
     class _SimpleResearchResult:
-        is_complex = False
+        has_gap = False
+        gap_question = ""
         sources_found = 0
         online_research_needed = False
-        complexity_reason = "Simple task."
+        gap_reason = "No external knowledge gap identified."
         usable_source_titles: list[str] = []
         usable_source_locations: list[str] = []
         usable_source_summaries: list[str] = []
@@ -476,7 +659,7 @@ def test_graph_runs_to_disabled_coding_agent_result(monkeypatch) -> None:
     monkeypatch.setattr("ai_tech_lead.risk_reviewer.load_settings", fake_load_settings)
     monkeypatch.setattr(
         "ai_tech_lead.coding_workflow_graph.check_research_requirements",
-        lambda _request, _settings: _SimpleResearchResult(),
+        lambda _request, _settings, **_kwargs: _SimpleResearchResult(),
     )
     app = build_graph(execute_coding_agent_override=False)
 
@@ -516,10 +699,11 @@ def test_already_approved_subprocess_state_skips_approval_interrupt(monkeypatch)
         return PlanReviewDecision(approved=True, reason="Plan is fine.", correction="")
 
     class _SimpleResearchResult:
-        is_complex = False
+        has_gap = False
+        gap_question = ""
         sources_found = 0
         online_research_needed = False
-        complexity_reason = "Simple task."
+        gap_reason = "No external knowledge gap identified."
         usable_source_titles: list[str] = []
         usable_source_locations: list[str] = []
         usable_source_summaries: list[str] = []
@@ -533,7 +717,7 @@ def test_already_approved_subprocess_state_skips_approval_interrupt(monkeypatch)
     monkeypatch.setattr("ai_tech_lead.risk_reviewer.load_settings", fake_load_settings)
     monkeypatch.setattr(
         "ai_tech_lead.coding_workflow_graph.check_research_requirements",
-        lambda _request, _settings: _SimpleResearchResult(),
+        lambda _request, _settings, **_kwargs: _SimpleResearchResult(),
     )
     monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.review_plan", fake_review_plan)
     monkeypatch.setattr(
@@ -667,10 +851,11 @@ def test_rejected_graph_resumes_without_coding_agent_result_index_error(monkeypa
         return settings
 
     class _SimpleResearchResult:
-        is_complex = False
+        has_gap = False
+        gap_question = ""
         sources_found = 0
         online_research_needed = False
-        complexity_reason = "Simple task."
+        gap_reason = "No external knowledge gap identified."
         usable_source_titles: list[str] = []
         usable_source_locations: list[str] = []
         usable_source_summaries: list[str] = []
@@ -679,7 +864,7 @@ def test_rejected_graph_resumes_without_coding_agent_result_index_error(monkeypa
     monkeypatch.setattr("ai_tech_lead.risk_reviewer.load_settings", fake_load_settings)
     monkeypatch.setattr(
         "ai_tech_lead.coding_workflow_graph.check_research_requirements",
-        lambda _request, _settings: _SimpleResearchResult(),
+        lambda _request, _settings, **_kwargs: _SimpleResearchResult(),
     )
 
     app = build_graph(checkpointer_storage=MemorySaver(), execute_coding_agent_override=False)
@@ -690,11 +875,12 @@ def test_rejected_graph_resumes_without_coding_agent_result_index_error(monkeypa
 
     assert state_snapshot.next == (NodeName.APPROVAL_INTERRUPT,)
 
-    app.invoke(Command(resume={"approved": False, "approved_by": ""}), config=thread_config)
+    app.invoke(Command(resume={"action": "cancel"}), config=thread_config)
 
     final_state = app.get_state(thread_config)
     assert final_state.next == ()
     assert final_state.values["approved"] is False
+    assert final_state.values["approval_action"] == "cancel"
     assert final_state.values["coding_agent_result"] == ""
 
 
@@ -705,15 +891,16 @@ def test_rejected_research_interrupt_ends_graph(monkeypatch) -> None:
         return settings
 
     class _ResearchResult:
-        is_complex = True
+        has_gap = True
+        gap_question = "What are the official retry semantics for this integration?"
         sources_found = 0
         online_research_needed = True
-        complexity_reason = "Needs sources."
+        gap_reason = "Needs sources."
         usable_source_titles: list[str] = []
         usable_source_locations: list[str] = []
         usable_source_summaries: list[str] = []
 
-    def fake_check_research_requirements(_request, _settings):
+    def fake_check_research_requirements(_request, _settings, **_kwargs):
         return _ResearchResult()
 
     monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.load_settings", fake_load_settings)
@@ -764,6 +951,26 @@ def test_route_after_review_plan_reviewer_unavailable_goes_to_human() -> None:
     assert route_after_review_plan(state) == NodeName.PLAN_INTERRUPT
 
 
+def test_route_after_verify_completion_complete_goes_to_end() -> None:
+    state = graph_state(verification_status="complete")
+    assert route_after_verify_completion(state) == NodeName.END_NODE
+
+
+def test_route_after_verify_completion_failed_goes_to_end() -> None:
+    state = graph_state(verification_status="failed")
+    assert route_after_verify_completion(state) == NodeName.END_NODE
+
+
+def test_route_after_verify_completion_correction_required_loops_back() -> None:
+    state = graph_state(verification_status="correction_required")
+    assert route_after_verify_completion(state) == NodeName.CREATE_AGENT_INSTRUCTION
+
+
+def test_route_after_verify_completion_human_required_goes_to_interrupt() -> None:
+    state = graph_state(verification_status="human_verification_required")
+    assert route_after_verify_completion(state) == NodeName.COMPLETION_VERIFICATION_INTERRUPT
+
+
 def test_workflow_scenario_approval_interrupt_resumes_to_success(monkeypatch) -> None:
     settings = replace(
         parse_settings(valid_settings_dict()),
@@ -776,7 +983,7 @@ def test_workflow_scenario_approval_interrupt_resumes_to_success(monkeypatch) ->
     monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.load_settings", lambda: settings)
     monkeypatch.setattr(
         "ai_tech_lead.coding_workflow_graph.check_research_requirements",
-        lambda _request, _settings: _research_result(is_complex=False),
+        lambda _request, _settings, **_kwargs: _research_result(has_gap=False),
     )
     monkeypatch.setattr(
         "ai_tech_lead.coding_workflow_graph.review_task_risk",
@@ -836,6 +1043,8 @@ def test_workflow_scenario_approval_interrupt_resumes_to_success(monkeypatch) ->
         fake_run_coding_agent,
     )
 
+    _mock_verify_completion_complete(monkeypatch)
+
     app = build_graph(checkpointer_storage=MemorySaver(), execute_coding_agent_override=False)
     thread_config = {"configurable": {"thread_id": "workflow-approval-success"}}
 
@@ -845,7 +1054,7 @@ def test_workflow_scenario_approval_interrupt_resumes_to_success(monkeypatch) ->
     assert state_snapshot.next == (NodeName.APPROVAL_INTERRUPT,)
 
     app.invoke(
-        Command(resume={"approved": True, "approved_by": "telegram-operator"}),
+        Command(resume={"action": "approve", "approved_by": "telegram-operator"}),
         config=thread_config,
     )
 
@@ -865,6 +1074,206 @@ def test_workflow_scenario_approval_interrupt_resumes_to_success(monkeypatch) ->
     ]
 
 
+def _approval_loop_settings():
+    return replace(
+        parse_settings(valid_settings_dict()),
+        orchestrator_ai_enabled=True,
+        execute_coding_agent=False,
+    )
+
+
+def _patch_common_approval_loop_mocks(monkeypatch, settings, *, analyse_task_fn=None):
+    monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.load_settings", lambda: settings)
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.check_research_requirements",
+        lambda _request, _settings, **_kwargs: _research_result(has_gap=False),
+    )
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.review_task_risk",
+        lambda _request: RiskReviewDecision(
+            needs_approval=True,
+            approval_reason="High-risk task needs explicit approval.",
+            risk_level="HIGH",
+        ),
+    )
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.analyse_task",
+        analyse_task_fn
+        or (
+            lambda **_kwargs: TechLeadAnalysis(
+                task_statement="Update the runtime docs safely.",
+                tech_direction="Keep the change scoped to documentation and tests.",
+            )
+        ),
+    )
+
+
+def test_workflow_scenario_request_changes_loops_back_with_feedback(monkeypatch) -> None:
+    settings = _approval_loop_settings()
+    seen_task_feedback: list[list[str]] = []
+
+    def fake_analyse_task(**kwargs):
+        feedback = list(kwargs["task_feedback"])
+        seen_task_feedback.append(feedback)
+        if feedback:
+            return TechLeadAnalysis(
+                task_statement="Update the runtime docs, docs-only as requested.",
+                tech_direction="Keep the change scoped to documentation only.",
+            )
+        return TechLeadAnalysis(
+            task_statement="Update the runtime docs safely.",
+            tech_direction="Keep the change scoped to documentation and tests.",
+        )
+
+    _patch_common_approval_loop_mocks(monkeypatch, settings, analyse_task_fn=fake_analyse_task)
+
+    app = build_graph(checkpointer_storage=MemorySaver(), execute_coding_agent_override=False)
+    thread_config = {"configurable": {"thread_id": "workflow-request-changes"}}
+
+    app.invoke(graph_state(request="Update the runtime docs."), config=thread_config)
+    state_snapshot = app.get_state(thread_config)
+    assert state_snapshot.next == (NodeName.APPROVAL_INTERRUPT,)
+
+    app.invoke(
+        Command(
+            resume={"action": "request_changes", "feedback": "Keep this to docs only."}
+        ),
+        config=thread_config,
+    )
+
+    state_snapshot = app.get_state(thread_config)
+
+    # Still paused at the approval interrupt with the regenerated proposal.
+    assert state_snapshot.next == (NodeName.APPROVAL_INTERRUPT,)
+    assert state_snapshot.values["task_feedback"] == ["Keep this to docs only."]
+    assert state_snapshot.values["approval_revision_count"] == 1
+    assert state_snapshot.values["approved"] is False
+    assert state_snapshot.values["formulated_task"] == (
+        "Update the runtime docs, docs-only as requested."
+    )
+    # The second analyse_task call saw the appended feedback.
+    assert seen_task_feedback == [[], ["Keep this to docs only."]]
+
+
+def test_workflow_scenario_ask_question_preserves_state_and_reasks(monkeypatch) -> None:
+    settings = _approval_loop_settings()
+    _patch_common_approval_loop_mocks(monkeypatch, settings)
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.collect_code_context",
+        lambda *_args, **_kwargs: [],
+    )
+    seen_questions: list[str] = []
+
+    def fake_answer_operator_question(*, question, **_kwargs):
+        seen_questions.append(question)
+        return "Only docs/RUNTIME_RUNBOOK.md will change."
+
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.answer_operator_question",
+        fake_answer_operator_question,
+    )
+
+    app = build_graph(checkpointer_storage=MemorySaver(), execute_coding_agent_override=False)
+    thread_config = {"configurable": {"thread_id": "workflow-ask-question"}}
+
+    app.invoke(graph_state(request="Update the runtime docs."), config=thread_config)
+    before_snapshot = app.get_state(thread_config)
+    assert before_snapshot.next == (NodeName.APPROVAL_INTERRUPT,)
+
+    app.invoke(
+        Command(
+            resume={"action": "ask_question", "question": "Which files will this touch?"}
+        ),
+        config=thread_config,
+    )
+
+    after_snapshot = app.get_state(thread_config)
+
+    assert after_snapshot.next == (NodeName.APPROVAL_INTERRUPT,)
+    assert seen_questions == ["Which files will this touch?"]
+    # Task/project state must be untouched by asking a question.
+    assert after_snapshot.values["formulated_task"] == before_snapshot.values["formulated_task"]
+    assert after_snapshot.values["brief"] == before_snapshot.values["brief"]
+    assert after_snapshot.values["approval_reason"] == before_snapshot.values["approval_reason"]
+    assert after_snapshot.values["task_feedback"] == before_snapshot.values["task_feedback"]
+    assert after_snapshot.values["approval_last_question"] == "Which files will this touch?"
+    assert after_snapshot.values["approval_last_answer"] == (
+        "Only docs/RUNTIME_RUNBOOK.md will change."
+    )
+    # The re-shown interrupt displays the same four choices, with the answer visible.
+    interrupt_value = after_snapshot.tasks[0].interrupts[0].value
+    assert interrupt_value["last_question"] == "Which files will this touch?"
+    assert interrupt_value["last_answer"] == "Only docs/RUNTIME_RUNBOOK.md will change."
+
+
+def test_workflow_scenario_cancel_ends_workflow(monkeypatch) -> None:
+    settings = _approval_loop_settings()
+    _patch_common_approval_loop_mocks(monkeypatch, settings)
+
+    app = build_graph(checkpointer_storage=MemorySaver(), execute_coding_agent_override=False)
+    thread_config = {"configurable": {"thread_id": "workflow-cancel"}}
+
+    app.invoke(graph_state(request="Update the runtime docs."), config=thread_config)
+    assert app.get_state(thread_config).next == (NodeName.APPROVAL_INTERRUPT,)
+
+    app.invoke(Command(resume={"action": "cancel"}), config=thread_config)
+
+    final_state = app.get_state(thread_config)
+    assert final_state.next == ()
+    assert final_state.values["approved"] is False
+    assert final_state.values["approval_action"] == "cancel"
+    assert final_state.values["coding_agent_result"] == ""
+
+
+def test_workflow_scenario_unrecognized_resume_fails_closed_to_cancel(monkeypatch) -> None:
+    settings = _approval_loop_settings()
+    _patch_common_approval_loop_mocks(monkeypatch, settings)
+
+    app = build_graph(checkpointer_storage=MemorySaver(), execute_coding_agent_override=False)
+    thread_config = {"configurable": {"thread_id": "workflow-malformed-resume"}}
+
+    app.invoke(graph_state(request="Update the runtime docs."), config=thread_config)
+    assert app.get_state(thread_config).next == (NodeName.APPROVAL_INTERRUPT,)
+
+    # Old-contract / malformed resume values must never be treated as approval.
+    app.invoke(Command(resume={"approved": True}), config=thread_config)
+
+    final_state = app.get_state(thread_config)
+    assert final_state.next == ()
+    assert final_state.values["approved"] is False
+    assert final_state.values["approval_action"] == "cancel"
+
+
+def test_workflow_scenario_revision_cap_stops_safely(monkeypatch) -> None:
+    settings = _approval_loop_settings()
+    _patch_common_approval_loop_mocks(monkeypatch, settings)
+
+    app = build_graph(checkpointer_storage=MemorySaver(), execute_coding_agent_override=False)
+    thread_config = {"configurable": {"thread_id": "workflow-revision-cap"}}
+
+    app.invoke(graph_state(request="Update the runtime docs."), config=thread_config)
+    assert app.get_state(thread_config).next == (NodeName.APPROVAL_INTERRUPT,)
+
+    for cycle in range(1, 5):
+        app.invoke(
+            Command(resume={"action": "request_changes", "feedback": f"Round {cycle}."}),
+            config=thread_config,
+        )
+        state_snapshot = app.get_state(thread_config)
+        assert state_snapshot.next == (NodeName.APPROVAL_INTERRUPT,), f"cycle {cycle}"
+        assert state_snapshot.values["approval_revision_count"] == cycle
+
+    # 5th request-changes hits the cap and stops instead of looping again.
+    app.invoke(
+        Command(resume={"action": "request_changes", "feedback": "Round 5."}),
+        config=thread_config,
+    )
+    final_state = app.get_state(thread_config)
+    assert final_state.next == ()
+    assert final_state.values["approval_revision_count"] == 5
+    assert final_state.values["approved"] is False
+
+
 def test_workflow_scenario_research_interrupt_resumes_to_success(monkeypatch) -> None:
     settings = replace(
         parse_settings(valid_settings_dict()),
@@ -876,11 +1285,12 @@ def test_workflow_scenario_research_interrupt_resumes_to_success(monkeypatch) ->
     monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.load_settings", lambda: settings)
     monkeypatch.setattr(
         "ai_tech_lead.coding_workflow_graph.check_research_requirements",
-        lambda _request, _settings: _research_result(
-            is_complex=True,
+        lambda _request, _settings, **_kwargs: _research_result(
+            has_gap=True,
+            gap_question="What are LangGraph's official interrupt semantics?",
             sources_found=1,
             online_research_needed=True,
-            complexity_reason="LangGraph interrupt semantics should be checked.",
+            gap_reason="LangGraph interrupt semantics should be checked.",
             titles=["Local workflow notes"],
             locations=["docs/GRAPH_WORKFLOW.md"],
             summaries=["Current local workflow and interrupt notes."],
@@ -888,7 +1298,7 @@ def test_workflow_scenario_research_interrupt_resumes_to_success(monkeypatch) ->
     )
     monkeypatch.setattr(
         "ai_tech_lead.coding_workflow_graph.collect_online_research_sources",
-        lambda _request, _settings: [
+        lambda _request, _settings, **_kwargs: [
             SimpleNamespace(
                 title="LangGraph interrupts",
                 location="https://docs.langchain.com/oss/python/langgraph/interrupts",
@@ -948,6 +1358,7 @@ def test_workflow_scenario_research_interrupt_resumes_to_success(monkeypatch) ->
     )
 
     app = build_graph(checkpointer_storage=MemorySaver(), execute_coding_agent_override=False)
+    _mock_verify_completion_complete(monkeypatch)
     thread_config = {"configurable": {"thread_id": "workflow-research-success"}}
 
     app.invoke(graph_state(request="Verify interrupt workflow docs."), config=thread_config)
@@ -999,7 +1410,7 @@ def test_workflow_scenario_plan_guidance_resume_feeds_next_plan_attempt(monkeypa
     monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.load_settings", lambda: settings)
     monkeypatch.setattr(
         "ai_tech_lead.coding_workflow_graph.check_research_requirements",
-        lambda _request, _settings: _research_result(is_complex=False),
+        lambda _request, _settings, **_kwargs: _research_result(has_gap=False),
     )
     monkeypatch.setattr(
         "ai_tech_lead.coding_workflow_graph.review_task_risk",
@@ -1052,6 +1463,7 @@ def test_workflow_scenario_plan_guidance_resume_feeds_next_plan_attempt(monkeypa
     )
 
     app = build_graph(checkpointer_storage=MemorySaver(), execute_coding_agent_override=False)
+    _mock_verify_completion_complete(monkeypatch)
     thread_config = {"configurable": {"thread_id": "workflow-plan-guidance-success"}}
 
     app.invoke(graph_state(request="Tighten the workflow docs."), config=thread_config)
@@ -1086,7 +1498,7 @@ def test_workflow_scenario_failure_guidance_resume_retries_to_success(monkeypatc
     monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.load_settings", lambda: settings)
     monkeypatch.setattr(
         "ai_tech_lead.coding_workflow_graph.check_research_requirements",
-        lambda _request, _settings: _research_result(is_complex=False),
+        lambda _request, _settings, **_kwargs: _research_result(has_gap=False),
     )
     monkeypatch.setattr(
         "ai_tech_lead.coding_workflow_graph.review_task_risk",
@@ -1138,6 +1550,7 @@ def test_workflow_scenario_failure_guidance_resume_retries_to_success(monkeypatc
     )
 
     app = build_graph(checkpointer_storage=MemorySaver(), execute_coding_agent_override=False)
+    _mock_verify_completion_complete(monkeypatch)
     thread_config = {"configurable": {"thread_id": "workflow-failure-guidance-success"}}
 
     app.invoke(graph_state(request="Improve workflow tests."), config=thread_config)
@@ -1159,6 +1572,236 @@ def test_workflow_scenario_failure_guidance_resume_retries_to_success(monkeypatc
     assert len(implementation_instructions) == 3
     assert "lint failed" in implementation_instructions[1]
     assert "Narrow the fix to tests first." in implementation_instructions[2]
+
+
+def _patch_common_success_path_mocks(monkeypatch, settings) -> None:
+    monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.load_settings", lambda: settings)
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.check_research_requirements",
+        lambda _request, _settings, **_kwargs: _research_result(has_gap=False),
+    )
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.review_task_risk",
+        lambda _request: RiskReviewDecision(False, "Safe local tests-only work.", "LOW"),
+    )
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.analyse_task",
+        lambda **_kwargs: TechLeadAnalysis(
+            task_statement="Add a logout button.",
+            tech_direction="Small UI change only.",
+        ),
+    )
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.render_prompt",
+        lambda _prompt_key, **replacements: f"PLAN::{replacements['formulated_task']}",
+    )
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.review_plan",
+        lambda **_kwargs: PlanReviewDecision(True, "Plan is bounded.", ""),
+    )
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.build_agent_instruction",
+        lambda **kwargs: f"IMPLEMENT::{kwargs['agent_correction'] or 'first attempt'}",
+    )
+
+
+def test_workflow_scenario_completion_verification_correction_then_success(monkeypatch) -> None:
+    settings = replace(
+        parse_settings(valid_settings_dict()),
+        orchestrator_ai_enabled=True,
+        execute_coding_agent=False,
+    )
+    _patch_common_success_path_mocks(monkeypatch, settings)
+
+    implementation_instructions: list[str] = []
+
+    def fake_run_coding_agent(*, agent_instruction, **_kwargs):
+        if agent_instruction.startswith("PLAN::"):
+            return _FakeAgentResult(stdout="1. Add button\nDone when: logout works.")
+        implementation_instructions.append(agent_instruction)
+        return _FakeAgentResult(
+            message="implemented",
+            returncode=0,
+            changed_files_delta=("src/app/settings.py",),
+            command=["codex"],
+        )
+
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.run_coding_agent", fake_run_coding_agent
+    )
+
+    verification_calls: list[str] = []
+
+    def fake_verify_completion(**kwargs):
+        verification_calls.append(kwargs.get("prior_correction", ""))
+        if len(verification_calls) == 1:
+            return CompletionVerificationDecision(
+                status="correction_required",
+                reason="Logout button does not sign the user out.",
+                correction="Wire the click handler to the sign-out endpoint.",
+            )
+        return CompletionVerificationDecision(
+            status="complete", reason="Sign-out now works.", correction=""
+        )
+
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.verify_completion", fake_verify_completion
+    )
+
+    app = build_graph(checkpointer_storage=MemorySaver(), execute_coding_agent_override=False)
+    thread_config = {"configurable": {"thread_id": "workflow-verification-correction-success"}}
+
+    app.invoke(graph_state(request="Add a logout button."), config=thread_config)
+    final_state = app.get_state(thread_config)
+
+    assert final_state.next == ()
+    assert final_state.values["verification_status"] == "complete"
+    assert final_state.values["verification_attempt_count"] == 1
+    assert len(implementation_instructions) == 2
+    assert "Wire the click handler to the sign-out endpoint." in implementation_instructions[1]
+
+
+def test_workflow_scenario_completion_verification_correction_limit_reached_ends_failed(
+    monkeypatch,
+) -> None:
+    settings = replace(
+        parse_settings(valid_settings_dict()),
+        orchestrator_ai_enabled=True,
+        execute_coding_agent=False,
+    )
+    _patch_common_success_path_mocks(monkeypatch, settings)
+
+    implementation_instructions: list[str] = []
+
+    def fake_run_coding_agent(*, agent_instruction, **_kwargs):
+        if agent_instruction.startswith("PLAN::"):
+            return _FakeAgentResult(stdout="1. Add button\nDone when: logout works.")
+        implementation_instructions.append(agent_instruction)
+        return _FakeAgentResult(
+            message="implemented",
+            returncode=0,
+            changed_files_delta=("src/app/settings.py",),
+            command=["codex"],
+        )
+
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.run_coding_agent", fake_run_coding_agent
+    )
+
+    def fake_verify_completion(**_kwargs):
+        return CompletionVerificationDecision(
+            status="correction_required",
+            reason="Logout button still does not sign the user out.",
+            correction="Wire the click handler to the sign-out endpoint.",
+        )
+
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.verify_completion", fake_verify_completion
+    )
+
+    app = build_graph(checkpointer_storage=MemorySaver(), execute_coding_agent_override=False)
+    thread_config = {"configurable": {"thread_id": "workflow-verification-correction-limit"}}
+
+    app.invoke(graph_state(request="Add a logout button."), config=thread_config)
+    final_state = app.get_state(thread_config)
+
+    assert final_state.next == ()
+    assert final_state.values["verification_status"] == "failed"
+    assert final_state.values["verification_attempt_count"] == 1
+    assert len(implementation_instructions) == 2
+
+
+def test_workflow_scenario_completion_verification_human_required_confirms_complete(
+    monkeypatch,
+) -> None:
+    settings = replace(
+        parse_settings(valid_settings_dict()),
+        orchestrator_ai_enabled=True,
+        execute_coding_agent=False,
+    )
+    _patch_common_success_path_mocks(monkeypatch, settings)
+
+    def fake_run_coding_agent(*, agent_instruction, **_kwargs):
+        if agent_instruction.startswith("PLAN::"):
+            return _FakeAgentResult(stdout="1. Add button\nDone when: logout works.")
+        return _FakeAgentResult(
+            message="implemented",
+            returncode=0,
+            changed_files_delta=("src/app/settings.py",),
+            command=["codex"],
+        )
+
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.run_coding_agent", fake_run_coding_agent
+    )
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.verify_completion",
+        lambda **_kwargs: CompletionVerificationDecision(
+            status="human_verification_required",
+            reason="Requires a visual check of the button placement.",
+            correction="",
+        ),
+    )
+
+    app = build_graph(checkpointer_storage=MemorySaver(), execute_coding_agent_override=False)
+    thread_config = {"configurable": {"thread_id": "workflow-verification-human-confirm"}}
+
+    app.invoke(graph_state(request="Add a logout button."), config=thread_config)
+    state_snapshot = app.get_state(thread_config)
+
+    assert state_snapshot.next == (NodeName.COMPLETION_VERIFICATION_INTERRUPT,)
+
+    app.invoke(Command(resume={"decision": "confirm_complete"}), config=thread_config)
+    final_state = app.get_state(thread_config)
+
+    assert final_state.next == ()
+    assert final_state.values["verification_status"] == "complete"
+
+
+def test_workflow_scenario_completion_verification_human_required_rejects(monkeypatch) -> None:
+    settings = replace(
+        parse_settings(valid_settings_dict()),
+        orchestrator_ai_enabled=True,
+        execute_coding_agent=False,
+    )
+    _patch_common_success_path_mocks(monkeypatch, settings)
+
+    def fake_run_coding_agent(*, agent_instruction, **_kwargs):
+        if agent_instruction.startswith("PLAN::"):
+            return _FakeAgentResult(stdout="1. Add button\nDone when: logout works.")
+        return _FakeAgentResult(
+            message="implemented",
+            returncode=0,
+            changed_files_delta=("src/app/settings.py",),
+            command=["codex"],
+        )
+
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.run_coding_agent", fake_run_coding_agent
+    )
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.verify_completion",
+        lambda **_kwargs: CompletionVerificationDecision(
+            status="human_verification_required",
+            reason="Requires a visual check of the button placement.",
+            correction="",
+        ),
+    )
+
+    app = build_graph(checkpointer_storage=MemorySaver(), execute_coding_agent_override=False)
+    thread_config = {"configurable": {"thread_id": "workflow-verification-human-reject"}}
+
+    app.invoke(graph_state(request="Add a logout button."), config=thread_config)
+
+    app.invoke(
+        Command(resume={"decision": "reject", "text": "Button is misaligned."}),
+        config=thread_config,
+    )
+    final_state = app.get_state(thread_config)
+
+    assert final_state.next == ()
+    assert final_state.values["verification_status"] == "failed"
+    assert final_state.values["verification_reason"] == "Button is misaligned."
 
 
 def test_graph_has_no_clarification_gate_nodes() -> None:
@@ -1215,3 +1858,120 @@ def test_unresolved_reference_routes_to_clarification_before_research() -> None:
     assert state["orchestrator_input_question"] == (
         "What does AF-052 refer to, and where should I retrieve it from?"
     )
+
+
+def test_request_plan_node_uses_resolved_target_project_root(monkeypatch, tmp_path) -> None:
+    runtime_root = tmp_path / "ai-tech-lead"
+    target_root = tmp_path / "agent-hub"
+    runtime_root.mkdir()
+    target_root.mkdir()
+    settings = replace(
+        parse_settings(valid_settings_dict()),
+        project_root=str(runtime_root),
+        execute_coding_agent=False,
+    )
+    captured: dict[str, Path] = {}
+
+    monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.load_settings", lambda: settings)
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.render_prompt",
+        lambda _prompt_key, **_replacements: "plan",
+    )
+
+    def fake_run_coding_agent(*, project_root, **_kwargs):
+        captured["project_root"] = project_root
+        return _FakeAgentResult(stdout="Plan", returncode=0)
+
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.run_coding_agent", fake_run_coding_agent
+    )
+
+    request_plan_node(graph_state(resolved_project_root=str(target_root)))
+
+    assert captured["project_root"] == target_root.resolve()
+
+
+def test_instruction_assembly_uses_resolved_target_project_root(monkeypatch, tmp_path) -> None:
+    runtime_root = tmp_path / "ai-tech-lead"
+    target_root = tmp_path / "agent-factory"
+    runtime_root.mkdir()
+    target_root.mkdir()
+    settings = replace(parse_settings(valid_settings_dict()), project_root=str(runtime_root))
+    captured: dict[str, Path] = {}
+
+    monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.load_settings", lambda: settings)
+
+    def fake_build_agent_instruction(**kwargs):
+        captured["project_root"] = kwargs["project_root"]
+        return "instruction"
+
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.build_agent_instruction",
+        fake_build_agent_instruction,
+    )
+
+    create_agent_instruction_node(
+        graph_state(
+            resolved_project_root=str(target_root),
+            brief="brief",
+            formulated_task="task",
+        )
+    )
+
+    assert captured["project_root"] == target_root.resolve()
+
+
+def test_run_coding_agent_node_uses_resolved_target_project_root(monkeypatch, tmp_path) -> None:
+    runtime_root = tmp_path / "ai-tech-lead"
+    target_root = tmp_path / "agent-hub"
+    runtime_root.mkdir()
+    target_root.mkdir()
+    settings = replace(
+        parse_settings(valid_settings_dict()),
+        project_root=str(runtime_root),
+        execute_coding_agent=False,
+    )
+    captured: dict[str, Path] = {}
+
+    monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.load_settings", lambda: settings)
+
+    def fake_run_coding_agent(*, project_root, **_kwargs):
+        captured["project_root"] = project_root
+        return _FakeAgentResult(returncode=0)
+
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.run_coding_agent", fake_run_coding_agent
+    )
+
+    run_coding_agent_node(
+        graph_state(
+            resolved_project_root=str(target_root),
+            agent_instruction="Do the task",
+        )
+    )
+
+    assert captured["project_root"] == target_root.resolve()
+
+
+def test_run_coding_agent_node_rejects_conflicting_project_root_override(
+    monkeypatch, tmp_path
+) -> None:
+    runtime_root = tmp_path / "ai-tech-lead"
+    target_root = tmp_path / "agent-hub"
+    conflicting_root = tmp_path / "agent-factory"
+    for path in (runtime_root, target_root, conflicting_root):
+        path.mkdir()
+    settings = replace(parse_settings(valid_settings_dict()), project_root=str(runtime_root))
+
+    monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.load_settings", lambda: settings)
+
+    import pytest
+
+    with pytest.raises(ValueError, match="does not match"):
+        run_coding_agent_node(
+            graph_state(
+                resolved_project_root=str(target_root),
+                agent_instruction="Do the task",
+            ),
+            project_root_override=str(conflicting_root),
+        )

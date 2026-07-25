@@ -34,6 +34,17 @@ class OrchestratorLlmResult:
     cost_usd: float = 0.0
 
 
+@dataclass(frozen=True)
+class OrchestratorWebSearchResult:
+    """Raw parsed response from a web-search-enabled orchestrator call."""
+
+    data: dict
+    text: str
+    tokens_in: int = 0
+    tokens_out: int = 0
+    cost_usd: float = 0.0
+
+
 class OrchestratorLlmError(RuntimeError):
     """Raised when the orchestrator LLM cannot return a usable response."""
 
@@ -121,6 +132,75 @@ def call_orchestrator_llm(*, prompt: str, config: OrchestratorLlmConfig) -> Orch
     )
     return OrchestratorLlmResult(
         text=text, tokens_in=tokens_in, tokens_out=tokens_out, cost_usd=cost_usd
+    )
+
+
+def call_orchestrator_web_search(
+    *, query: str, config: OrchestratorLlmConfig
+) -> OrchestratorWebSearchResult:
+    """Call OpenAI's Responses API with the hosted web_search tool enabled.
+
+    Kept as a separate function from call_orchestrator_llm so tool-use
+    capability is isolated to this one call site — every other orchestrator
+    LLM call (risk review, plan review, tech-lead analysis, the knowledge-gap
+    check) stays a plain text-completion request with no tools.
+    """
+
+    load_local_env()
+    start_time = time.perf_counter()
+    api_key = os.environ.get(OPENAI_API_KEY_ENV, "").strip()
+    if not api_key or api_key == "replace-with-your-project-service-account-key":
+        logger.info("Web search call elapsed: 0ms model=%s status=skipped", config.model)
+        raise OrchestratorLlmError("OPENAI_API_KEY is not configured.")
+
+    payload = {
+        "model": config.model,
+        "input": query,
+        "max_output_tokens": config.max_output_tokens,
+        "tools": [{"type": "web_search"}],
+    }
+    request = Request(
+        OPENAI_RESPONSES_URL,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+
+    try:
+        with urlopen(request, timeout=config.timeout_seconds) as response:
+            body = response.read().decode("utf-8")
+    except HTTPError as error:
+        error_body = error.read().decode("utf-8", errors="replace")
+        logger.info("Web search call elapsed: model=%s status=error", config.model)
+        raise OrchestratorLlmError(f"OpenAI web search API error: {error_body}") from error
+    except URLError as error:
+        logger.info("Web search call elapsed: model=%s status=error", config.model)
+        raise OrchestratorLlmError(f"OpenAI web search API request failed: {error.reason}") from error
+
+    try:
+        data = json.loads(body)
+    except json.JSONDecodeError as error:
+        raise OrchestratorLlmError(f"OpenAI web search response was not valid JSON: {error}") from error
+
+    text = _extract_response_text(data)
+    elapsed_ms = (time.perf_counter() - start_time) * 1000
+    usage = data.get("usage", {})
+    tokens_in = int(usage.get("input_tokens", 0))
+    tokens_out = int(usage.get("output_tokens", 0))
+    cost_usd = _estimate_cost(config.model, tokens_in, tokens_out)
+    logger.info(
+        "Web search call elapsed: %.0fms model=%s status=ok in=%d out=%d cost_total=$%.5f",
+        elapsed_ms,
+        config.model,
+        tokens_in,
+        tokens_out,
+        cost_usd,
+    )
+    return OrchestratorWebSearchResult(
+        data=data, text=text, tokens_in=tokens_in, tokens_out=tokens_out, cost_usd=cost_usd
     )
 
 

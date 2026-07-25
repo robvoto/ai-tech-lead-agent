@@ -24,6 +24,7 @@ def test_build_backlog_refinement_from_text_uses_cache_and_ai(monkeypatch, tmp_p
         summary="Cache-first backlog refinement with structured output.",
         body="## Summary\nCache-first backlog refinement.",
         sources=["https://docs.langchain.com/oss/python/langchain/structured-output"],
+        question="How should backlog refinement use structured output?",
         refreshed_on=None,
         freshness_risk="Medium: no refresh date.",
     )

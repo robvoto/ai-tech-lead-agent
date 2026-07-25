@@ -1,9 +1,15 @@
-"""Check research evidence requirements before complex tasks proceed.
+"""Check research evidence requirements before a task proceeds.
 
-Complexity is assessed by an LLM call when AI is enabled.
-Relevant local docs and cached research notes are scanned for usable sources.
-If the task is complex and the configured local threshold is not met,
-the caller must pause for human approval before continuing.
+The task is asked to name one specific external knowledge gap, not to rate
+complexity — complexity and "do we lack a specific fact" are different
+questions, and a task can be large or architecturally significant while
+needing no external research at all. The LLM sees bounded code context from
+the watched directories alongside the request, so a gap already answered by
+existing code is not flagged. If no gap is named, no research is needed
+regardless of task size. If a gap is named, the local docs/research indexes
+are searched for that exact question; the caller must pause for human
+approval before fetching online docs only if that search does not meet the
+configured local threshold.
 """
 
 from __future__ import annotations
@@ -20,7 +26,8 @@ from .orchestrator_llm import (
     OrchestratorLlmError,
     call_orchestrator_llm,
 )
-from .prompt_loader import RESEARCH_COMPLEXITY_PROMPT_KEY, render_prompt
+from .prompt_loader import RESEARCH_KNOWLEDGE_GAP_PROMPT_KEY, render_prompt
+from .research_code_context import collect_code_context, format_code_context_for_prompt
 from .research_sources import collect_local_research_sources
 
 logger = logging.getLogger(LOGGER_NAME)
@@ -30,10 +37,11 @@ logger = logging.getLogger(LOGGER_NAME)
 class ResearchCheckResult:
     """Decision on whether the task needs research evidence before proceeding."""
 
-    is_complex: bool
+    has_gap: bool
+    gap_question: str
     sources_found: int
     online_research_needed: bool
-    complexity_reason: str
+    gap_reason: str
     usable_source_titles: list[str]
     usable_source_locations: list[str]
     usable_source_summaries: list[str]
@@ -42,11 +50,18 @@ class ResearchCheckResult:
 def check_research_requirements(
     request: str,
     settings: AppSettings,
+    *,
+    code_context_root: str | None = None,
 ) -> ResearchCheckResult:
-    """Assess complexity and check local research evidence adequacy.
+    """Identify a knowledge gap, if any, and check local research evidence adequacy.
 
-    Returns online_research_needed=True if the task is complex and the local
-    docs/research indexes do not meet the configured minimum source count.
+    `code_context_root` scopes the bounded code-context lookup to the resolved
+    target project when the task is about a different project than this one —
+    the local docs/research cache lookup still always uses `settings.project_root`
+    (AI Tech Lead's own shared knowledge base), only the code-context scan moves.
+    Returns online_research_needed=True if a knowledge gap was identified and
+    the local docs/research indexes do not meet the configured minimum source
+    count for that gap question.
     """
 
     if not settings.orchestrator_ai_enabled:
@@ -55,86 +70,95 @@ def check_research_requirements(
             "uncertain and requiring approval."
         )
         logger.info(
-            "[LEARN] Research gate summary: complex=yes local_sources=0 "
+            "[LEARN] Research gate summary: has_gap=yes local_sources=0 "
             "min_required=%d online_approval_needed=yes",
             settings.research_min_local_sources,
         )
         return ResearchCheckResult(
-            is_complex=True,
+            has_gap=True,
+            gap_question=request,
             sources_found=0,
             online_research_needed=True,
-            complexity_reason="AI complexity check disabled; requiring human approval.",
+            gap_reason="AI knowledge-gap check disabled; requiring human approval.",
             usable_source_titles=[],
             usable_source_locations=[],
             usable_source_summaries=[],
         )
 
+    code_context_text = _collect_code_context_text(request, settings, code_context_root)
+
     try:
-        is_complex, reason = _llm_check_complexity(request, settings)
+        has_gap, gap_question, reason = _llm_check_knowledge_gap(
+            request, settings, code_context_text
+        )
     except OrchestratorLlmError as error:
         logger.warning(
-            "Research complexity check LLM unavailable: %s — requiring human approval.",
+            "Research knowledge-gap check LLM unavailable: %s — requiring human approval.",
             error,
         )
         return ResearchCheckResult(
-            is_complex=True,
+            has_gap=True,
+            gap_question=request,
             sources_found=0,
             online_research_needed=True,
-            complexity_reason="Complexity check unavailable; requiring human approval.",
+            gap_reason="Knowledge-gap check unavailable; requiring human approval.",
             usable_source_titles=[],
             usable_source_locations=[],
             usable_source_summaries=[],
         )
     except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
         logger.warning(
-            "Research complexity response invalid: %s — requiring human approval.",
+            "Research knowledge-gap response invalid: %s — requiring human approval.",
             error,
         )
         return ResearchCheckResult(
-            is_complex=True,
+            has_gap=True,
+            gap_question=request,
             sources_found=0,
             online_research_needed=True,
-            complexity_reason="Complexity check response invalid; requiring human approval.",
+            gap_reason="Knowledge-gap check response invalid; requiring human approval.",
             usable_source_titles=[],
             usable_source_locations=[],
             usable_source_summaries=[],
         )
 
     logger.info(
-        "[LEARN] Research complexity verdict: complex=%s reason=%s",
-        "yes" if is_complex else "no",
+        "[LEARN] Research knowledge-gap verdict: has_gap=%s gap_question=%s reason=%s",
+        "yes" if has_gap else "no",
+        gap_question,
         reason,
     )
 
-    if not is_complex:
+    if not has_gap:
         logger.info(
-            "[LEARN] Research gate summary: complex=no local_sources=0 "
+            "[LEARN] Research gate summary: has_gap=no local_sources=0 "
             "min_required=%d online_approval_needed=no",
             settings.research_min_local_sources,
         )
         return ResearchCheckResult(
-            is_complex=False,
+            has_gap=False,
+            gap_question="",
             sources_found=0,
             online_research_needed=False,
-            complexity_reason=reason,
+            gap_reason=reason,
             usable_source_titles=[],
             usable_source_locations=[],
             usable_source_summaries=[],
         )
 
-    entries = collect_local_research_sources(request, settings)
+    entries = collect_local_research_sources(gap_question, settings)
     sources_found = len(entries)
     usable_titles = [entry.title for entry in entries]
     usable_locations = [entry.location for entry in entries]
     usable_summaries = [entry.summary for entry in entries]
     online_research_needed = sources_found < settings.research_min_local_sources
 
-    logger.info("[LEARN] Local research sources found: %d", sources_found)
+    logger.info("[LEARN] Local research sources found for gap question: %d", sources_found)
     logger.info(
         "[LEARN] Online research approval needed: %s", "yes" if online_research_needed else "no"
     )
     logger.info(
-        "[LEARN] Research gate summary: complex=yes local_sources=%d "
+        "[LEARN] Research gate summary: has_gap=yes local_sources=%d "
         "min_required=%d online_approval_needed=%s",
         sources_found,
         settings.research_min_local_sources,
@@ -142,49 +166,68 @@ def check_research_requirements(
     )
 
     return ResearchCheckResult(
-        is_complex=True,
+        has_gap=True,
+        gap_question=gap_question,
         sources_found=sources_found,
         online_research_needed=online_research_needed,
-        complexity_reason=reason,
+        gap_reason=reason,
         usable_source_titles=usable_titles,
         usable_source_locations=usable_locations,
         usable_source_summaries=usable_summaries,
     )
 
 
-_COMPLEXITY_CHECK_ATTEMPTS = 2
+_KNOWLEDGE_GAP_CHECK_ATTEMPTS = 2
 
 
-def _llm_check_complexity(
+def _collect_code_context_text(
     request: str,
     settings: AppSettings,
-) -> tuple[bool, str]:
-    prompt = render_prompt(RESEARCH_COMPLEXITY_PROMPT_KEY, request=request)
+    code_context_root: str | None,
+) -> str:
+    try:
+        sources = collect_code_context(request, settings, project_root_override=code_context_root)
+    except OSError as error:
+        logger.warning("[LEARN] Code context collection failed: %s — continuing with none.", error)
+        return "(none)"
+    return format_code_context_for_prompt(sources)
+
+
+def _llm_check_knowledge_gap(
+    request: str,
+    settings: AppSettings,
+    code_context_text: str,
+) -> tuple[bool, str, str]:
+    prompt = render_prompt(
+        RESEARCH_KNOWLEDGE_GAP_PROMPT_KEY,
+        request=request,
+        code_context=code_context_text,
+    )
     config = OrchestratorLlmConfig(
         model=settings.orchestrator_ai_model,
         max_output_tokens=settings.orchestrator_ai_max_output_tokens,
         timeout_seconds=settings.orchestrator_ai_timeout_seconds,
     )
 
-    last_error: Exception = ValueError("complexity check produced no attempts")
-    for attempt in range(1, _COMPLEXITY_CHECK_ATTEMPTS + 1):
+    last_error: Exception = ValueError("knowledge-gap check produced no attempts")
+    for attempt in range(1, _KNOWLEDGE_GAP_CHECK_ATTEMPTS + 1):
         result = call_orchestrator_llm(prompt=prompt, config=config)
         logger.info(
-            "Research complexity LLM: in=%d out=%d total=%d cost_total=$%.5f",
+            "Research knowledge-gap LLM: in=%d out=%d total=%d cost_total=$%.5f",
             result.tokens_in,
             result.tokens_out,
             result.tokens_in + result.tokens_out,
             result.cost_usd,
         )
         try:
-            payload = _load_complexity_json(result.text)
-            return _parse_complexity_payload(payload)
+            payload = _load_knowledge_gap_json(result.text)
+            return _parse_knowledge_gap_payload(payload)
         except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
             last_error = error
             logger.warning(
-                "Research complexity response invalid on attempt %d/%d: %s — raw response: %r",
+                "Research knowledge-gap response invalid on attempt %d/%d: %s — raw response: %r",
                 attempt,
-                _COMPLEXITY_CHECK_ATTEMPTS,
+                _KNOWLEDGE_GAP_CHECK_ATTEMPTS,
                 error,
                 result.text,
             )
@@ -192,7 +235,7 @@ def _llm_check_complexity(
     raise last_error
 
 
-def _load_complexity_json(raw_text: str) -> dict[str, Any]:
+def _load_knowledge_gap_json(raw_text: str) -> dict[str, Any]:
     """Parse plain JSON or a single Markdown-fenced JSON object."""
 
     text = raw_text.strip()
@@ -202,13 +245,16 @@ def _load_complexity_json(raw_text: str) -> dict[str, Any]:
             text = "\n".join(lines[1:-1]).strip()
     payload = json.loads(text)
     if not isinstance(payload, dict):
-        raise TypeError("complexity response must be a JSON object")
+        raise TypeError("knowledge-gap response must be a JSON object")
     return payload
 
 
-def _parse_complexity_payload(payload: dict[str, Any]) -> tuple[bool, str]:
-    is_complex = payload["is_complex"]
-    if not isinstance(is_complex, bool):
-        raise ValueError("is_complex must be boolean")
+def _parse_knowledge_gap_payload(payload: dict[str, Any]) -> tuple[bool, str, str]:
+    has_gap = payload["has_gap"]
+    if not isinstance(has_gap, bool):
+        raise ValueError("has_gap must be boolean")
+    gap_question = str(payload.get("gap_question", "")).strip()
+    if has_gap and not gap_question:
+        raise ValueError("gap_question must be non-empty when has_gap is true")
     reason = str(payload.get("reason", "")).strip() or "No reason provided."
-    return is_complex, reason
+    return has_gap, gap_question, reason
