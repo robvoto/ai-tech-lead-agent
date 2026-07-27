@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Any
+
+from .target_project_context import TargetProjectContext
 
 _REFERENCE_PATTERN = re.compile(r"\b[A-Z][A-Z0-9]{1,9}-\d{2,6}\b")
 _INLINE_BACKLOG_PATTERN = re.compile(r"(?im)^\s*backlog item:\s*([A-Z][A-Z0-9]{1,9}-\d{2,6})\b")
@@ -54,35 +55,31 @@ def understand_request(request: str) -> RequestUnderstanding:
 def resolve_request_context(
     request: str,
     *,
-    supplied_context: dict[str, Any] | None = None,
+    target_project_context: TargetProjectContext | None = None,
 ) -> dict[str, Any]:
     """Resolve detected references only from explicit caller-supplied context."""
 
     understanding = understand_request(request)
-    context = supplied_context or {}
-    project = context.get("project_reference") if isinstance(context.get("project_reference"), dict) else {}
-    resources = context.get("resource_references") if isinstance(context.get("resource_references"), list) else []
-    backlog = context.get("backlog_reference") if isinstance(context.get("backlog_reference"), dict) else {}
-
     resolved_ids: set[str] = {match.upper() for match in _INLINE_BACKLOG_PATTERN.findall(request)}
     evidence: list[str] = []
     for item_id in sorted(resolved_ids):
         evidence.append(f"Backlog reference {item_id} was supplied inline with task context.")
-    if backlog:
-        item_id = str(backlog.get("item_id", "")).strip().upper()
+
+    backlog = target_project_context.backlog_item if target_project_context else None
+    if backlog is not None:
+        item_id = backlog.item_id.strip().upper()
         if item_id:
             resolved_ids.add(item_id)
             evidence.append(f"Backlog reference {item_id} supplied by caller and fetched successfully.")
-    for resource in resources:
-        if isinstance(resource, dict):
-            resource_id = str(resource.get("item_id") or resource.get("id") or "").strip().upper()
-            if resource_id:
-                resolved_ids.add(resource_id)
-                evidence.append(f"Resource reference {resource_id} supplied by caller.")
+    for resource in target_project_context.resource_references if target_project_context else ():
+        resource_id = resource.item_id.strip().upper()
+        if resource_id:
+            resolved_ids.add(resource_id)
+            evidence.append(f"Resource reference {resource_id} supplied by caller.")
 
     unresolved = tuple(ref for ref in understanding.detected_references if ref.upper() not in resolved_ids)
-    project_name = str(project.get("project_name") or project.get("project_key") or "").strip()
-    project_root = str(project.get("project_root") or context.get("project_root") or "").strip()
+    project_name = target_project_context.project_identity if target_project_context else ""
+    project_root = target_project_context.project_root if target_project_context else ""
     if project_name:
         evidence.append(f"Project context supplied: {project_name}.")
     if project_root:
@@ -94,10 +91,10 @@ def resolve_request_context(
         context_lines.append(f"Project: {project_name}")
     if project_root:
         context_lines.append(f"Project root: {project_root}")
-    if backlog:
-        item_id = str(backlog.get("item_id", "")).strip()
-        title = str(backlog.get("title", "")).strip()
-        body = str(backlog.get("body", "")).strip()
+    if backlog is not None:
+        item_id = backlog.item_id.strip()
+        title = backlog.title.strip()
+        body = backlog.body.strip()
         context_lines.append(f"Backlog item: {item_id}{' - ' + title if title else ''}")
         if body:
             context_lines.append(body)

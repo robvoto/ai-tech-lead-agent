@@ -15,6 +15,7 @@ from .orchestrator_llm import (
     call_orchestrator_llm,
 )
 from .prompt_loader import COMPLETION_VERIFICATION_PROMPT_KEY, render_prompt
+from .target_project_context import TargetProjectContext
 
 logger = logging.getLogger(LOGGER_NAME)
 
@@ -44,6 +45,7 @@ def verify_completion(
     acceptance_criteria: list[str],
     changed_files: tuple[str, ...],
     coding_agent_result: str,
+    target_project_context: TargetProjectContext | None = None,
     settings: AppSettings,
     prior_correction: str = "",
 ) -> CompletionVerificationDecision:
@@ -64,6 +66,7 @@ def verify_completion(
             acceptance_criteria=acceptance_criteria,
             changed_files=changed_files,
             coding_agent_result=coding_agent_result,
+            target_project_context=target_project_context,
             settings=settings,
             prior_correction=prior_correction,
         )
@@ -93,14 +96,23 @@ def _llm_verify_completion(
     acceptance_criteria: list[str],
     changed_files: tuple[str, ...],
     coding_agent_result: str,
+    target_project_context: TargetProjectContext | None,
     settings: AppSettings,
     prior_correction: str,
 ) -> CompletionVerificationDecision:
+    project_text = "(not supplied)"
+    if target_project_context is not None:
+        project_text = (
+            target_project_context.project_identity
+            or target_project_context.project_root
+            or "(not supplied)"
+        )
     prompt = render_prompt(
         COMPLETION_VERIFICATION_PROMPT_KEY,
         bounded_request=bounded_request,
         formulated_task=formulated_task,
         brief=brief,
+        project=project_text,
         plan_text=plan_text or "(no plan recorded)",
         acceptance_criteria="\n".join(f"- {item}" for item in acceptance_criteria) or "(none)",
         changed_files=", ".join(changed_files) or "(none detected)",

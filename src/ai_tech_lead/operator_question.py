@@ -18,6 +18,7 @@ from .orchestrator_llm import (
     call_orchestrator_llm,
 )
 from .prompt_loader import OPERATOR_QUESTION_ANSWER_PROMPT_KEY, render_prompt
+from .target_project_context import TargetProjectContext
 
 logger = logging.getLogger(LOGGER_NAME)
 
@@ -31,8 +32,7 @@ def answer_operator_question(
     *,
     question: str,
     request: str,
-    resolved_project_identity: str,
-    resolved_project_root: str,
+    target_project_context: TargetProjectContext | None = None,
     code_context: str,
     research_evidence: list[str],
     settings: AppSettings,
@@ -48,7 +48,14 @@ def answer_operator_question(
     evidence_text = (
         "\n".join(f"- {item}" for item in research_evidence) if research_evidence else "(none)"
     )
-    project_text = resolved_project_identity or resolved_project_root or "(this project)"
+    if target_project_context is None:
+        project_text = "(this project)"
+    else:
+        project_text = (
+            target_project_context.project_identity
+            or target_project_context.project_root
+            or "(this project)"
+        )
 
     prompt = render_prompt(
         OPERATOR_QUESTION_ANSWER_PROMPT_KEY,

@@ -51,6 +51,11 @@ from .progress_events import (
     progress_reporter_from_input,
 )
 from .runtime_lock import RuntimeLockBusyError, acquire_request_run_lock
+from .target_project_context import (
+    BacklogItemContext,
+    ResourceReferenceContext,
+    TargetProjectContext,
+)
 
 logger = logging.getLogger(LOGGER_NAME)
 
@@ -143,24 +148,6 @@ def run_agent_task(input_path: str | Path, output_path: str | Path) -> int:
         )
         return 1
 
-    # Validate project_root against the local allowlist.
-    project_root_raw = task_input.get("project_root")
-    project_root = _validate_project_root(project_root_raw, settings)
-    if project_root is None and project_root_raw is not None:
-        msg = (
-            f"project_root '{project_root_raw}' is not in the "
-            "allowed_project_roots allowlist. "
-            "Add it to data/coding_agent_settings.json to permit this path."
-        )
-        _write_error_output(
-            output_file,
-            progress_reporter,
-            request_id,
-            msg,
-            settings=settings,
-        )
-        return 1
-
     # Execution gate: local settings decide, not the caller.
     # The caller can *request* execution_mode=execute, but settings.execute_coding_agent
     # must also be True. The caller's requires_human_approval is intentionally ignored.
@@ -229,6 +216,23 @@ def run_agent_task(input_path: str | Path, output_path: str | Path) -> int:
                 fetched_at=source_record.fetched_at,
             )
 
+        try:
+            target_project_context = _build_target_project_context(
+                task_input=task_input,
+                settings=settings,
+                backlog_reference=backlog_reference,
+                source_record=source_record,
+            )
+        except ValueError as exc:
+            _write_error_output(
+                output_file,
+                progress_reporter,
+                request_id,
+                str(exc),
+                settings=settings,
+            )
+            return 1
+
         progress_reporter.started()
         logger.info(
             "[SUBPROCESS] run-agent-task request_id=%s decision=%s task=%s...",
@@ -243,15 +247,9 @@ def run_agent_task(input_path: str | Path, output_path: str | Path) -> int:
                     request_id=request_id,
                     task=task_text,
                     execute_coding_agent=execute_coding_agent,
-                    project_root=project_root,
                     decision=decision,
                     progress_reporter=progress_reporter,
-                    supplied_context=_build_supplied_context(
-                        task_input=task_input,
-                        project_root=project_root,
-                        backlog_reference=backlog_reference,
-                        source_record=source_record,
-                    ),
+                    target_project_context=target_project_context,
                 )
         except (KeyboardInterrupt, SystemExit):
             progress_reporter.cancelled()
@@ -277,10 +275,10 @@ def run_agent_task(input_path: str | Path, output_path: str | Path) -> int:
             )
             return 1
 
-        if backlog_reference is not None:
+        if target_project_context.backlog_item is not None:
             result["backlog_sync_status"] = _sync_backlog_completion(
                 request_id=request_id,
-                backlog_reference=backlog_reference,
+                target_project_context=target_project_context,
                 sheets_repository=sheets_repository,
                 source_row_hash=source_record.row_hash,
                 result=result,
@@ -349,28 +347,68 @@ def _merge_resource_references(task_input: dict[str, Any]) -> list[dict[str, Any
     return list(merged.values())
 
 
-def _build_supplied_context(
+def _build_target_project_context(
     *,
     task_input: dict[str, Any],
-    project_root: str | None,
+    settings: Any,
     backlog_reference: Any | None,
     source_record: Any | None,
-) -> dict[str, Any]:
-    context: dict[str, Any] = {
-        "project_reference": task_input.get("project_reference") or {},
-        "resource_references": _merge_resource_references(task_input),
-        "project_root": project_root or "",
-    }
+) -> TargetProjectContext:
+    raw_project_reference = task_input.get("project_reference")
+    if raw_project_reference is None:
+        project_reference: dict[str, Any] = {}
+    elif isinstance(raw_project_reference, dict):
+        project_reference = raw_project_reference
+    else:
+        raise ValueError("project_reference must be a JSON object when supplied.")
+
+    top_level_project_root = task_input.get("project_root")
+    nested_project_root = project_reference.get("project_root")
+    if top_level_project_root is not None and nested_project_root is not None:
+        top_level_resolved = str(Path(str(top_level_project_root)).resolve())
+        nested_resolved = str(Path(str(nested_project_root)).resolve())
+        if top_level_resolved != nested_resolved:
+            raise ValueError(
+                "project_root does not match project_reference.project_root. "
+                "Supply only one target project root, or make them identical."
+            )
+
+    requested_project_root = top_level_project_root
+    if requested_project_root is None:
+        requested_project_root = nested_project_root
+
+    project_root = _validate_project_root(requested_project_root, settings)
+    if project_root is None and requested_project_root is not None:
+        raise ValueError(
+            f"project_root '{requested_project_root}' is not in the allowed_project_roots "
+            "allowlist. Add it to data/coding_agent_settings.json to permit this path."
+        )
+
+    backlog_item = None
     if backlog_reference is not None and source_record is not None:
-        context["backlog_reference"] = {
-            "project_key": backlog_reference.project_key,
-            "spreadsheet_id": backlog_reference.spreadsheet_id,
-            "sheet_name": backlog_reference.sheet_name,
-            "item_id": backlog_reference.item_id,
-            "title": source_record.item.title,
-            "body": source_record.item.body,
-        }
-    return context
+        backlog_item = BacklogItemContext(
+            project_key=backlog_reference.project_key,
+            spreadsheet_id=backlog_reference.spreadsheet_id,
+            sheet_name=backlog_reference.sheet_name,
+            item_id=backlog_reference.item_id,
+            title=source_record.item.title,
+            body=source_record.item.body,
+        )
+
+    return TargetProjectContext(
+        project_root=project_root or "",
+        project_key=str(project_reference.get("project_key", "")).strip(),
+        project_name=str(project_reference.get("project_name", "")).strip(),
+        resource_references=tuple(
+            ResourceReferenceContext(
+                item_id=str(reference.get("item_id") or reference.get("id") or "").strip(),
+                title=str(reference.get("title", "")).strip(),
+            )
+            for reference in _merge_resource_references(task_input)
+            if str(reference.get("item_id") or reference.get("id") or "").strip()
+        ),
+        backlog_item=backlog_item,
+    )
 
 
 def _validate_project_root(project_root_raw: str | None, settings: Any) -> str | None:
@@ -406,19 +444,23 @@ def _execute_workflow(
     request_id: str,
     task: str,
     execute_coding_agent: bool,
-    project_root: str | None,
     decision: _Decision | None = None,
     progress_reporter: ProgressReporter | None = None,
-    supplied_context: dict[str, Any] | None = None,
+    target_project_context: TargetProjectContext | None = None,
 ) -> dict[str, Any]:
     from .coding_workflow_graph import build_graph, build_initial_graph_state
 
     reporter = progress_reporter or ProgressReporter()
     reporter.phase("analysing", "Analysing the task and project context.")
+    project_root_override = (
+        target_project_context.project_root
+        if target_project_context is not None and target_project_context.project_root
+        else None
+    )
     graph = build_graph(
         checkpointer_storage=get_checkpointer(),
         execute_coding_agent_override=execute_coding_agent,
-        project_root_override=project_root,
+        project_root_override=project_root_override,
         coding_agent_progress_callback=(
             reporter.handle_workflow_message if reporter.enabled else None
         ),
@@ -446,7 +488,7 @@ def _execute_workflow(
         initial_state: dict[str, Any] = build_initial_graph_state(
             task,
             force_approval=False,
-            supplied_context=supplied_context,
+            target_project_context=target_project_context,
         )
         final_state = graph.invoke(initial_state, config=config)
 
@@ -562,7 +604,7 @@ def _pending_decision_from_snapshot(
 def _sync_backlog_completion(
     *,
     request_id: str,
-    backlog_reference: Any,
+    target_project_context: TargetProjectContext,
     sheets_repository: SheetsBacklogRepository,
     source_row_hash: str,
     result: dict[str, Any],
@@ -580,13 +622,17 @@ def _sync_backlog_completion(
     ):
         return "not_applicable"
 
+    backlog_item = target_project_context.backlog_item
+    if backlog_item is None:
+        return "not_applicable"
+
     validation_note = f"Completed via Agent Hub request {request_id}. {result.get('summary', '')}"
     runtime_store = BacklogRuntimeStore()
     sync_status = enqueue_and_flush_update(
         runtime_store=runtime_store,
         sheets_repository=sheets_repository,
         request_id=request_id,
-        item_id=backlog_reference.item_id,
+        item_id=backlog_item.item_id,
         update_fields={
             "Status": "Done",
             "Evidence / Validation": validation_note.strip(),
@@ -601,7 +647,7 @@ def _sync_backlog_completion(
         logger.warning(
             "[SUBPROCESS] backlog sync for request_id=%s item_id=%s ended in status=%s",
             request_id,
-            backlog_reference.item_id,
+            backlog_item.item_id,
             sync_status,
         )
     return sync_status

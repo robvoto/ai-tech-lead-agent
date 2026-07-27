@@ -96,6 +96,7 @@ Supporting modules such as `src/ai_tech_lead/backlog_graph_runner.py` call the c
   Telegram is the human-facing bot for AI Tech Lead: use it directly when you want to talk to the coding agent from chat.
   It must call the bounded workflow and must not become a second agent brain.
   The JSON subprocess enters through `run-agent-task`, which validates the JSON contract before handing the task to the graph.
+  Caller-supplied project/context data is normalized there into AI Tech Lead's own immutable internal `TargetProjectContext` before any graph node, planner, or coding-agent step uses it.
   An external caller may own caller-side orchestration, paused-run bookkeeping, and resume or approval UX.
   AI Tech Lead owns the specialist-internal graph, prompts, approvals, and the mapping from internal pauses to the subprocess status contract.
   Future adapters may include web or other chat surfaces.
@@ -111,6 +112,7 @@ Supporting modules such as `src/ai_tech_lead/backlog_graph_runner.py` call the c
   2. Reusable runtime skills that travel with the AI Tech Lead runtime.
   3. Target-project rules and target-project skills loaded from the selected `project_root`.
 - Graph state keeps any conditional orchestrator-input metadata bounded and explicit; see `CONTEXT_MANAGEMENT.md` for the field shape.
+- Project-aware steps must read the same validated internal target-project context for research code scans, planning, approval Q&A, coding-agent execution, changed-file checks, completion verification, and backlog attribution rather than independently guessing or defaulting a repo.
 - The current coding-agent backend is Codex CLI, but the architecture must stay
   backend-neutral. Future backends may include Claude Code, OpenAI tools, local
   agents, or other compatible execution backends.
@@ -144,7 +146,8 @@ This section replaces the standalone `ARMY_INTEGRATION.md` page. Keep the bounde
 
 - A caller invokes AI Tech Lead through `run-agent-task`.
 - A caller discovers the callable contract through `uv run python -m ai_tech_lead manifest`.
-- A new task is JSON with a task string plus bounded metadata such as `request_id`, optional Hub `run_id`, `source`, `project_root`, and `execution_mode`.
+- A new task is JSON with a task string plus bounded metadata such as `request_id`, optional Hub `run_id`, `source`, `project_root`, `project_reference`, `references`, and `execution_mode`.
+- `run-agent-task` accepts generic caller project/context data, validates it once, and converts it into AI Tech Lead's internal immutable `TargetProjectContext`. If the target project root is missing or invalid, project-aware steps fail clearly instead of silently substituting AI Tech Lead's own repo.
 - `execution_mode` is a request, not a grant. `instruction_only` is the safe default.
 - A paused conversation is resumed by resubmitting the same `request_id` with a `decision: {"option": ..., "text": ..., "actor": ...}` object — no `task` field needed. The option must be one of the names the paused response's `pending_decision.options` just reported; anything else is rejected.
 - Output is structured JSON with status, summary, formulated task, brief, coding-agent instruction, backend used, execution flag, logs, evidence, next action, a `pending_decision` block describing exactly what's paused and what decisions are valid right now, and a tiny `agent_manifest` reference.

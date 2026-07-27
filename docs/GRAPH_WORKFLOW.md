@@ -64,9 +64,9 @@ START
 Before research, the graph now separates the original request from the bounded task context:
 
 - `1a_understand_and_bound_request` classifies the request intent, detects possible external references, and records whether execution was requested. Phrases such as `report only` or `do not code` keep execution intent false.
-- `1b_resolve_context` resolves references only from explicit caller-supplied project, resource, or fetched backlog context. It never infers that a prefix such as `AF` means a particular project.
+- `1b_resolve_context` resolves references only from explicit caller-supplied project, resource, or fetched backlog context. It never infers that a prefix such as `AF` means a particular project. The subprocess boundary has already validated and normalized that caller data into AI Tech Lead's immutable internal `TargetProjectContext`, and downstream project-aware steps reuse that same context instead of rebuilding it ad hoc.
 - If a reference cannot be resolved, the workflow asks one precise clarification question and ends before research.
-- `bounded_request` contains the original request plus verified project/backlog context. Research, risk review, and tech-lead analysis use this bounded form rather than the raw ambiguous request.
+- `bounded_request` contains the original request plus verified project/backlog context. Research, risk review, tech-lead analysis, completion verification, and operator Q&A use this bounded form rather than the raw ambiguous request.
 
 Backlog context is optional. Plain reviews, explanations, bug investigations, and direct coding requests continue without requiring a backlog reference.
 

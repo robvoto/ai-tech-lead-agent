@@ -5,6 +5,7 @@ from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 from helpers import valid_settings_dict
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import Command
@@ -33,6 +34,7 @@ from ai_tech_lead.coding_workflow_graph import (
 from ai_tech_lead.completion_verifier import CompletionVerificationDecision
 from ai_tech_lead.plan_reviewer import PlanReviewDecision
 from ai_tech_lead.risk_reviewer import RiskReviewDecision
+from ai_tech_lead.target_project_context import BacklogItemContext, TargetProjectContext
 from ai_tech_lead.tech_lead_analyst import TechLeadAnalysis
 
 
@@ -50,6 +52,7 @@ def _mock_verify_completion_complete(monkeypatch) -> None:
 def graph_state(**overrides: object) -> dict[str, object]:
     state: dict[str, object] = {
         "request": "Backlog item: JH-001\nTitle: Local placeholder",
+        "target_project_context": None,
         "brief": "",
         "force_approval": False,
         "research_evidence_required": False,
@@ -1824,14 +1827,17 @@ def test_review_risk_connects_directly_to_tech_lead_analyse() -> None:
 def test_request_context_is_resolved_before_research(monkeypatch) -> None:
     state = graph_state(
         request="Code AF-052 for Agent Factory",
-        supplied_context={
-            "project_reference": {"project_key": "agent-factory"},
-            "backlog_reference": {
-                "item_id": "AF-052",
-                "title": "Implement validation",
-                "body": "Acceptance Criteria: bounded validation.",
-            },
-        },
+        target_project_context=TargetProjectContext(
+            project_key="agent-factory",
+            backlog_item=BacklogItemContext(
+                project_key="agent-factory",
+                spreadsheet_id="spreadsheet-a",
+                sheet_name="Backlog",
+                item_id="AF-052",
+                title="Implement validation",
+                body="Acceptance Criteria: bounded validation.",
+            ),
+        ).to_payload(),
     )
 
     understood = understand_and_bound_request_node(state)
@@ -1847,7 +1853,7 @@ def test_request_context_is_resolved_before_research(monkeypatch) -> None:
 def test_unresolved_reference_routes_to_clarification_before_research() -> None:
     state = graph_state(
         request="Code AF-052 for Agent Factory",
-        supplied_context={},
+        target_project_context=TargetProjectContext().to_payload(),
     )
 
     state.update(understand_and_bound_request_node(state))
@@ -1886,7 +1892,15 @@ def test_request_plan_node_uses_resolved_target_project_root(monkeypatch, tmp_pa
         "ai_tech_lead.coding_workflow_graph.run_coding_agent", fake_run_coding_agent
     )
 
-    request_plan_node(graph_state(resolved_project_root=str(target_root)))
+    request_plan_node(
+        graph_state(
+            resolved_project_root=str(target_root),
+            target_project_context=TargetProjectContext(
+                project_root=str(target_root),
+                project_key="agent-hub",
+            ).to_payload(),
+        )
+    )
 
     assert captured["project_root"] == target_root.resolve()
 
@@ -1913,6 +1927,10 @@ def test_instruction_assembly_uses_resolved_target_project_root(monkeypatch, tmp
     create_agent_instruction_node(
         graph_state(
             resolved_project_root=str(target_root),
+            target_project_context=TargetProjectContext(
+                project_root=str(target_root),
+                project_key="agent-factory",
+            ).to_payload(),
             brief="brief",
             formulated_task="task",
         )
@@ -1946,6 +1964,10 @@ def test_run_coding_agent_node_uses_resolved_target_project_root(monkeypatch, tm
     run_coding_agent_node(
         graph_state(
             resolved_project_root=str(target_root),
+            target_project_context=TargetProjectContext(
+                project_root=str(target_root),
+                project_key="agent-hub",
+            ).to_payload(),
             agent_instruction="Do the task",
         )
     )
@@ -1971,7 +1993,36 @@ def test_run_coding_agent_node_rejects_conflicting_project_root_override(
         run_coding_agent_node(
             graph_state(
                 resolved_project_root=str(target_root),
+                target_project_context=TargetProjectContext(
+                    project_root=str(target_root),
+                    project_key="agent-hub",
+                ).to_payload(),
                 agent_instruction="Do the task",
             ),
             project_root_override=str(conflicting_root),
+        )
+
+
+def test_request_plan_node_does_not_fall_back_to_runtime_root_when_boundary_root_missing(
+    monkeypatch, tmp_path
+) -> None:
+    runtime_root = tmp_path / "ai-tech-lead"
+    runtime_root.mkdir()
+    settings = replace(
+        parse_settings(valid_settings_dict()),
+        project_root=str(runtime_root),
+        execute_coding_agent=False,
+    )
+
+    monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.load_settings", lambda: settings)
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.render_prompt",
+        lambda _prompt_key, **_replacements: "plan",
+    )
+
+    with pytest.raises(ValueError, match="Target project root is required"):
+        request_plan_node(
+            graph_state(
+                target_project_context=TargetProjectContext(project_key="agent-hub").to_payload()
+            )
         )

@@ -31,7 +31,7 @@ from ai_tech_lead.agent_task_runner import (
     STATUS_NEEDS_CLARIFICATION,
     STATUS_SUCCESS,
     STATUS_WAITING_DECISION,
-    _build_supplied_context,
+    _build_target_project_context,
     _DecisionRejected,
     _execute_workflow,
     _map_decision_to_resume_payload,
@@ -319,7 +319,7 @@ def test_project_root_in_allowlist_is_accepted(
     run_agent_task(input_file, output_file)
 
     assert len(calls) == 1
-    assert calls[0]["project_root"] == str(Path(allowed_root).resolve())
+    assert calls[0]["target_project_context"].project_root == str(Path(allowed_root).resolve())
 
 
 def test_no_project_root_passes_none_to_workflow(
@@ -332,7 +332,7 @@ def test_no_project_root_passes_none_to_workflow(
     run_agent_task(input_file, output_file)
 
     assert len(calls) == 1
-    assert calls[0]["project_root"] is None
+    assert calls[0]["target_project_context"].project_root == ""
 
 
 # ---------------------------------------------------------------------------
@@ -659,7 +659,7 @@ def test_execute_workflow_resumes_with_command_when_decision_given(
         request_id="req-resume-graph",
         task="",
         execute_coding_agent=False,
-        project_root=None,
+        target_project_context=None,
         decision=decision,
     )
 
@@ -692,7 +692,7 @@ def test_execute_workflow_rejects_decision_when_nothing_pending(
             request_id="req-nothing-pending",
             task="",
             execute_coding_agent=False,
-            project_root=None,
+            target_project_context=None,
             decision=decision,
         )
 
@@ -1221,7 +1221,7 @@ def test_execute_workflow_translates_existing_graph_progress_callbacks(
         request_id="req-graph-progress",
         task="Implement the change",
         execute_coding_agent=False,
-        project_root=None,
+        target_project_context=None,
         progress_reporter=reporter,
     )
 
@@ -1441,35 +1441,37 @@ def test_backlog_reference_reuses_existing_snapshot_on_resubmission(
 
 
 def test_hub_references_are_normalized_into_resource_references() -> None:
-    context = _build_supplied_context(
+    settings = parse_settings(valid_settings_dict())
+    context = _build_target_project_context(
         task_input={"references": ["AF-052", "docs/runbook.md"]},
-        project_root=None,
+        settings=settings,
         backlog_reference=None,
         source_record=None,
     )
 
-    assert context["resource_references"] == [
-        {"id": "AF-052"},
-        {"id": "docs/runbook.md"},
+    assert [item.item_id for item in context.resource_references] == [
+        "AF-052",
+        "docs/runbook.md",
     ]
 
 
 def test_legacy_resource_references_still_work_alongside_hub_references() -> None:
-    context = _build_supplied_context(
+    settings = parse_settings(valid_settings_dict())
+    context = _build_target_project_context(
         task_input={
             "resource_references": [{"item_id": "AF-052", "title": "legacy title"}],
             "references": ["AF-052", "AH-010"],
         },
-        project_root=None,
+        settings=settings,
         backlog_reference=None,
         source_record=None,
     )
 
     # The legacy dict for AF-052 is kept as-is (not overwritten by Hub's bare string);
     # AH-010 is added from Hub's references since no legacy entry supplied it.
-    assert context["resource_references"] == [
-        {"item_id": "AF-052", "title": "legacy title"},
-        {"id": "AH-010"},
+    assert [(item.item_id, item.title) for item in context.resource_references] == [
+        ("AF-052", "legacy title"),
+        ("AH-010", ""),
     ]
 
 
@@ -1477,15 +1479,16 @@ def test_hub_style_references_reach_the_existing_context_resolver() -> None:
     """A Hub `references` payload must resolve through resolve_request_context exactly
     like a legacy `resource_references` payload would — the AI Tech Lead boundary only
     normalizes shape; request_context.py remains the sole place resolution happens."""
-    supplied_context = _build_supplied_context(
+    settings = parse_settings(valid_settings_dict())
+    target_project_context = _build_target_project_context(
         task_input={"references": ["AF-052"]},
-        project_root=None,
+        settings=settings,
         backlog_reference=None,
         source_record=None,
     )
 
     result = resolve_request_context(
-        "Code AF-052 for Agent Factory", supplied_context=supplied_context
+        "Code AF-052 for Agent Factory", target_project_context=target_project_context
     )
 
     assert result["unresolved_references"] == []
@@ -1496,18 +1499,54 @@ def test_hub_style_references_reach_the_existing_context_resolver() -> None:
 def test_hub_reference_not_matching_request_text_stays_unresolved() -> None:
     """A Hub reference that doesn't correspond to anything detected in the request text
     must not mask an unrelated unresolved reference — clarification still fires for it."""
-    supplied_context = _build_supplied_context(
+    settings = parse_settings(valid_settings_dict())
+    target_project_context = _build_target_project_context(
         task_input={"references": ["docs/runbook.md"]},
-        project_root=None,
+        settings=settings,
         backlog_reference=None,
         source_record=None,
     )
 
     result = resolve_request_context(
-        "Code AF-052 for Agent Factory", supplied_context=supplied_context
+        "Code AF-052 for Agent Factory", target_project_context=target_project_context
     )
 
     assert result["unresolved_references"] == ["AF-052"]
     assert result["clarification_question"] == (
         "What does AF-052 refer to, and where should I retrieve it from?"
     )
+
+
+def test_project_reference_project_root_is_accepted_when_allowlisted() -> None:
+    settings = parse_settings(valid_settings_dict())
+    context = _build_target_project_context(
+        task_input={
+            "project_reference": {
+                "project_key": "agent-factory",
+                "project_root": settings.project_root,
+            }
+        },
+        settings=settings,
+        backlog_reference=None,
+        source_record=None,
+    )
+
+    assert context.project_key == "agent-factory"
+    assert context.project_root == settings.project_root
+
+
+def test_mismatched_top_level_and_project_reference_roots_are_rejected() -> None:
+    settings = parse_settings(valid_settings_dict())
+
+    with pytest.raises(ValueError, match="does not match project_reference.project_root"):
+        _build_target_project_context(
+            task_input={
+                "project_root": settings.project_root,
+                "project_reference": {
+                    "project_root": "/different/project/root",
+                },
+            },
+            settings=settings,
+            backlog_reference=None,
+            source_record=None,
+        )

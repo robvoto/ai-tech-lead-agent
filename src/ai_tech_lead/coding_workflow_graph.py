@@ -30,6 +30,7 @@ from .research_code_context import collect_code_context, format_code_context_for
 from .research_discovery import discover_official_source
 from .research_sources import collect_online_research_sources
 from .risk_reviewer import review_task_risk
+from .target_project_context import TargetProjectContext
 from .tech_lead_analyst import analyse_task
 
 APPROVAL_MAX_REVISION_CYCLES = 5
@@ -69,7 +70,7 @@ class GraphState(TypedDict):
 
     request: str
     bounded_request: str
-    supplied_context: dict[str, Any]
+    target_project_context: dict[str, Any] | None
     request_intent: str
     execution_requested: bool
     detected_references: list[str]
@@ -135,14 +136,16 @@ def build_initial_graph_state(
     approval_reason: str = "Risk review has not run yet.",
     online_research_approved: bool = False,
     task_feedback: list[str] | None = None,
-    supplied_context: dict[str, Any] | None = None,
+    target_project_context: TargetProjectContext | None = None,
 ) -> GraphState:
     """Return one canonical initial state for the coding workflow graph."""
 
     return {
         "request": request,
         "bounded_request": request,
-        "supplied_context": dict(supplied_context or {}),
+        "target_project_context": (
+            target_project_context.to_payload() if target_project_context is not None else None
+        ),
         "request_intent": "",
         "execution_requested": False,
         "detected_references": [],
@@ -231,7 +234,7 @@ def resolve_context_node(state: GraphState) -> dict[str, Any]:
     _log_node_start("1b", "RESOLVE_CONTEXT", "Resolve project and resource context")
     result = resolve_request_context(
         state["request"],
-        supplied_context=dict(state.get("supplied_context", {})),
+        target_project_context=_target_project_context_from_state(state),
     )
     question = str(result.pop("clarification_question", "")).strip()
     if question:
@@ -256,7 +259,12 @@ def check_research_node(state: GraphState) -> dict[str, Any]:
 
     _log_node_start("1b", "CHECK_RESEARCH", "Check research evidence requirements")
     settings = load_settings()
-    code_context_root = str(state.get("resolved_project_root", "")).strip() or None
+    context = _target_project_context_from_state(state)
+    code_context_root = (
+        context.project_root.strip()
+        if context is not None and context.project_root.strip()
+        else str(state.get("resolved_project_root", "")).strip() or None
+    )
     if code_context_root:
         logger.info(
             "[LEARN] Code context will scan resolved target project root: %s",
@@ -624,6 +632,10 @@ def _target_project_root(state: GraphState, settings: Any) -> Path:
     ``settings.project_root``.
     """
 
+    context = _target_project_context_from_state(state)
+    if context is not None and context.has_explicit_context:
+        return context.require_project_root("target-project planning and execution")
+
     resolved = str(state.get("resolved_project_root", "")).strip()
     return Path(resolved or settings.project_root).resolve()
 
@@ -915,7 +927,12 @@ def approval_interrupt_node(state: GraphState) -> dict[str, Any]:
     question = _extract_resume_field(result, "question")
     settings = load_settings()
     request_text = state.get("bounded_request", "") or state["request"]
-    code_context_root = str(state.get("resolved_project_root", "")).strip() or None
+    context = _target_project_context_from_state(state)
+    code_context_root = (
+        context.project_root.strip()
+        if context is not None and context.project_root.strip()
+        else str(state.get("resolved_project_root", "")).strip() or None
+    )
     code_context_text = format_code_context_for_prompt(
         collect_code_context(request_text, settings, project_root_override=code_context_root)
     )
@@ -927,8 +944,7 @@ def approval_interrupt_node(state: GraphState) -> dict[str, Any]:
     answer = answer_operator_question(
         question=question,
         request=request_text,
-        resolved_project_identity=state.get("resolved_project_identity", ""),
-        resolved_project_root=state.get("resolved_project_root", ""),
+        target_project_context=context,
         code_context=code_context_text,
         research_evidence=research_evidence,
         settings=settings,
@@ -973,6 +989,7 @@ def create_agent_instruction_node(state: GraphState) -> dict[str, Any]:
         needs_approval=state["needs_approval"],
         approved=state["approved"],
         settings=settings,
+        target_project_context=_target_project_context_from_state(state),
         project_root=_target_project_root(state, settings),
         research_evidence=research_evidence,
         agent_correction=correction,
@@ -1259,6 +1276,7 @@ def verify_completion_node(state: GraphState) -> dict[str, Any]:
     settings = load_settings()
     attempt_count = state.get("verification_attempt_count", 0)
     prior_correction = state.get("verification_correction", "")
+    target_project_context = _target_project_context_from_state(state)
 
     try:
         decision = verify_completion(
@@ -1269,6 +1287,7 @@ def verify_completion_node(state: GraphState) -> dict[str, Any]:
             acceptance_criteria=settings.acceptance_criteria,
             changed_files=state.get("coding_agent_changed_files", ()),
             coding_agent_result=state.get("coding_agent_result", ""),
+            target_project_context=target_project_context,
             settings=settings,
             prior_correction=prior_correction,
         )
@@ -1373,6 +1392,11 @@ def end_node(state: GraphState) -> dict[str, Any]:
     logger.info("Approval: required=%s approved=%s", state["needs_approval"], state["approved"])
     logger.info("Approved by: %s", state.get("approved_by", "") or "not required")
     logger.info("Performed by: %s", state.get("coding_agent_performed_by", "") or "not run")
+
+
+def _target_project_context_from_state(state: GraphState) -> TargetProjectContext | None:
+    payload = state.get("target_project_context")
+    return TargetProjectContext.from_payload(payload if isinstance(payload, dict) else None)
     logger.info("Retries: %s", state.get("coding_agent_retry_count", 0))
     coding_agent_result = state.get("coding_agent_result", "").strip()
     if coding_agent_result:

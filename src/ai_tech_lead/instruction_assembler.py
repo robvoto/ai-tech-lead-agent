@@ -8,6 +8,7 @@ from pathlib import Path
 from ai_tech_lead.app_settings import AppSettings
 from ai_tech_lead.config import PROJECT_ROOT
 from ai_tech_lead.prompt_loader import BACKLOG_OWNERSHIP_RULES_PROMPT_KEY, load_prompt
+from ai_tech_lead.target_project_context import TargetProjectContext
 
 RUNTIME_CORE_DIR = PROJECT_ROOT / "runtime_core"
 
@@ -28,11 +29,17 @@ def build_agent_instruction(
     needs_approval: bool,
     approved: bool,
     settings: AppSettings,
+    target_project_context: TargetProjectContext | None = None,
     project_root: Path | None = None,
     research_evidence: list[str] | None = None,
     agent_correction: str | None = None,
 ) -> str:
-    target_project_root = project_root or Path(settings.project_root)
+    if target_project_context is not None and target_project_context.has_explicit_context:
+        target_project_root = target_project_context.require_project_root(
+            "coding-agent instruction assembly"
+        )
+    else:
+        target_project_root = project_root or Path(settings.project_root)
     core_instruction = _load_runtime_core_instruction()
     core_skills = select_runtime_core_skills(request)
     skills = select_skills(request, project_root=target_project_root)

@@ -1,4 +1,5 @@
 from ai_tech_lead.request_context import resolve_request_context, understand_request
+from ai_tech_lead.target_project_context import BacklogItemContext, TargetProjectContext
 
 
 def test_unresolved_reference_is_not_guessed():
@@ -13,14 +14,17 @@ def test_unresolved_reference_is_not_guessed():
 def test_fetched_backlog_reference_resolves_and_bounds_request():
     result = resolve_request_context(
         "Code AF-052 for Agent Factory",
-        supplied_context={
-            "project_reference": {"project_key": "agent-factory"},
-            "backlog_reference": {
-                "item_id": "AF-052",
-                "title": "Add bounded package validation",
-                "body": "Acceptance Criteria: validation stops safely on unknown package state.",
-            },
-        },
+        target_project_context=TargetProjectContext(
+            project_key="agent-factory",
+            backlog_item=BacklogItemContext(
+                project_key="agent-factory",
+                spreadsheet_id="spreadsheet-a",
+                sheet_name="Backlog",
+                item_id="AF-052",
+                title="Add bounded package validation",
+                body="Acceptance Criteria: validation stops safely on unknown package state.",
+            ),
+        ),
     )
 
     assert result["unresolved_references"] == []

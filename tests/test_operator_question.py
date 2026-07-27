@@ -7,6 +7,7 @@ from helpers import valid_settings_dict
 from ai_tech_lead.app_settings import parse_settings
 from ai_tech_lead.operator_question import answer_operator_question
 from ai_tech_lead.orchestrator_llm import OrchestratorLlmError, OrchestratorLlmResult
+from ai_tech_lead.target_project_context import TargetProjectContext
 
 
 def _settings(**overrides):
@@ -26,8 +27,7 @@ def test_answer_operator_question_ai_disabled_returns_fallback(monkeypatch) -> N
     answer = answer_operator_question(
         question="Which files will this touch?",
         request="Update the runtime docs.",
-        resolved_project_identity="",
-        resolved_project_root="",
+        target_project_context=None,
         code_context="(none)",
         research_evidence=[],
         settings=_settings(orchestrator_ai_enabled=False),
@@ -49,8 +49,7 @@ def test_answer_operator_question_llm_error_returns_fallback(monkeypatch) -> Non
     answer = answer_operator_question(
         question="Which files will this touch?",
         request="Update the runtime docs.",
-        resolved_project_identity="",
-        resolved_project_root="",
+        target_project_context=None,
         code_context="(none)",
         research_evidence=[],
         settings=_settings(),
@@ -74,8 +73,7 @@ def test_answer_operator_question_returns_llm_text(monkeypatch) -> None:
     answer = answer_operator_question(
         question="Which files will this touch?",
         request="Update the runtime docs.",
-        resolved_project_identity="AI Tech Lead",
-        resolved_project_root="",
+        target_project_context=TargetProjectContext(project_name="AI Tech Lead"),
         code_context="- docs/RUNTIME_RUNBOOK.md: runbook contents",
         research_evidence=["LangGraph interrupts | https://... | Interrupts pause execution."],
         settings=_settings(),
@@ -101,8 +99,7 @@ def test_answer_operator_question_empty_llm_response_returns_fallback(monkeypatc
     answer = answer_operator_question(
         question="Which files will this touch?",
         request="Update the runtime docs.",
-        resolved_project_identity="",
-        resolved_project_root="",
+        target_project_context=None,
         code_context="(none)",
         research_evidence=[],
         settings=_settings(),
