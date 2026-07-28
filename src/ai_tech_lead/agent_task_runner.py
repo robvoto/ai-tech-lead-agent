@@ -4,8 +4,9 @@ Called through the local JSON subprocess contract. No Telegram. No admin UI.
 
 Security contract
 -----------------
-* project_root must be in settings.allowed_project_roots (server-side allowlist).
-  Callers cannot inject arbitrary filesystem paths.
+* project_root must be supplied explicitly for target-project work and must either
+  match a settings.project_registry entry or arrive with explicit human approval.
+  Callers cannot inject arbitrary filesystem paths by default.
 * Execution (running Codex / Claude Code) is gated on settings.execute_coding_agent.
   The caller's execution_mode is a *request*, not a grant.
   Unknown execution_mode values fail closed.
@@ -30,6 +31,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import traceback
 import uuid
 from pathlib import Path
@@ -423,12 +425,14 @@ def _build_target_project_context(
     if requested_project_root is None:
         requested_project_root = nested_project_root
 
-    project_root = _validate_project_root(requested_project_root, settings)
-    if project_root is None and requested_project_root is not None:
-        raise ValueError(
-            f"project_root '{requested_project_root}' is not in the allowed_project_roots "
-            "allowlist. Add it to data/coding_agent_settings.json to permit this path."
+    if requested_project_root is not None:
+        project_root = _validate_project_root(
+            requested_project_root,
+            settings,
+            human_approved=bool(task_input.get("human_approved")),
         )
+    else:
+        project_root = None
 
     backlog_item = None
     if backlog_reference is not None and source_record is not None:
@@ -463,18 +467,62 @@ def _build_target_project_context(
     )
 
 
-def _validate_project_root(project_root_raw: str | None, settings: Any) -> str | None:
-    """Return the resolved project_root if valid, or None if it was provided but not allowed.
+def _validate_project_root(
+    project_root_raw: str | None,
+    settings: Any,
+    *,
+    human_approved: bool = False,
+) -> str | None:
+    """Return the resolved project_root when the caller is authorised to use it.
 
-    If project_root_raw is None, returns None (caller did not specify one; use default).
+    If project_root_raw is None, returns None. Registered projects must also have an
+    available location, supported platform, and required credentials. Explicit human
+    approval can authorise one unregistered root, but it does not bypass availability
+    checks.
     """
     if project_root_raw is None:
         return None
     requested = str(Path(project_root_raw).resolve())
-    allowed = {str(Path(r).resolve()) for r in settings.allowed_project_roots}
-    if requested in allowed:
-        return requested
-    return None  # caller provided a value but it failed the allowlist check
+    registry_entry = settings.project_registry_entry_for_root(requested)
+
+    if registry_entry is None:
+        if human_approved:
+            if not Path(requested).is_dir():
+                raise ValueError(
+                    f"project_root '{requested}' was explicitly approved, but its location "
+                    "is unavailable or not a directory."
+                )
+            return requested
+        raise ValueError(
+            f"project_root '{requested}' is not registered in AI Tech Lead's authorised "
+            "project_registry and has not been explicitly approved. Register the target "
+            "location or resume the task with explicit human approval."
+        )
+
+    if registry_entry.platform != "filesystem":
+        raise ValueError(
+            f"project_root '{requested}' is registered for platform "
+            f"'{registry_entry.platform}', but AI Tech Lead only has an authorised "
+            "filesystem location for this task. Provide an available project_root for "
+            "that project or register a supported location."
+        )
+
+    missing_credentials = [
+        name for name in registry_entry.required_credentials_env if not os.environ.get(name)
+    ]
+    if missing_credentials:
+        raise ValueError(
+            f"project_root '{requested}' is registered, but authorised access is unavailable "
+            f"because required credentials are missing: {', '.join(sorted(missing_credentials))}."
+        )
+
+    if not Path(requested).is_dir():
+        raise ValueError(
+            f"project_root '{requested}' is registered, but its location is unavailable or "
+            "not a directory."
+        )
+
+    return requested
 
 
 def _validate_execution_mode(execution_mode_raw: Any) -> str | None:

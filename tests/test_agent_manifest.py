@@ -21,10 +21,13 @@ def test_build_agent_manifest_contains_core_contract_fields() -> None:
     assert manifest["agent_id"] == "ai-tech-lead"
     assert manifest["agent_name"] == "AI Tech Lead"
     assert manifest["purpose"] == (
-        "Primary responsibility: Lead and execute changes to existing software.\n"
-        "Select for: Refining backlog items, implementing backlog items, or modifying code, tests, configuration, "
-        "architecture, or documentation in an existing repository, including Agent Factory, "
-        "Agent Hub, AI Tech Lead, or another existing software project.\n"
+        "Primary responsibility: Lead and execute work on new or existing technical "
+        "solutions.\n"
+        "Select for: Refining backlog items, building new technical solutions, or "
+        "changing code, tests, configuration, architecture, infrastructure, or "
+        "documentation for a new or existing technical solution, regardless of "
+        "technology stack or hosting location, subject only to available authorised "
+        "access.\n"
         "Do not select for: Designing, staging, approving, rejecting, or promoting a new "
         "specialist agent package as the requested deliverable."
     )
@@ -44,6 +47,8 @@ def test_build_agent_manifest_contains_core_contract_fields() -> None:
         "waiting_decision",
         "failed",
     ]
+    assert "human_approved" in manifest["input_contract"]["optional"]
+    assert "approval_token" in manifest["input_contract"]["optional"]
     assert "task_kind" in manifest["input_contract"]["optional"]
     assert manifest["input_contract"]["task_kinds"] == ["coding_task", "backlog_refinement"]
     assert "backlog_refinement" in manifest["output_contract"]["fields"]
@@ -61,6 +66,14 @@ def test_build_agent_manifest_contains_core_contract_fields() -> None:
         ".skills/INDEX.md",
     ]
     assert manifest["runtime"]["project_root"] == settings.project_root
+    assert manifest["runtime"]["subprocess_project_registry"] == [
+        {
+            "root": settings.project_root,
+            "name": "AI Tech Lead",
+            "platform": "filesystem",
+            "required_credentials_env": [],
+        }
+    ]
     assert manifest["runtime"]["knowledge_store_path"] == settings.knowledge_store_path
     assert len(manifest["manifest_hash"]) == 64
 
@@ -76,6 +89,11 @@ def test_build_agent_manifest_declares_project_context_contract() -> None:
     assert manifest["project_context_contract"]["enforced_filesystem_permission"] == "write"
     assert "project_context" in manifest["input_contract"]["optional"]
     assert manifest["input_contract"]["project_context_shape"]["schema_version"]
+    assert manifest["input_contract"]["target_project_authorization"]["fail_closed"] == [
+        "unavailable_platform",
+        "missing_credentials",
+        "missing_location",
+    ]
 
 
 def test_render_agent_manifest_compact_is_single_line_json() -> None:

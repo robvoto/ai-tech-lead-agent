@@ -131,8 +131,11 @@ required only when that option is marked `needs_text`.
 - Safe default: omit `execution_mode` or set it to `instruction_only`.
 - Use `execution_mode: execute` only when the caller explicitly wants coding-agent execution and
   local settings allow it.
-- `project_root` is accepted only when it matches one of `settings.allowed_project_roots`
-  (also required again on a resume call, since the graph is rebuilt each invocation).
+- `project_root` is accepted only when it matches an authorised
+  `settings.project_registry` entry, or when that exact root arrives with
+  explicit human approval. Registered targets still fail closed when the
+  platform, credentials, or location are unavailable. The same validation
+  runs again on a resume call, since the graph is rebuilt each invocation.
 - Subprocess responses use `success`, `needs_clarification`, `waiting_decision`, and `failed`.
 - Every genuine pause inside the specialist workflow — approval, plan guidance, repeated
   failure guidance, research approval, backlog-refinement approval — is surfaced as

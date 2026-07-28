@@ -43,7 +43,9 @@ def test_parse_settings_round_trips_valid_config() -> None:
     assert settings.research_fetch_timeout_seconds == 10
     assert settings.research_max_excerpt_chars == 800
     assert settings.knowledge_store_path == "data/knowledge_store.sqlite3"
-    assert settings.allowed_project_roots == [str(PROJECT_ROOT)]
+    assert len(settings.project_registry) == 1
+    assert settings.project_registry[0].root == str(PROJECT_ROOT)
+    assert settings.project_registry[0].platform == "filesystem"
     assert settings_to_dict(settings) == raw_settings
 
 
@@ -125,30 +127,92 @@ def test_parse_settings_rejects_missing_project_context() -> None:
         assert "project_context" in str(err)
 
 
-def test_parse_settings_rejects_project_root_allowlist_without_current_project_root() -> None:
+def test_parse_settings_rejects_project_registry_without_current_project_root() -> None:
     raw_settings = valid_settings_dict()
-    raw_settings["allowed_project_roots"] = ["/some/other/path"]
+    raw_settings["project_registry"] = [
+        {
+            "root": "/some/other/path",
+            "name": "Other Project",
+            "platform": "filesystem",
+            "required_credentials_env": [],
+        }
+    ]
 
-    with pytest.raises(ValueError, match="allowed_project_roots"):
+    with pytest.raises(ValueError, match="project_registry"):
         parse_settings(raw_settings)
+
+
+def test_parse_settings_accepts_legacy_project_root_allowlist() -> None:
+    raw_settings = valid_settings_dict()
+    raw_settings.pop("project_registry")
+    raw_settings["allowed_project_roots"] = [str(PROJECT_ROOT)]
+
+    settings = parse_settings(raw_settings)
+
+    assert [entry.root for entry in settings.project_registry] == [str(PROJECT_ROOT)]
+    assert settings_to_dict(settings)["project_registry"] == [
+        {
+            "root": str(PROJECT_ROOT),
+            "name": PROJECT_ROOT.name,
+            "platform": "filesystem",
+            "required_credentials_env": [],
+        }
+    ]
 
 
 def test_parse_settings_accepts_legacy_army_project_root_allowlist() -> None:
     raw_settings = valid_settings_dict()
-    raw_settings.pop("allowed_project_roots")
+    raw_settings.pop("project_registry")
     raw_settings["army_allowed_project_roots"] = [str(PROJECT_ROOT)]
 
     settings = parse_settings(raw_settings)
 
-    assert settings.allowed_project_roots == [str(PROJECT_ROOT)]
-    assert settings_to_dict(settings)["allowed_project_roots"] == [str(PROJECT_ROOT)]
+    assert [entry.root for entry in settings.project_registry] == [str(PROJECT_ROOT)]
+    assert settings_to_dict(settings)["project_registry"] == [
+        {
+            "root": str(PROJECT_ROOT),
+            "name": PROJECT_ROOT.name,
+            "platform": "filesystem",
+            "required_credentials_env": [],
+        }
+    ]
 
 
 def test_parse_settings_rejects_conflicting_new_and_legacy_allowlists() -> None:
     raw_settings = valid_settings_dict()
+    raw_settings["allowed_project_roots"] = ["/some/other/path"]
+
+    with pytest.raises(ValueError, match="cannot be combined"):
+        parse_settings(raw_settings)
+
+
+def test_parse_settings_rejects_legacy_allowlist_without_current_project_root() -> None:
+    raw_settings = valid_settings_dict()
+    raw_settings.pop("project_registry")
     raw_settings["army_allowed_project_roots"] = ["/some/other/path"]
 
-    with pytest.raises(ValueError, match="cannot both be set"):
+    with pytest.raises(ValueError, match="must include the current project_root"):
+        parse_settings(raw_settings)
+
+
+def test_parse_settings_rejects_duplicate_project_registry_roots() -> None:
+    raw_settings = valid_settings_dict()
+    raw_settings["project_registry"] = [
+        {
+            "root": str(PROJECT_ROOT),
+            "name": "AI Tech Lead",
+            "platform": "filesystem",
+            "required_credentials_env": [],
+        },
+        {
+            "root": str(PROJECT_ROOT),
+            "name": "Duplicate",
+            "platform": "filesystem",
+            "required_credentials_env": [],
+        },
+    ]
+
+    with pytest.raises(ValueError, match="duplicate roots"):
         parse_settings(raw_settings)
 
 

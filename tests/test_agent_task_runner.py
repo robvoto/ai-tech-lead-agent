@@ -1,7 +1,7 @@
 """Tests for agent_task_runner security model and I/O contract.
 
 The workflow graph is always stubbed out — these tests verify the security
-layer (input validation, project_root allowlist, execution gate, decision
+layer (input validation, project_root authorization, execution gate, decision
 resume mapping) without requiring LLM calls or a real LangGraph runtime.
 """
 
@@ -40,9 +40,10 @@ from ai_tech_lead.agent_task_runner import (
     _validate_project_root,
     run_agent_task,
 )
-from ai_tech_lead.app_settings import parse_settings
+from ai_tech_lead.app_settings import ProjectRegistryEntry, parse_settings
 from ai_tech_lead.backlog_refinement_capability import BacklogRefinementProposal
 from ai_tech_lead.backlog_repository import BacklogRefinementDraft
+from ai_tech_lead.config import PROJECT_ROOT
 from ai_tech_lead.progress_events import ProgressReporter, StdoutJsonlProgressSink
 from ai_tech_lead.request_context import resolve_request_context
 from ai_tech_lead.runtime_lock import RuntimeLockBusyError
@@ -139,6 +140,16 @@ def _stub_settings(
         settings = replace(settings, **overrides)
 
     monkeypatch.setattr("ai_tech_lead.agent_task_runner.load_settings", lambda: settings)
+
+
+def _registry_entry(root: str, **overrides: Any) -> Any:
+    entry = ProjectRegistryEntry(
+        root=str(Path(root).resolve()),
+        name=Path(root).name or root,
+        platform="filesystem",
+        required_credentials_env=[],
+    )
+    return replace(entry, **overrides)
 
 
 def _execution_success_output(summary: str = "Task completed successfully.") -> dict[str, Any]:
@@ -253,47 +264,72 @@ def test_decision_without_task_does_not_require_task(
 
 
 # ---------------------------------------------------------------------------
-# project_root allowlist
+# project_root authorization
 # ---------------------------------------------------------------------------
 
 
 class TestValidateProjectRoot:
-    def _settings(self, allowed_roots: list[str]) -> Any:
+    def _settings(self, project_registry: list[ProjectRegistryEntry]) -> Any:
         settings = parse_settings(valid_settings_dict())
-        return replace(settings, allowed_project_roots=allowed_roots)
+        return replace(settings, project_registry=project_registry)
 
     def test_none_input_returns_none(self) -> None:
-        settings = self._settings(["/allowed/path"])
+        settings = self._settings([_registry_entry(str(Path("/allowed/path")))])
         assert _validate_project_root(None, settings) is None
 
-    def test_allowlisted_path_is_accepted(self, tmp_path: Path) -> None:
+    def test_registered_path_is_accepted(self, tmp_path: Path) -> None:
         root = str(tmp_path)
-        settings = self._settings([root])
+        settings = self._settings([_registry_entry(root)])
         assert _validate_project_root(root, settings) == str(Path(root).resolve())
 
-    def test_non_allowlisted_path_returns_none(self, tmp_path: Path) -> None:
-        settings = self._settings(["/some/other/path"])
-        result = _validate_project_root(str(tmp_path), settings)
-        assert result is None
+    def test_unregistered_path_requires_explicit_human_approval(self, tmp_path: Path) -> None:
+        settings = self._settings([_registry_entry("/some/other/path")])
+        with pytest.raises(ValueError, match="has not been explicitly approved"):
+            _validate_project_root(str(tmp_path), settings)
+
+    def test_explicitly_approved_unregistered_path_is_accepted(self, tmp_path: Path) -> None:
+        settings = self._settings([_registry_entry("/some/other/path")])
+        result = _validate_project_root(str(tmp_path), settings, human_approved=True)
+        assert result == str(tmp_path.resolve())
 
     def test_path_is_resolved_before_comparison(self, tmp_path: Path) -> None:
-        # Trailing slash, symlink-style: both sides resolve to the same absolute path
         root = str(tmp_path)
-        settings = self._settings([root])
+        settings = self._settings([_registry_entry(root)])
         result = _validate_project_root(root + "/", settings)
         assert result == str(Path(root).resolve())
 
-    def test_empty_allowlist_rejects_all_external_roots(self, tmp_path: Path) -> None:
-        settings = self._settings([])
-        result = _validate_project_root(str(tmp_path), settings)
-        assert result is None
+    def test_registered_non_filesystem_platform_fails_closed(self, tmp_path: Path) -> None:
+        settings = self._settings([_registry_entry(str(tmp_path), platform="remote-git")])
+        with pytest.raises(ValueError, match="registered for platform 'remote-git'"):
+            _validate_project_root(str(tmp_path), settings)
+
+    def test_registered_root_with_missing_credentials_fails_closed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("ATL_TEST_TOKEN", raising=False)
+        settings = self._settings(
+            [_registry_entry(str(tmp_path), required_credentials_env=["ATL_TEST_TOKEN"])]
+        )
+        with pytest.raises(ValueError, match="required credentials are missing: ATL_TEST_TOKEN"):
+            _validate_project_root(str(tmp_path), settings)
+
+    def test_registered_root_with_missing_location_fails_closed(self, tmp_path: Path) -> None:
+        missing = tmp_path / "missing-project"
+        settings = self._settings([_registry_entry(str(missing))])
+        with pytest.raises(ValueError, match="location is unavailable"):
+            _validate_project_root(str(missing), settings)
 
 
-def test_project_root_not_in_allowlist_returns_failed_without_workflow(
+def test_project_root_not_registered_returns_failed_without_workflow(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     calls = _make_fake_workflow(monkeypatch, _success_output())
-    _stub_settings(monkeypatch, {"allowed_project_roots": ["/some/other/path"]})
+    _stub_settings(
+        monkeypatch,
+        {
+            "project_registry": [_registry_entry("/some/other/path", name="Other Project")]
+        },
+    )
 
     input_file, output_file = _write_input(
         tmp_path,
@@ -304,16 +340,22 @@ def test_project_root_not_in_allowlist_returns_failed_without_workflow(
     result = _read_output(output_file)
     assert rc == 1
     assert result["status"] == STATUS_FAILED
-    assert "allowlist" in result["summary"].lower()
+    assert "project_registry" in result["summary"]
     assert calls == [], "workflow must not run when project_root is rejected"
 
 
-def test_project_root_in_allowlist_is_accepted(
+def test_project_root_in_registry_is_accepted(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     allowed_root = str(tmp_path / "allowed-project")
+    Path(allowed_root).mkdir(parents=True)
     calls = _make_fake_workflow(monkeypatch, _success_output())
-    _stub_settings(monkeypatch, {"allowed_project_roots": [allowed_root]})
+    _stub_settings(
+        monkeypatch,
+        {
+            "project_registry": [_registry_entry(allowed_root, name="Allowed Project")]
+        },
+    )
 
     input_file, output_file = _write_input(
         tmp_path,
@@ -323,6 +365,29 @@ def test_project_root_in_allowlist_is_accepted(
 
     assert len(calls) == 1
     assert calls[0]["target_project_context"].project_root == str(Path(allowed_root).resolve())
+
+
+def test_unregistered_project_root_with_explicit_human_approval_is_accepted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    approved_root = tmp_path / "approved-project"
+    approved_root.mkdir()
+    calls = _make_fake_workflow(monkeypatch, _success_output())
+    _stub_settings(
+        monkeypatch,
+        {
+            "project_registry": [_registry_entry(PROJECT_ROOT, name="AI Tech Lead")]
+        },
+    )
+
+    input_file, output_file = _write_input(
+        tmp_path,
+        {"task": "fix bug", "project_root": str(approved_root), "human_approved": True},
+    )
+    run_agent_task(input_file, output_file)
+
+    assert len(calls) == 1
+    assert calls[0]["target_project_context"].project_root == str(approved_root.resolve())
 
 
 def test_no_project_root_passes_none_to_workflow(

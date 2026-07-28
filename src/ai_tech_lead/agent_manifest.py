@@ -50,10 +50,13 @@ def build_agent_manifest(settings: AppSettings | None = None) -> dict[str, Any]:
         "package_version": __version__,
         "role": "specialist coding lead callable through a bounded local subprocess contract",
         "purpose": (
-            "Primary responsibility: Lead and execute changes to existing software.\n"
-            "Select for: Refining backlog items, implementing backlog items, or modifying code, tests, configuration, "
-            "architecture, or documentation in an existing repository, including Agent Factory, "
-            "Agent Hub, AI Tech Lead, or another existing software project.\n"
+            "Primary responsibility: Lead and execute work on new or existing technical "
+            "solutions.\n"
+            "Select for: Refining backlog items, building new technical solutions, or "
+            "changing code, tests, configuration, architecture, infrastructure, or "
+            "documentation for a new or existing technical solution, regardless of "
+            "technology stack or hosting location, subject only to available authorised "
+            "access.\n"
             "Do not select for: Designing, staging, approving, rejecting, or promoting a new "
             "specialist agent package as the requested deliverable."
         ),
@@ -78,6 +81,8 @@ def build_agent_manifest(settings: AppSettings | None = None) -> dict[str, Any]:
                 "task_kind",
                 "execution_mode",
                 "decision",
+                "human_approved",
+                "approval_token",
                 "backlog_reference",
                 "project_reference",
                 "resource_references",
@@ -96,6 +101,17 @@ def build_agent_manifest(settings: AppSettings | None = None) -> dict[str, Any]:
                 "AI Tech Lead understands and bounds the request, resolves explicit project/resource "
                 "context, and asks one clarification question for unresolved references before research."
             ),
+            "target_project_authorization": {
+                "project_root": "explicit target location supplied per task when project work is requested",
+                "registered_target": "preferred; project_root matches a settings.project_registry entry",
+                "explicit_approval": "allowed for one task when human_approved is true and the target "
+                "root is not registered",
+                "fail_closed": [
+                    "unavailable_platform",
+                    "missing_credentials",
+                    "missing_location",
+                ],
+            },
             "project_reference_backlog_shape": {
                 "project_key": "optional descriptive alias for the target backlog",
                 "spreadsheet_id": "required for backlog_refinement when no local alias resolves it",
@@ -127,7 +143,8 @@ def build_agent_manifest(settings: AppSettings | None = None) -> dict[str, Any]:
                 "Matches Agent Factory's AF-054 ProjectContextContract fields (not imported — "
                 "inlined per that module's own scope note). AI Tech Lead does not require a "
                 "target project for every task, so `required` is false; when one is supplied "
-                "it may be read and, in execute mode, written to."
+                "it must be explicitly supplied, authorised via the project registry or human "
+                "approval, and may then be read and, in execute mode, written to."
             ),
         },
         "output_contract": {
@@ -277,7 +294,7 @@ def build_agent_manifest(settings: AppSettings | None = None) -> dict[str, Any]:
             "telegram_enabled": settings.telegram_enabled,
             "orchestrator_ai_enabled": settings.orchestrator_ai_enabled,
             "allowed_directories": list(settings.allowed_directories),
-            "subprocess_allowed_project_roots": list(settings.allowed_project_roots),
+            "subprocess_project_registry": [entry.to_dict() for entry in settings.project_registry],
             "knowledge_store_path": settings.knowledge_store_path,
         }
     else:

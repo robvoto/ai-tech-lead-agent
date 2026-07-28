@@ -11,8 +11,27 @@ from urllib.parse import urlparse
 from ai_tech_lead.config import PROJECT_ROOT, SETTINGS_PATH
 
 ALLOWED_TELEGRAM_TRANSPORTS = {"polling", "webhook"}
+PROJECT_REGISTRY_KEY = "project_registry"
 ALLOWED_PROJECT_ROOTS_KEY = "allowed_project_roots"
 LEGACY_ALLOWED_PROJECT_ROOTS_KEY = "army_allowed_project_roots"
+
+
+@dataclass(frozen=True)
+class ProjectRegistryEntry:
+    """One authorised target-project location AI Tech Lead may operate against."""
+
+    root: str
+    name: str
+    platform: str
+    required_credentials_env: list[str]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "root": self.root,
+            "name": self.name,
+            "platform": self.platform,
+            "required_credentials_env": list(self.required_credentials_env),
+        }
 
 
 @dataclass(frozen=True)
@@ -64,7 +83,7 @@ class AppSettings:
     orchestrator_ai_max_output_tokens: int
     orchestrator_ai_timeout_seconds: int
     coding_agent_progress_interval_seconds: int
-    allowed_project_roots: list[str]
+    project_registry: list[ProjectRegistryEntry]
     sleep_mode: bool
     backlog_project_key: str
     backlog_spreadsheet_id: str
@@ -72,6 +91,15 @@ class AppSettings:
     backlog_google_credentials_path: str
     backlog_projects: dict[str, dict[str, str]]
     backlog_pending_update_max_attempts: int
+
+    def project_registry_entry_for_root(
+        self, project_root: str
+    ) -> ProjectRegistryEntry | None:
+        resolved_root = str(Path(project_root).resolve())
+        for entry in self.project_registry:
+            if entry.root == resolved_root:
+                return entry
+        return None
 
 
 def load_settings(settings_path: Path = SETTINGS_PATH) -> AppSettings:
@@ -274,11 +302,7 @@ def parse_settings(raw_settings: dict[str, Any]) -> AppSettings:
             "coding_agent_progress_interval_seconds",
             default=10,
         ),
-        allowed_project_roots=_optional_string_list_with_legacy(
-            raw_settings,
-            ALLOWED_PROJECT_ROOTS_KEY,
-            legacy_key=LEGACY_ALLOWED_PROJECT_ROOTS_KEY,
-        ),
+        project_registry=_optional_project_registry(raw_settings),
         sleep_mode=_optional_bool(
             raw_settings,
             "sleep_mode",
@@ -300,7 +324,7 @@ def parse_settings(raw_settings: dict[str, Any]) -> AppSettings:
     )
     _validate_telegram_settings(settings)
     _validate_research_settings(settings)
-    _validate_project_root_allowlist_settings(settings)
+    _validate_project_registry_settings(settings)
     return settings
 
 
@@ -353,7 +377,7 @@ def settings_to_dict(settings: AppSettings) -> dict[str, Any]:
         "orchestrator_ai_max_output_tokens": settings.orchestrator_ai_max_output_tokens,
         "orchestrator_ai_timeout_seconds": settings.orchestrator_ai_timeout_seconds,
         "coding_agent_progress_interval_seconds": settings.coding_agent_progress_interval_seconds,
-        ALLOWED_PROJECT_ROOTS_KEY: settings.allowed_project_roots,
+        PROJECT_REGISTRY_KEY: [entry.to_dict() for entry in settings.project_registry],
         "sleep_mode": settings.sleep_mode,
         "backlog_project_key": settings.backlog_project_key,
         "backlog_spreadsheet_id": settings.backlog_spreadsheet_id,
@@ -428,6 +452,75 @@ def _optional_string_list_with_legacy(
     if legacy_value is not None:
         return _optional_string_list(raw_settings, legacy_key)
     return []
+
+
+def _optional_project_registry(
+    raw_settings: dict[str, Any],
+) -> list[ProjectRegistryEntry]:
+    value = raw_settings.get(PROJECT_REGISTRY_KEY)
+    legacy_present = (
+        raw_settings.get(ALLOWED_PROJECT_ROOTS_KEY) is not None
+        or raw_settings.get(LEGACY_ALLOWED_PROJECT_ROOTS_KEY) is not None
+    )
+
+    if value is not None and legacy_present:
+        raise ValueError(
+            f"Setting '{PROJECT_REGISTRY_KEY}' cannot be combined with legacy "
+            f"'{ALLOWED_PROJECT_ROOTS_KEY}' settings."
+        )
+
+    if value is None:
+        legacy_roots = _optional_string_list_with_legacy(
+            raw_settings,
+            ALLOWED_PROJECT_ROOTS_KEY,
+            legacy_key=LEGACY_ALLOWED_PROJECT_ROOTS_KEY,
+        )
+        return [_legacy_project_registry_entry(root) for root in legacy_roots]
+
+    if not isinstance(value, list):
+        raise ValueError(f"Setting '{PROJECT_REGISTRY_KEY}' must be a list of project entries.")
+
+    entries: list[ProjectRegistryEntry] = []
+    for index, item in enumerate(value):
+        if not isinstance(item, dict):
+            raise ValueError(
+                f"Setting '{PROJECT_REGISTRY_KEY}[{index}]' must be an object."
+            )
+        raw_root = item.get("root")
+        if not isinstance(raw_root, str) or not raw_root.strip():
+            raise ValueError(
+                f"Setting '{PROJECT_REGISTRY_KEY}[{index}].root' must be a non-empty string."
+            )
+        resolved_root = str(Path(raw_root.strip()).expanduser().resolve())
+        raw_name = item.get("name")
+        name = str(raw_name).strip() if raw_name is not None else Path(resolved_root).name
+        if not name:
+            name = Path(resolved_root).name or resolved_root
+        raw_platform = item.get("platform", "filesystem")
+        if not isinstance(raw_platform, str) or not raw_platform.strip():
+            raise ValueError(
+                f"Setting '{PROJECT_REGISTRY_KEY}[{index}].platform' must be a non-empty string."
+            )
+        required_credentials_env = _optional_string_list(item, "required_credentials_env")
+        entries.append(
+            ProjectRegistryEntry(
+                root=resolved_root,
+                name=name,
+                platform=raw_platform.strip(),
+                required_credentials_env=required_credentials_env,
+            )
+        )
+    return entries
+
+
+def _legacy_project_registry_entry(root: str) -> ProjectRegistryEntry:
+    resolved_root = str(Path(root).expanduser().resolve())
+    return ProjectRegistryEntry(
+        root=resolved_root,
+        name=Path(resolved_root).name or resolved_root,
+        platform="filesystem",
+        required_credentials_env=[],
+    )
 
 
 def _required_bool(raw_settings: dict[str, Any], key: str) -> bool:
@@ -584,14 +677,22 @@ def _validate_research_settings(settings: AppSettings) -> None:
             )
 
 
-def _validate_project_root_allowlist_settings(settings: AppSettings) -> None:
-    if not settings.allowed_project_roots:
-        raise ValueError(f"Setting '{ALLOWED_PROJECT_ROOTS_KEY}' must include the project root.")
+def _validate_project_registry_settings(settings: AppSettings) -> None:
+    if not settings.project_registry:
+        raise ValueError(f"Setting '{PROJECT_REGISTRY_KEY}' must include the project root.")
 
     project_root = str(Path(settings.project_root).resolve())
-    allowed_roots = {str(Path(root).resolve()) for root in settings.allowed_project_roots}
-    if project_root not in allowed_roots:
+    registry_roots: set[str] = set()
+    for entry in settings.project_registry:
+        if entry.root in registry_roots:
+            raise ValueError(
+                f"Setting '{PROJECT_REGISTRY_KEY}' cannot contain duplicate roots "
+                f"({entry.root})."
+            )
+        registry_roots.add(entry.root)
+
+    if project_root not in registry_roots:
         raise ValueError(
-            f"Setting '{ALLOWED_PROJECT_ROOTS_KEY}' must include the current project_root "
+            f"Setting '{PROJECT_REGISTRY_KEY}' must include the current project_root "
             f"({project_root})."
         )

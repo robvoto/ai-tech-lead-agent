@@ -67,7 +67,14 @@ def valid_settings_dict() -> dict[str, Any]:
         "telegram_webhook_bind_host": "127.0.0.1",
         "telegram_webhook_bind_port": 8080,
         "telegram_webhook_secret_token": "",
-        "allowed_project_roots": [str(PROJECT_ROOT)],
+        "project_registry": [
+            {
+                "root": str(PROJECT_ROOT),
+                "name": "AI Tech Lead",
+                "platform": "filesystem",
+                "required_credentials_env": [],
+            }
+        ],
         "sleep_mode": False,
         "backlog_project_key": "ai-tech-lead",
         "backlog_spreadsheet_id": "test-spreadsheet-id",

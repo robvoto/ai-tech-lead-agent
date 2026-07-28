@@ -146,8 +146,8 @@ This section replaces the standalone `ARMY_INTEGRATION.md` page. Keep the bounde
 
 - A caller invokes AI Tech Lead through `run-agent-task`.
 - A caller discovers the callable contract through `uv run python -m ai_tech_lead manifest`.
-- A new task is JSON with a task string plus bounded metadata such as `request_id`, optional Hub `run_id`, `source`, `project_root`, `project_reference`, optional `task_kind`, `references`, and `execution_mode`.
-- `run-agent-task` accepts generic caller project/context data, validates it once, and converts it into AI Tech Lead's internal immutable `TargetProjectContext`. If the target project root is missing or invalid, project-aware steps fail clearly instead of silently substituting AI Tech Lead's own repo.
+- A new task is JSON with a task string plus bounded metadata such as `request_id`, optional Hub `run_id`, `source`, explicit `project_root`, `project_reference`, optional `task_kind`, `references`, and `execution_mode`.
+- `run-agent-task` accepts generic caller project/context data, validates it once, and converts it into AI Tech Lead's internal immutable `TargetProjectContext`. A supplied target project root must match the authorised `project_registry` or arrive with explicit human approval for that task. Project-aware steps fail clearly instead of silently substituting AI Tech Lead's own repo, and they stop safely when the registered platform, credentials, or location are unavailable.
 - `task_kind` defaults to `coding_task`. `task_kind: "backlog_refinement"` routes through the existing backlog-refinement service instead of the coding workflow and is the primary Hub entrypoint for proposing new backlog items.
 - Backlog refinement reads project-specific backlog settings from the supplied target-project context (`project_reference.backlog` / `project_reference.backlog_project`) rather than from hardcoded Sheet IDs, tabs, prefixes, columns, or repo-local aliases. Telegram `/propose` reuses the same underlying capability.
 - `execution_mode` is a request, not a grant. `instruction_only` is the safe default.

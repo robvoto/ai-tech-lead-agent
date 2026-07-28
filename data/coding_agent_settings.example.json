@@ -74,8 +74,13 @@
   "orchestrator_ai_max_output_tokens": 300,
   "orchestrator_ai_timeout_seconds": 20,
   "coding_agent_progress_interval_seconds": 10,
-  "allowed_project_roots": [
-    "/home/robvoto/projects/ai-tech-lead"
+  "project_registry": [
+    {
+      "root": "/home/robvoto/projects/ai-tech-lead",
+      "name": "AI Tech Lead",
+      "platform": "filesystem",
+      "required_credentials_env": []
+    }
   ],
   "sleep_mode": false,
   "backlog_project_key": "ai-tech-lead",
