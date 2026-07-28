@@ -8,6 +8,10 @@ from typing import Any
 
 from . import __version__
 from .app_settings import AppSettings
+from .target_project_context import (
+    PROJECT_CONTEXT_SCHEMA_VERSION,
+    SUPPORTED_PROJECT_CONTEXT_SCHEMA_VERSIONS,
+)
 
 MANIFEST_SCHEMA_VERSION = 1
 MANIFEST_COMMAND = "uv run python -m ai_tech_lead manifest"
@@ -47,7 +51,7 @@ def build_agent_manifest(settings: AppSettings | None = None) -> dict[str, Any]:
         "role": "specialist coding lead callable through a bounded local subprocess contract",
         "purpose": (
             "Primary responsibility: Lead and execute changes to existing software.\n"
-            "Select for: Implementing backlog items or modifying code, tests, configuration, "
+            "Select for: Refining backlog items, implementing backlog items, or modifying code, tests, configuration, "
             "architecture, or documentation in an existing repository, including Agent Factory, "
             "Agent Hub, AI Tech Lead, or another existing software project.\n"
             "Do not select for: Designing, staging, approving, rejecting, or promoting a new "
@@ -71,12 +75,14 @@ def build_agent_manifest(settings: AppSettings | None = None) -> dict[str, Any]:
                 "run_id",
                 "source",
                 "project_root",
+                "task_kind",
                 "execution_mode",
                 "decision",
                 "backlog_reference",
                 "project_reference",
                 "resource_references",
                 "references",
+                "project_context",
             ],
             "decision_shape": {
                 "option": "required — must match one of the option names the paused "
@@ -84,17 +90,45 @@ def build_agent_manifest(settings: AppSettings | None = None) -> dict[str, Any]:
                 "text": "required only if the chosen option's needs_text is true",
                 "actor": "optional — free-text identity of who or what is deciding",
             },
+            "task_kinds": ["coding_task", "backlog_refinement"],
             "execution_modes": ["instruction_only", "execute"],
             "context_resolution": (
                 "AI Tech Lead understands and bounds the request, resolves explicit project/resource "
                 "context, and asks one clarification question for unresolved references before research."
             ),
+            "project_reference_backlog_shape": {
+                "project_key": "optional descriptive alias for the target backlog",
+                "spreadsheet_id": "required for backlog_refinement when no local alias resolves it",
+                "sheet_name": "required for backlog_refinement when no local alias resolves it",
+                "item_id_prefix": "optional; if omitted, AI Tech Lead infers it from the backlog when unambiguous",
+                "columns": "optional object overriding project-specific column names for refined backlog fields",
+            },
+            "project_context_shape": {
+                "schema_version": "optional, defaults to 1 — matches Agent Factory's AF-054 "
+                "ProjectContext shape",
+                "project_root": "optional; must agree with top-level project_root if both are sent",
+                "references": "optional list of pointer strings; equivalent to top-level references",
+                "note": "Legacy flat top-level project_root/references are still accepted "
+                "(implicit schema_version 1) for callers that don't send this envelope yet.",
+            },
             "backlog_reference_shape": {
                 "item_id": "required",
                 "project_key": "required unless spreadsheet_id and sheet_name are both given",
                 "spreadsheet_id": "required unless project_key resolves via a configured alias",
                 "sheet_name": "required unless project_key resolves via a configured alias",
             },
+        },
+        "project_context_contract": {
+            "supported_schema_versions": sorted(SUPPORTED_PROJECT_CONTEXT_SCHEMA_VERSIONS),
+            "required": False,
+            "capabilities": ["read", "write"],
+            "enforced_filesystem_permission": "write",
+            "notes": (
+                "Matches Agent Factory's AF-054 ProjectContextContract fields (not imported — "
+                "inlined per that module's own scope note). AI Tech Lead does not require a "
+                "target project for every task, so `required` is false; when one is supplied "
+                "it may be read and, in execute mode, written to."
+            ),
         },
         "output_contract": {
             "status_values": _SUPPORTED_OUTPUT_STATUSES,
@@ -111,10 +145,18 @@ def build_agent_manifest(settings: AppSettings | None = None) -> dict[str, Any]:
                 "evidence",
                 "next_action",
                 "result_kind",
+                "backlog_refinement",
                 "pending_decision",
                 "backlog_sync_status",
                 "agent_manifest",
             ],
+            "backlog_refinement_shape": {
+                "draft": "structured refined backlog draft proposed by AI Tech Lead",
+                "source": "model/backend that produced the draft",
+                "skill_path": "runtime skill file loaded for backlog-item authoring",
+                "matches": "list of matching backlog IDs with kind/status/reason",
+                "blocked": "true when AI Tech Lead found blocking duplicate, already-done, obsolete, or conflicting-scope matches",
+            },
             "pending_decision_shape": {
                 "thread_id": "opaque; informational only, not required on the resume call",
                 "kind": "which internal pause this is (not meaningful to interpret, "
@@ -152,7 +194,7 @@ def build_agent_manifest(settings: AppSettings | None = None) -> dict[str, Any]:
                 "terminal": False,
                 "notes": (
                     "Returned whenever the workflow is genuinely paused (approval, plan or "
-                    "failure guidance, research approval, completion verification). See "
+                    "failure guidance, research approval, completion verification, or backlog refinement approval). See "
                     "pending_decision for exactly what options are valid right now. Resume by "
                     "resubmitting request_id with a decision — no task field needed."
                 ),

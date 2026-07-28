@@ -89,7 +89,8 @@ uv run python -m ai_tech_lead run-agent-task --input-json /tmp/subprocess-task.j
 ```
 
 A new task's input JSON must include `task`. Common optional fields are `request_id`, Hub
-`run_id`, `source`, `project_root`, `execution_mode`, and `backlog_reference`.
+`run_id`, `source`, `project_root`, `project_reference`, `task_kind`,
+`execution_mode`, and `backlog_reference`.
 
 To resume a paused conversation, resubmit the same `request_id` with `decision:
 {"option": "...", "text": "...", "actor": "..."}` instead of `task` — the option must be
@@ -101,6 +102,21 @@ required only when that option is marked `needs_text`.
   `spreadsheet_id`/`sheet_name` may be omitted if `project_key` resolves through the
   local `backlog_projects` settings registry. An invalid or inaccessible reference
   fails the request clearly — there is no silent fallback to free-text-only mode.
+- `task_kind` defaults to `coding_task`. Use `task_kind: "backlog_refinement"` when
+  the caller wants AI Tech Lead to draft a new backlog item proposal instead of
+  running the coding workflow.
+- `project_reference` carries the generic caller-supplied target-project context that
+  AI Tech Lead validates once and converts into its own immutable internal
+  `TargetProjectContext`. For backlog refinement, the caller must supply backlog
+  config through `project_reference.backlog` (or the legacy-compatible
+  `project_reference.backlog_project`) so the runtime can resolve the right
+  spreadsheet, sheet, item ID prefix, and column names without hardcoding them.
+- A backlog-refinement request pauses for explicit human approval before any Sheet
+  write. The paused response uses `status: "waiting_decision"` with
+  `pending_decision.kind: "backlog_refinement_approval"` and `approve` / `cancel`
+  options. If duplicate, obsolete, completed-equivalent, or conflicting-scope
+  matches are found, the response ends as `needs_clarification` and does not queue
+  a writable draft.
 - When `backlog_reference` is supplied and the run actually executes code
   successfully, AI Tech Lead writes the item's `Status`/`Evidence / Validation`
   columns back to the Sheet and reports the outcome in the response field
@@ -119,8 +135,9 @@ required only when that option is marked `needs_text`.
   (also required again on a resume call, since the graph is rebuilt each invocation).
 - Subprocess responses use `success`, `needs_clarification`, `waiting_decision`, and `failed`.
 - Every genuine pause inside the specialist workflow — approval, plan guidance, repeated
-  failure guidance, research approval — is surfaced as `waiting_decision` with a
-  `pending_decision` block describing what's paused and the named options available.
+  failure guidance, research approval, backlog-refinement approval — is surfaced as
+  `waiting_decision` with a `pending_decision` block describing what's paused and
+  the named options available.
   `needs_clarification` is reserved for the one case with no conversation to resume: an
   unresolved reference, where the workflow ended rather than paused.
 - External callers should read `uv run python -m ai_tech_lead manifest` and use the response

@@ -28,14 +28,15 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.types import Command
 
 from .app_settings import AppSettings, load_settings, save_settings
-from .backlog_draft_builder import (
-    BacklogRefinementBuildError,
-    build_backlog_refinement_from_text,
-)
 from .backlog_loader import backlog_item_to_graph_state
+from .backlog_refinement_capability import (
+    append_approved_backlog_refinement,
+    format_backlog_refinement_review,
+    infer_backlog_item_prefix,
+    prepare_backlog_refinement_proposal,
+)
 from .backlog_repository import (
     BacklogItem,
-    BacklogRefinementDraft,
     BacklogValidationError,
     format_backlog_list_item,
 )
@@ -198,7 +199,7 @@ class PendingBacklogDraft:
     """Backlog refinement draft waiting for explicit Telegram approval."""
 
     chat_id: str
-    draft: BacklogRefinementDraft
+    proposal: Any
 
 
 @dataclass
@@ -845,23 +846,31 @@ class TelegramOperator:
         logger.info("Telegram action: building backlog refinement draft for chat %s.", chat_id)
         repository = self._get_repository()
         try:
-            result = build_backlog_refinement_from_text(
+            proposal = prepare_backlog_refinement_proposal(
                 text=text,
                 repository=repository,
                 settings=self._settings,
+                item_id_prefix=infer_backlog_item_prefix(repository),
             )
-        except BacklogRefinementBuildError as error:
+        except (FileNotFoundError, ValueError) as error:
             self._send_message(chat_id, f"Backlog refinement failed: {error}")
             return
 
-        self._pending_backlog_drafts[chat_id] = PendingBacklogDraft(
-            chat_id=chat_id, draft=result.draft
-        )
+        if proposal.blocked:
+            self._send_message(
+                chat_id,
+                format_backlog_refinement_review(
+                    proposal,
+                    limit=self._settings.telegram_max_message_chars,
+                ),
+            )
+            return
+
+        self._pending_backlog_drafts[chat_id] = PendingBacklogDraft(chat_id=chat_id, proposal=proposal)
         self._send_message(
             chat_id,
-            _backlog_refinement_prompt(
-                result.draft,
-                source=result.source,
+            format_backlog_refinement_review(
+                proposal,
                 limit=self._settings.telegram_max_message_chars,
             ),
         )
@@ -874,12 +883,12 @@ class TelegramOperator:
         self._pending_backlog_drafts.pop(chat_id, None)
         if not approved:
             self._send_message(
-                chat_id, f"Backlog refinement rejected: {pending_draft.draft.item_id}"
+                chat_id, f"Backlog refinement rejected: {pending_draft.proposal.draft.item_id}"
             )
             return True
 
         repository = self._get_repository()
-        item = repository.add_refined_item(pending_draft.draft)
+        item = append_approved_backlog_refinement(pending_draft.proposal, repository)
         self._send_message(chat_id, f"Backlog item added: {item.item_id} - {item.title}")
         return True
 
@@ -1706,7 +1715,7 @@ class TelegramOperator:
         if active_task is not None:
             cleaned_parts.append(f"active task {active_task.task_label}")
         if pending_draft is not None:
-            cleaned_parts.append(f"pending backlog draft {pending_draft.draft.item_id}")
+            cleaned_parts.append(f"pending backlog draft {pending_draft.proposal.draft.item_id}")
 
         if not cleaned_parts:
             logger.info(
@@ -1737,7 +1746,7 @@ class TelegramOperator:
         if active_task is not None:
             lines.append(f"Discarded active task: {active_task.task_label}.")
         if pending_draft is not None:
-            lines.append(f"Discarded pending backlog draft: {pending_draft.draft.item_id}.")
+            lines.append(f"Discarded pending backlog draft: {pending_draft.proposal.draft.item_id}.")
         if cancellation_requested:
             lines.append("Cancellation requested for the running coding-agent subprocess.")
         elif active_task is not None and active_task.stage == TelegramTaskStage.RUNNING:
@@ -2224,55 +2233,6 @@ def _telegram_preview(text: str, *, limit: int) -> str:
     """Return a compact single-line preview suitable for Telegram messages."""
     normalized = " ".join(text.split())
     return _truncate_text(normalized, limit)
-
-
-def _backlog_refinement_prompt(
-    draft: BacklogRefinementDraft,
-    *,
-    source: str,
-    limit: int,
-) -> str:
-    approval_required = "yes" if draft.approval_required else "no"
-    priority = draft.priority.strip() or "Unspecified"
-    research_required = "yes" if draft.research_required else "no"
-    external_research_needed = "yes" if draft.external_research_needed else "no"
-    duplicate_summary = _summarize_text(draft.duplicate_check_result, limit=180)
-    stale_summary = _summarize_text(draft.stale_check_result, limit=180)
-    already_done_summary = _summarize_text(draft.already_done_check_result, limit=180)
-    cache_used = "; ".join(draft.research_cache_used) if draft.research_cache_used else "None"
-    pattern = _summarize_text(draft.recommended_implementation_pattern, limit=220)
-    guidance = _summarize_text(draft.implementation_guidance, limit=220)
-    approval_reason = _summarize_text(draft.approval_reason, limit=180)
-    problem_summary = _summarize_text(draft.problem, limit=200)
-    outcome_summary = _summarize_text(draft.desired_outcome, limit=180)
-    risk_flags = "; ".join(draft.approval_risk_flags) if draft.approval_risk_flags else "None"
-    return _truncate_text(
-        "\n".join(
-            [
-                "Backlog refinement ready",
-                f"ID: {draft.item_id}",
-                f"Title: {draft.title}",
-                f"Type: {draft.item_type}  Epic: {draft.epic}  Size: {draft.size}",
-                f"Source: {source}  Priority: {priority}",
-                f"Problem: {problem_summary}",
-                f"Outcome: {outcome_summary}",
-                f"Approval required: {approval_required}",
-                f"Approval reason: {approval_reason}",
-                f"Risk flags: {risk_flags}",
-                f"Research required: {research_required}",
-                f"Research cache used: {cache_used}",
-                f"External research needed: {external_research_needed}",
-                f"Duplicate check: {duplicate_summary}",
-                f"Stale check: {stale_summary}",
-                f"Already done check: {already_done_summary}",
-                f"Recommended pattern: {pattern}",
-                f"Implementation guidance: {guidance}",
-                "",
-                "Reply /approve to add it or /reject to discard it.",
-            ]
-        ),
-        limit,
-    )
 
 
 def _completion_message(

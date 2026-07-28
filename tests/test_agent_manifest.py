@@ -22,7 +22,7 @@ def test_build_agent_manifest_contains_core_contract_fields() -> None:
     assert manifest["agent_name"] == "AI Tech Lead"
     assert manifest["purpose"] == (
         "Primary responsibility: Lead and execute changes to existing software.\n"
-        "Select for: Implementing backlog items or modifying code, tests, configuration, "
+        "Select for: Refining backlog items, implementing backlog items, or modifying code, tests, configuration, "
         "architecture, or documentation in an existing repository, including Agent Factory, "
         "Agent Hub, AI Tech Lead, or another existing software project.\n"
         "Do not select for: Designing, staging, approving, rejecting, or promoting a new "
@@ -44,6 +44,9 @@ def test_build_agent_manifest_contains_core_contract_fields() -> None:
         "waiting_decision",
         "failed",
     ]
+    assert "task_kind" in manifest["input_contract"]["optional"]
+    assert manifest["input_contract"]["task_kinds"] == ["coding_task", "backlog_refinement"]
+    assert "backlog_refinement" in manifest["output_contract"]["fields"]
     assert "run_id" in manifest["input_contract"]["optional"]
     assert manifest["progress_contract"]["transport"] == "stdout_jsonl"
     assert manifest["progress_contract"]["log_transport"] == "stderr"
@@ -60,6 +63,19 @@ def test_build_agent_manifest_contains_core_contract_fields() -> None:
     assert manifest["runtime"]["project_root"] == settings.project_root
     assert manifest["runtime"]["knowledge_store_path"] == settings.knowledge_store_path
     assert len(manifest["manifest_hash"]) == 64
+
+
+def test_build_agent_manifest_declares_project_context_contract() -> None:
+    settings = parse_settings(valid_settings_dict())
+
+    manifest = build_agent_manifest(settings)
+
+    assert manifest["project_context_contract"]["supported_schema_versions"] == [1]
+    assert manifest["project_context_contract"]["required"] is False
+    assert manifest["project_context_contract"]["capabilities"] == ["read", "write"]
+    assert manifest["project_context_contract"]["enforced_filesystem_permission"] == "write"
+    assert "project_context" in manifest["input_contract"]["optional"]
+    assert manifest["input_contract"]["project_context_shape"]["schema_version"]
 
 
 def test_render_agent_manifest_compact_is_single_line_json() -> None:

@@ -41,9 +41,12 @@ from ai_tech_lead.agent_task_runner import (
     run_agent_task,
 )
 from ai_tech_lead.app_settings import parse_settings
+from ai_tech_lead.backlog_refinement_capability import BacklogRefinementProposal
+from ai_tech_lead.backlog_repository import BacklogRefinementDraft
 from ai_tech_lead.progress_events import ProgressReporter, StdoutJsonlProgressSink
 from ai_tech_lead.request_context import resolve_request_context
 from ai_tech_lead.runtime_lock import RuntimeLockBusyError
+from ai_tech_lead.target_project_context import BacklogColumnContext, BacklogProjectContext
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -1550,3 +1553,418 @@ def test_mismatched_top_level_and_project_reference_roots_are_rejected() -> None
             backlog_reference=None,
             source_record=None,
         )
+
+
+def test_project_context_valid_envelope_is_accepted() -> None:
+    settings = parse_settings(valid_settings_dict())
+    context = _build_target_project_context(
+        task_input={
+            "project_context": {
+                "schema_version": 1,
+                "project_root": settings.project_root,
+                "references": ["AF-052"],
+            }
+        },
+        settings=settings,
+        backlog_reference=None,
+        source_record=None,
+    )
+
+    assert context.project_root == settings.project_root
+    assert [item.item_id for item in context.resource_references] == ["AF-052"]
+
+
+def test_project_context_unsupported_schema_version_is_rejected() -> None:
+    settings = parse_settings(valid_settings_dict())
+
+    with pytest.raises(ValueError, match="schema_version=99"):
+        _build_target_project_context(
+            task_input={"project_context": {"schema_version": 99, "project_root": settings.project_root}},
+            settings=settings,
+            backlog_reference=None,
+            source_record=None,
+        )
+
+
+def test_project_context_missing_project_root_leaves_context_empty() -> None:
+    """No project_root anywhere (neither project_context nor legacy top-level) resolves
+    to an empty root rather than failing — only code paths that actually need a target
+    project (require_project_root) fail clearly, at the point of use."""
+    settings = parse_settings(valid_settings_dict())
+    context = _build_target_project_context(
+        task_input={"project_context": {"schema_version": 1, "references": []}},
+        settings=settings,
+        backlog_reference=None,
+        source_record=None,
+    )
+
+    assert context.project_root == ""
+    with pytest.raises(ValueError, match="Target project root is required"):
+        context.require_project_root("a test")
+
+
+def test_project_context_references_map_into_resource_references() -> None:
+    settings = parse_settings(valid_settings_dict())
+    context = _build_target_project_context(
+        task_input={"project_context": {"schema_version": 1, "references": ["AF-052", "AH-010"]}},
+        settings=settings,
+        backlog_reference=None,
+        source_record=None,
+    )
+
+    assert [item.item_id for item in context.resource_references] == ["AF-052", "AH-010"]
+
+
+def test_project_context_conflicting_top_level_project_root_is_rejected() -> None:
+    settings = parse_settings(valid_settings_dict())
+
+    with pytest.raises(ValueError, match="project_context.project_root does not match"):
+        _build_target_project_context(
+            task_input={
+                "project_root": settings.project_root,
+                "project_context": {"schema_version": 1, "project_root": "/different/project/root"},
+            },
+            settings=settings,
+            backlog_reference=None,
+            source_record=None,
+        )
+
+
+def test_legacy_flat_project_root_and_references_still_work_without_project_context() -> None:
+    """Bounded migration: callers that never send the new project_context envelope keep
+    working exactly as before, through the same resolver rather than a second path."""
+    settings = parse_settings(valid_settings_dict())
+    context = _build_target_project_context(
+        task_input={"project_root": settings.project_root, "references": ["AF-052"]},
+        settings=settings,
+        backlog_reference=None,
+        source_record=None,
+    )
+
+    assert context.project_root == settings.project_root
+    assert [item.item_id for item in context.resource_references] == ["AF-052"]
+
+
+def test_backlog_project_context_stays_separate_from_project_context_envelope() -> None:
+    """BacklogProjectContext (spreadsheet_id/sheet_name/columns) is an AI Tech Lead-owned
+    extension carried through project_reference.backlog — it must not be affected by, or
+    leak into, the universal project_context envelope."""
+    settings = parse_settings(valid_settings_dict())
+    context = _build_target_project_context(
+        task_input={
+            "project_context": {
+                "schema_version": 1,
+                "project_root": settings.project_root,
+                "references": ["AF-052"],
+            },
+            "project_reference": {
+                "backlog": {
+                    "spreadsheet_id": "sheet-123",
+                    "sheet_name": "Backlog",
+                    "item_id_prefix": "AF",
+                }
+            },
+        },
+        settings=settings,
+        backlog_reference=None,
+        source_record=None,
+    )
+
+    assert context.project_root == settings.project_root
+    assert context.backlog_project is not None
+    assert context.backlog_project.spreadsheet_id == "sheet-123"
+    assert context.backlog_project.sheet_name == "Backlog"
+    assert [item.item_id for item in context.resource_references] == ["AF-052"]
+
+
+def test_hub_backlog_refinement_returns_waiting_decision_with_proposal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _stub_settings(monkeypatch)
+
+    class _FakeStore:
+        saved: dict[str, Any] = {}
+
+        def save_pending(self, *, request_id: str, proposal: Any) -> None:
+            self.saved[request_id] = proposal
+
+        def get_pending(self, request_id: str) -> Any | None:
+            return self.saved.get(request_id)
+
+        def clear_pending(self, request_id: str) -> None:
+            self.saved.pop(request_id, None)
+
+    monkeypatch.setattr("ai_tech_lead.agent_task_runner.BacklogRefinementStore", _FakeStore)
+    monkeypatch.setattr("ai_tech_lead.agent_task_runner.repository_for", lambda *args, **kwargs: object())
+    monkeypatch.setattr("ai_tech_lead.agent_task_runner.infer_backlog_item_prefix", lambda _repo: "HUB")
+    monkeypatch.setattr(
+        "ai_tech_lead.agent_task_runner.prepare_backlog_refinement_proposal",
+        lambda **_kwargs: BacklogRefinementProposal(
+            draft=BacklogRefinementDraft(
+                item_id="HUB-002",
+                title="Add backlog-only mode",
+                creator="Human",
+                item_type="Story",
+                epic="Backlog Management",
+                priority="High",
+                size="M",
+                approval_required=True,
+                approval_reason="Creates a new product capability.",
+                problem="Hub needs a first-class backlog refinement entrypoint.",
+                desired_outcome="Allow Hub to request backlog refinement safely.",
+                scope=["Add Hub backlog refinement mode"],
+                out_of_scope=["Change the coding workflow"],
+                acceptance_criteria=["Hub can request a backlog refinement draft"],
+                duplicate_check_result="No duplicate found.",
+                stale_check_result="No stale item found.",
+                already_done_check_result="Not already done.",
+                research_required=False,
+                research_cache_used=[],
+                external_research_needed=False,
+                recommended_implementation_pattern="Reuse the existing refinement service.",
+                patterns_explicitly_rejected=["Second workflow"],
+                freshness_risk="Low.",
+                implementation_guidance="Keep the capability outside the coding graph.",
+                approval_risk_flags=["Writes backlog items"],
+            ),
+            source="fake-model",
+            skill_path=".skills/backlog-item-authoring/SKILL.md",
+            matches=(),
+            blocked=False,
+        ),
+    )
+
+    input_file, output_file = _write_input(
+        tmp_path,
+        {
+            "request_id": "hub-refine-1",
+            "task_kind": "backlog_refinement",
+            "task": "Add backlog-only mode",
+            "project_reference": {
+                "backlog": {
+                    "project_key": "agent-hub",
+                    "spreadsheet_id": "spreadsheet-hub",
+                    "sheet_name": "Hub Backlog",
+                    "item_id_prefix": "HUB",
+                }
+            },
+        },
+    )
+
+    rc = run_agent_task(input_file, output_file)
+    result = _read_output(output_file)
+
+    assert rc == 0
+    assert result["status"] == STATUS_WAITING_DECISION
+    assert result["result_kind"] == "backlog_refinement_draft"
+    assert result["backlog_refinement"]["draft"]["item_id"] == "HUB-002"
+    assert result["pending_decision"]["kind"] == "backlog_refinement_approval"
+
+
+def test_hub_backlog_refinement_duplicate_blocking_returns_clarification(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _stub_settings(monkeypatch)
+    monkeypatch.setattr("ai_tech_lead.agent_task_runner.repository_for", lambda *args, **kwargs: object())
+    monkeypatch.setattr("ai_tech_lead.agent_task_runner.infer_backlog_item_prefix", lambda _repo: "ATL")
+    monkeypatch.setattr(
+        "ai_tech_lead.agent_task_runner.prepare_backlog_refinement_proposal",
+        lambda **_kwargs: BacklogRefinementProposal(
+            draft=BacklogRefinementDraft(
+                item_id="ATL-002",
+                title="Add backlog support",
+                creator="Human",
+                item_type="Story",
+                epic="Backlog Management",
+                priority="High",
+                size="M",
+                approval_required=True,
+                approval_reason="Writes backlog items.",
+                problem="Need backlog support.",
+                desired_outcome="Backlog support exists.",
+                scope=["Backlog refinement"],
+                out_of_scope=["Coding workflow changes"],
+                acceptance_criteria=["Draft exists"],
+                duplicate_check_result="Existing related item found.",
+                stale_check_result="No stale item found.",
+                already_done_check_result="Not already done.",
+                research_required=False,
+                research_cache_used=[],
+                external_research_needed=False,
+                recommended_implementation_pattern="Reuse existing service.",
+                patterns_explicitly_rejected=["Second workflow"],
+                freshness_risk="Low.",
+                implementation_guidance="Do not create a duplicate.",
+                approval_risk_flags=["Writes backlog items"],
+            ),
+            source="fake-model",
+            skill_path=".skills/backlog-item-authoring/SKILL.md",
+            matches=(
+                type(
+                    "_Match",
+                    (),
+                    {
+                        "item_id": "ATL-001",
+                        "title": "Existing backlog support",
+                        "status": "Backlog",
+                        "kind": "likely_duplicate",
+                        "reason": "Very similar title to an existing backlog item.",
+                        "to_payload": lambda self: {
+                            "item_id": self.item_id,
+                            "title": self.title,
+                            "status": self.status,
+                            "kind": self.kind,
+                            "reason": self.reason,
+                        },
+                    },
+                )(),
+            ),
+            blocked=True,
+        ),
+    )
+
+    input_file, output_file = _write_input(
+        tmp_path,
+        {
+            "request_id": "hub-refine-dup",
+            "task_kind": "backlog_refinement",
+            "task": "Add backlog support",
+            "project_reference": {
+                "backlog": {
+                    "project_key": "ai-tech-lead",
+                    "spreadsheet_id": "spreadsheet-a",
+                    "sheet_name": "Backlog",
+                }
+            },
+        },
+    )
+
+    rc = run_agent_task(input_file, output_file)
+    result = _read_output(output_file)
+
+    assert rc == 0
+    assert result["status"] == STATUS_NEEDS_CLARIFICATION
+    assert "ATL-001" in result["summary"]
+    assert result["pending_decision"] is None
+
+
+def test_hub_backlog_refinement_approval_writes_item(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _stub_settings(monkeypatch)
+    created: list[str] = []
+
+    class _FakeStore:
+        saved: dict[str, Any] = {
+            "hub-refine-approve": BacklogRefinementProposal(
+                draft=BacklogRefinementDraft(
+                    item_id="HUB-002",
+                    title="Add backlog-only mode",
+                    creator="Human",
+                    item_type="Story",
+                    epic="Backlog Management",
+                    priority="High",
+                    size="M",
+                    approval_required=True,
+                    approval_reason="Writes backlog items.",
+                    problem="Need backlog-only mode.",
+                    desired_outcome="Hub can request backlog refinement.",
+                    scope=["Hub backlog refinement"],
+                    out_of_scope=["Coding workflow changes"],
+                    acceptance_criteria=["Item is written after approval"],
+                    duplicate_check_result="No duplicate found.",
+                    stale_check_result="No stale item found.",
+                    already_done_check_result="Not already done.",
+                    research_required=False,
+                    research_cache_used=[],
+                    external_research_needed=False,
+                    recommended_implementation_pattern="Reuse existing service.",
+                    patterns_explicitly_rejected=["Second workflow"],
+                    freshness_risk="Low.",
+                    implementation_guidance="Keep approval explicit.",
+                    approval_risk_flags=["Writes backlog items"],
+                ),
+                source="fake-model",
+                skill_path=".skills/backlog-item-authoring/SKILL.md",
+                matches=(),
+                blocked=False,
+            )
+        }
+
+        def save_pending(self, *, request_id: str, proposal: Any) -> None:
+            self.saved[request_id] = proposal
+
+        def get_pending(self, request_id: str) -> Any | None:
+            proposal = self.saved.get(request_id)
+            if proposal is None:
+                return None
+            return type("_Pending", (), {"proposal": proposal})()
+
+        def clear_pending(self, request_id: str) -> None:
+            self.saved.pop(request_id, None)
+
+    class _FakeRepo:
+        def add_refined_item(self, draft: BacklogRefinementDraft) -> Any:
+            created.append(draft.item_id)
+            return type("_Item", (), {"item_id": draft.item_id, "title": draft.title})()
+
+    monkeypatch.setattr("ai_tech_lead.agent_task_runner.BacklogRefinementStore", _FakeStore)
+    monkeypatch.setattr("ai_tech_lead.agent_task_runner.repository_for", lambda *args, **kwargs: _FakeRepo())
+    monkeypatch.setattr("ai_tech_lead.agent_task_runner.infer_backlog_item_prefix", lambda _repo: "HUB")
+
+    input_file, output_file = _write_input(
+        tmp_path,
+        {
+            "request_id": "hub-refine-approve",
+            "task_kind": "backlog_refinement",
+            "decision": {"option": "approve"},
+            "project_reference": {
+                "backlog": {
+                    "project_key": "agent-hub",
+                    "spreadsheet_id": "spreadsheet-hub",
+                    "sheet_name": "Hub Backlog",
+                    "item_id_prefix": "HUB",
+                }
+            },
+        },
+    )
+
+    rc = run_agent_task(input_file, output_file)
+    result = _read_output(output_file)
+
+    assert rc == 0
+    assert created == ["HUB-002"]
+    assert result["status"] == STATUS_SUCCESS
+    assert result["result_kind"] == "backlog_item_created"
+
+
+def test_build_target_project_context_parses_backlog_project_configuration() -> None:
+    settings = parse_settings(valid_settings_dict())
+
+    context = _build_target_project_context(
+        task_input={
+            "project_reference": {
+                "backlog": {
+                    "project_key": "agent-hub",
+                    "spreadsheet_id": "spreadsheet-hub",
+                    "sheet_name": "Hub Backlog",
+                    "item_id_prefix": "HUB",
+                    "columns": {
+                        "item_id": "Work ID",
+                        "title": "Work Title",
+                    },
+                }
+            }
+        },
+        settings=settings,
+        backlog_reference=None,
+        source_record=None,
+    )
+
+    assert context.backlog_project == BacklogProjectContext(
+        project_key="agent-hub",
+        spreadsheet_id="spreadsheet-hub",
+        sheet_name="Hub Backlog",
+        item_id_prefix="HUB",
+        columns=BacklogColumnContext(item_id="Work ID", title="Work Title"),
+    )

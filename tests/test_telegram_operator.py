@@ -19,7 +19,7 @@ from test_backlog_sheets_repository import (
 
 import ai_tech_lead.backlog_sheets_repository as sheets_mod
 from ai_tech_lead.app_settings import parse_settings
-from ai_tech_lead.backlog_draft_builder import BacklogRefinementBuildResult
+from ai_tech_lead.backlog_refinement_capability import BacklogRefinementProposal
 from ai_tech_lead.backlog_reference import BacklogReference
 from ai_tech_lead.backlog_repository import (
     BacklogItem,
@@ -461,32 +461,38 @@ def test_new_command_logs_discarded_cleanup_details(caplog: pytest.LogCaptureFix
     )
     operator._pending_backlog_drafts["chat-1"] = PendingBacklogDraft(
         chat_id="chat-1",
-        draft=BacklogRefinementDraft(
-            item_id="ATL-002",
-            title="Add backlog support",
-            creator="Human",
-            item_type="Story",
-            epic="Backlog Management",
-            priority="High",
-            size="M",
-            approval_required=True,
-            approval_reason="Adds a backlog writing workflow.",
-            problem="Rob needs a structured backlog workflow.",
-            desired_outcome="Allow approved backlog drafts to be appended.",
-            scope=["Collect rough ideas"],
-            out_of_scope=["Build a full planning system"],
-            acceptance_criteria=["The item captures research cache usage"],
-            duplicate_check_result="No duplicate found.",
-            stale_check_result="No stale item found.",
-            already_done_check_result="Not already done.",
-            research_required=True,
-            research_cache_used=["docs/research/backlog-refinement-implementation-patterns.md"],
-            external_research_needed=False,
-            recommended_implementation_pattern="Use schema-validated structured output.",
-            patterns_explicitly_rejected=["Freeform prose"],
-            freshness_risk="Low.",
-            implementation_guidance="Check the cache first and keep the item structured.",
-            approval_risk_flags=["Touches backlog storage"],
+        proposal=BacklogRefinementProposal(
+            draft=BacklogRefinementDraft(
+                item_id="ATL-002",
+                title="Add backlog support",
+                creator="Human",
+                item_type="Story",
+                epic="Backlog Management",
+                priority="High",
+                size="M",
+                approval_required=True,
+                approval_reason="Adds a backlog writing workflow.",
+                problem="Rob needs a structured backlog workflow.",
+                desired_outcome="Allow approved backlog drafts to be appended.",
+                scope=["Collect rough ideas"],
+                out_of_scope=["Build a full planning system"],
+                acceptance_criteria=["The item captures research cache usage"],
+                duplicate_check_result="No duplicate found.",
+                stale_check_result="No stale item found.",
+                already_done_check_result="Not already done.",
+                research_required=True,
+                research_cache_used=["docs/research/backlog-refinement-implementation-patterns.md"],
+                external_research_needed=False,
+                recommended_implementation_pattern="Use schema-validated structured output.",
+                patterns_explicitly_rejected=["Freeform prose"],
+                freshness_risk="Low.",
+                implementation_guidance="Check the cache first and keep the item structured.",
+                approval_risk_flags=["Touches backlog storage"],
+            ),
+            source="fake-model",
+            skill_path=".skills/backlog-item-authoring/SKILL.md",
+            matches=(),
+            blocked=False,
         ),
     )
 
@@ -1340,9 +1346,10 @@ def test_propose_command_creates_and_approves_backlog_item(
     client = _RecordingClient()
     operator = TelegramOperator("token", settings, client=client)
 
-    def fake_build_backlog_refinement_from_text(*, text, repository, settings):
+    def fake_prepare_backlog_refinement_proposal(*, text, repository, settings, item_id_prefix):
         assert text == "add backlog support"
-        return BacklogRefinementBuildResult(
+        assert item_id_prefix == "ATL"
+        return BacklogRefinementProposal(
             draft=BacklogRefinementDraft(
                 item_id="ATL-002",
                 title="Add backlog support",
@@ -1371,11 +1378,17 @@ def test_propose_command_creates_and_approves_backlog_item(
                 approval_risk_flags=["Touches backlog storage"],
             ),
             source="fake-model",
+            skill_path=".skills/backlog-item-authoring/SKILL.md",
+            matches=(),
+            blocked=False,
         )
 
     monkeypatch.setattr(
-        "ai_tech_lead.telegram_operator.build_backlog_refinement_from_text",
-        fake_build_backlog_refinement_from_text,
+        "ai_tech_lead.telegram_operator.prepare_backlog_refinement_proposal",
+        fake_prepare_backlog_refinement_proposal,
+    )
+    monkeypatch.setattr(
+        "ai_tech_lead.telegram_operator.infer_backlog_item_prefix", lambda _repo: "ATL"
     )
 
     operator._handle_command(

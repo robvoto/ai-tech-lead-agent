@@ -39,10 +39,25 @@ from langgraph.types import Command
 
 from .agent_manifest import agent_manifest_reference
 from .app_settings import load_settings
+from .backlog_refinement_capability import (
+    BacklogRefinementProposal,
+    append_approved_backlog_refinement,
+    build_backlog_refinement_block_summary,
+    format_backlog_refinement_review,
+    infer_backlog_item_prefix,
+    prepare_backlog_refinement_proposal,
+    render_backlog_refinement_draft_text,
+)
+from .backlog_refinement_store import BacklogRefinementStore
 from .backlog_reference import BacklogReferenceError, resolve_backlog_reference
 from .backlog_repository import BacklogValidationError
 from .backlog_runtime_store import BacklogRuntimeStore, enqueue_and_flush_update
-from .backlog_sheets_repository import BacklogSourceUnavailableError, SheetsBacklogRepository
+from .backlog_sheets_repository import (
+    BacklogSheetLayout,
+    BacklogSourceUnavailableError,
+    SheetsBacklogRepository,
+    repository_for,
+)
 from .checkpointer_store import get_checkpointer
 from .logging_setup import LOGGER_NAME
 from .progress_events import (
@@ -53,8 +68,10 @@ from .progress_events import (
 from .runtime_lock import RuntimeLockBusyError, acquire_request_run_lock
 from .target_project_context import (
     BacklogItemContext,
+    BacklogProjectContext,
     ResourceReferenceContext,
     TargetProjectContext,
+    resolve_universal_project_context,
 )
 
 logger = logging.getLogger(LOGGER_NAME)
@@ -70,6 +87,9 @@ RESULT_KIND_EXECUTION_RESULT = "execution_result"
 RESULT_KIND_CLARIFICATION_REQUEST = "clarification_request"
 RESULT_KIND_DECISION_REQUIRED = "decision_required"
 RESULT_KIND_TERMINAL_FAILURE = "terminal_failure"
+RESULT_KIND_BACKLOG_REFINEMENT_DRAFT = "backlog_refinement_draft"
+RESULT_KIND_BACKLOG_ITEM_CREATED = "backlog_item_created"
+ALLOWED_TASK_KINDS = {"coding_task", "backlog_refinement"}
 
 # One entry per LangGraph interrupt `kind` this runner knows how to resume, and the
 # options that pause offers. This table is the single source of truth for both what
@@ -151,6 +171,16 @@ def run_agent_task(input_path: str | Path, output_path: str | Path) -> int:
     # Execution gate: local settings decide, not the caller.
     # The caller can *request* execution_mode=execute, but settings.execute_coding_agent
     # must also be True. The caller's requires_human_approval is intentionally ignored.
+    task_kind = _validate_task_kind(task_input.get("task_kind"))
+    if task_kind is None:
+        _write_error_output(
+            output_file,
+            progress_reporter,
+            request_id,
+            "task_kind must be one of: coding_task, backlog_refinement.",
+            settings=settings,
+        )
+        return 1
     execution_mode = _validate_execution_mode(task_input.get("execution_mode"))
     if execution_mode is None:
         _write_error_output(
@@ -235,22 +265,33 @@ def run_agent_task(input_path: str | Path, output_path: str | Path) -> int:
 
         progress_reporter.started()
         logger.info(
-            "[SUBPROCESS] run-agent-task request_id=%s decision=%s task=%s...",
+            "[SUBPROCESS] run-agent-task request_id=%s kind=%s decision=%s task=%s...",
             request_id,
+            task_kind,
             decision.option if decision else "(none)",
             task_text[:80],
         )
 
         try:
             with progress_reporter.heartbeat_scope():
-                result = _execute_workflow(
-                    request_id=request_id,
-                    task=task_text,
-                    execute_coding_agent=execute_coding_agent,
-                    decision=decision,
-                    progress_reporter=progress_reporter,
-                    target_project_context=target_project_context,
-                )
+                if task_kind == "backlog_refinement":
+                    result = _run_backlog_refinement_task(
+                        request_id=request_id,
+                        task=task_text,
+                        decision=decision,
+                        progress_reporter=progress_reporter,
+                        target_project_context=target_project_context,
+                        settings=settings,
+                    )
+                else:
+                    result = _execute_workflow(
+                        request_id=request_id,
+                        task=task_text,
+                        execute_coding_agent=execute_coding_agent,
+                        decision=decision,
+                        progress_reporter=progress_reporter,
+                        target_project_context=target_project_context,
+                    )
         except (KeyboardInterrupt, SystemExit):
             progress_reporter.cancelled()
             raise
@@ -325,14 +366,18 @@ def _parse_decision(raw_decision: Any) -> _Decision | None:
     return _Decision(option=option, text=text, actor=actor)
 
 
-def _merge_resource_references(task_input: dict[str, Any]) -> list[dict[str, Any]]:
-    """Fold Hub's universal `references` into the internal resource_references shape.
+def _merge_resource_references(
+    task_input: dict[str, Any], wire_references: list[str]
+) -> list[dict[str, Any]]:
+    """Fold Hub's universal references into the internal resource_references shape.
 
-    Hub relays `references` as an uninterpreted list of pointer strings (ticket IDs,
-    file paths, URLs, ...) — it does not know or guess what they mean. Legacy callers
-    already supply `resource_references` as dicts with an id. Both are merged into the
-    dict shape `resolve_request_context` (request_context.py) understands, without
-    resolving or interpreting either — that stays request_context's job alone.
+    `wire_references` is already resolved (from either the versioned `project_context`
+    envelope or legacy flat `references`) by `resolve_universal_project_context` — an
+    uninterpreted list of pointer strings (ticket IDs, file paths, URLs, ...); Hub does
+    not know or guess what they mean. Legacy callers already supply `resource_references`
+    as dicts with an id. Both are merged into the dict shape `resolve_request_context`
+    (request_context.py) understands, without resolving or interpreting either — that
+    stays request_context's job alone.
     """
     merged: dict[str, dict[str, Any]] = {}
     for reference in task_input.get("resource_references") or []:
@@ -340,7 +385,7 @@ def _merge_resource_references(task_input: dict[str, Any]) -> list[dict[str, Any
             ref_id = str(reference.get("item_id") or reference.get("id") or "").strip()
             if ref_id:
                 merged[ref_id] = reference
-    for reference in task_input.get("references") or []:
+    for reference in wire_references:
         ref_id = str(reference).strip()
         if ref_id and ref_id not in merged:
             merged[ref_id] = {"id": ref_id}
@@ -362,18 +407,19 @@ def _build_target_project_context(
     else:
         raise ValueError("project_reference must be a JSON object when supplied.")
 
-    top_level_project_root = task_input.get("project_root")
+    wire_project_root, wire_references = resolve_universal_project_context(task_input)
+
     nested_project_root = project_reference.get("project_root")
-    if top_level_project_root is not None and nested_project_root is not None:
-        top_level_resolved = str(Path(str(top_level_project_root)).resolve())
+    if wire_project_root is not None and nested_project_root is not None:
+        wire_resolved = str(Path(str(wire_project_root)).resolve())
         nested_resolved = str(Path(str(nested_project_root)).resolve())
-        if top_level_resolved != nested_resolved:
+        if wire_resolved != nested_resolved:
             raise ValueError(
                 "project_root does not match project_reference.project_root. "
                 "Supply only one target project root, or make them identical."
             )
 
-    requested_project_root = top_level_project_root
+    requested_project_root = wire_project_root
     if requested_project_root is None:
         requested_project_root = nested_project_root
 
@@ -395,16 +441,22 @@ def _build_target_project_context(
             body=source_record.item.body,
         )
 
+    raw_backlog_project = project_reference.get("backlog")
+    if raw_backlog_project is None:
+        raw_backlog_project = project_reference.get("backlog_project")
+    backlog_project = BacklogProjectContext.from_payload(raw_backlog_project)
+
     return TargetProjectContext(
         project_root=project_root or "",
         project_key=str(project_reference.get("project_key", "")).strip(),
         project_name=str(project_reference.get("project_name", "")).strip(),
+        backlog_project=backlog_project,
         resource_references=tuple(
             ResourceReferenceContext(
                 item_id=str(reference.get("item_id") or reference.get("id") or "").strip(),
                 title=str(reference.get("title", "")).strip(),
             )
-            for reference in _merge_resource_references(task_input)
+            for reference in _merge_resource_references(task_input, wire_references)
             if str(reference.get("item_id") or reference.get("id") or "").strip()
         ),
         backlog_item=backlog_item,
@@ -437,6 +489,127 @@ def _validate_execution_mode(execution_mode_raw: Any) -> str | None:
     if execution_mode in ALLOWED_EXECUTION_MODES:
         return execution_mode
     return None
+
+
+def _validate_task_kind(task_kind_raw: Any) -> str | None:
+    if task_kind_raw is None:
+        return "coding_task"
+    if not isinstance(task_kind_raw, str):
+        return None
+    task_kind = task_kind_raw.strip()
+    if task_kind in ALLOWED_TASK_KINDS:
+        return task_kind
+    return None
+
+
+def _run_backlog_refinement_task(
+    *,
+    request_id: str,
+    task: str,
+    decision: _Decision | None,
+    progress_reporter: ProgressReporter,
+    target_project_context: TargetProjectContext,
+    settings: Any,
+) -> dict[str, Any]:
+    """Run the shared backlog-refinement capability for Hub callers."""
+
+    reporter = progress_reporter or ProgressReporter()
+    reporter.phase("analysing", "Preparing backlog refinement.")
+    repository, item_id_prefix = _backlog_refinement_repository(
+        target_project_context=target_project_context,
+        settings=settings,
+    )
+    store = BacklogRefinementStore()
+
+    if decision is not None:
+        pending = store.get_pending(request_id)
+        if pending is None:
+            raise _DecisionRejected(
+                f"No pending backlog refinement found for request_id={request_id}. "
+                "It may have already been resolved, or never created."
+            )
+        if decision.option not in {"approve", "cancel"}:
+            raise _DecisionRejected(
+                f"'{decision.option}' is not a valid option for a pending backlog refinement "
+                "decision. Valid options: approve, cancel."
+            )
+        store.clear_pending(request_id)
+        if decision.option == "cancel":
+            reporter.phase("finalising", "Backlog refinement was rejected.")
+            return _backlog_refinement_output(
+                request_id=request_id,
+                status=STATUS_NEEDS_CLARIFICATION,
+                summary="Backlog refinement rejected. No backlog item was written.",
+                next_action="Submit a revised backlog refinement request if you still want this work.",
+                result_kind=RESULT_KIND_CLARIFICATION_REQUEST,
+                backlog_refinement=pending.proposal,
+                pending_decision=None,
+            )
+
+        reporter.phase("finalising", "Writing approved backlog refinement to the backlog.")
+        item = append_approved_backlog_refinement(pending.proposal, repository)
+        summary = f"Backlog item created: {item.item_id} - {item.title}"
+        return _backlog_refinement_output(
+            request_id=request_id,
+            status=STATUS_SUCCESS,
+            summary=summary,
+            next_action="Review the created backlog item.",
+            result_kind=RESULT_KIND_BACKLOG_ITEM_CREATED,
+            backlog_refinement=pending.proposal,
+            pending_decision=None,
+        )
+
+    proposal = prepare_backlog_refinement_proposal(
+        text=task,
+        repository=repository,
+        settings=settings,
+        item_id_prefix=item_id_prefix,
+    )
+    if proposal.blocked:
+        reporter.phase("finalising", "Backlog refinement blocked by matching backlog work.")
+        return _backlog_refinement_output(
+            request_id=request_id,
+            status=STATUS_NEEDS_CLARIFICATION,
+            summary=build_backlog_refinement_block_summary(proposal),
+            next_action="Review the matching backlog items and submit a narrower or revised request.",
+            result_kind=RESULT_KIND_CLARIFICATION_REQUEST,
+            backlog_refinement=proposal,
+            pending_decision=None,
+        )
+
+    store.save_pending(request_id=request_id, proposal=proposal)
+    reporter.phase("finalising", "Backlog refinement ready for approval.")
+    return _backlog_refinement_output(
+        request_id=request_id,
+        status=STATUS_WAITING_DECISION,
+        summary=f"Backlog refinement ready: {proposal.draft.item_id} - {proposal.draft.title}",
+        next_action="Resubmit request_id with a decision. Options: approve, cancel.",
+        result_kind=RESULT_KIND_BACKLOG_REFINEMENT_DRAFT,
+        backlog_refinement=proposal,
+        pending_decision={
+            "thread_id": f"backlog-refinement-{request_id}",
+            "kind": "backlog_refinement_approval",
+            "prompt": format_backlog_refinement_review(proposal),
+            "options": [{"name": "approve"}, {"name": "cancel"}],
+        },
+    )
+
+
+def _backlog_refinement_repository(
+    *,
+    target_project_context: TargetProjectContext,
+    settings: Any,
+) -> tuple[SheetsBacklogRepository, str]:
+    backlog_project = target_project_context.require_backlog_project("Hub backlog refinement")
+    layout = BacklogSheetLayout(columns=backlog_project.columns)
+    repository = repository_for(
+        backlog_project.spreadsheet_id,
+        backlog_project.sheet_name,
+        credentials_path=settings.backlog_google_credentials_path,
+        layout=layout,
+    )
+    item_id_prefix = backlog_project.item_id_prefix or infer_backlog_item_prefix(repository)
+    return repository, item_id_prefix
 
 
 def _execute_workflow(
@@ -741,6 +914,7 @@ def _map_state_to_output(
         "evidence": list(state.get("research_source_titles", [])),
         "next_action": next_action,
         "result_kind": result_kind,
+        "backlog_refinement": None,
         "pending_decision": pending_decision,
         "backlog_sync_status": "not_applicable",
     }
@@ -778,7 +952,37 @@ def _error_response(request_id: str, message: str, detail: str = "") -> dict[str
         "evidence": [],
         "next_action": "Fix the error and retry.",
         "result_kind": RESULT_KIND_TERMINAL_FAILURE,
+        "backlog_refinement": None,
         "pending_decision": None,
+        "backlog_sync_status": "not_applicable",
+    }
+
+
+def _backlog_refinement_output(
+    *,
+    request_id: str,
+    status: str,
+    summary: str,
+    next_action: str,
+    result_kind: str,
+    backlog_refinement: BacklogRefinementProposal,
+    pending_decision: dict[str, Any] | None,
+) -> dict[str, Any]:
+    return {
+        "request_id": request_id,
+        "status": status,
+        "summary": summary,
+        "formulated_task": "",
+        "brief": render_backlog_refinement_draft_text(backlog_refinement),
+        "coding_agent_instruction": "",
+        "backend_used": "none",
+        "execution_performed": False,
+        "logs": [],
+        "evidence": [],
+        "next_action": next_action,
+        "result_kind": result_kind,
+        "backlog_refinement": backlog_refinement.to_payload(),
+        "pending_decision": pending_decision,
         "backlog_sync_status": "not_applicable",
     }
 

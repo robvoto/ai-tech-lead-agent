@@ -12,10 +12,12 @@ import ai_tech_lead.backlog_sheets_repository as sheets_mod
 from ai_tech_lead.backlog_reference import BacklogReference
 from ai_tech_lead.backlog_repository import BacklogValidationError
 from ai_tech_lead.backlog_sheets_repository import (
+    BacklogSheetLayout,
     BacklogSourceUnavailableError,
     SheetsBacklogRepository,
 )
 from ai_tech_lead.backlog_status import BacklogStatus
+from ai_tech_lead.target_project_context import BacklogColumnContext
 
 HEADER = [
     "ID",
@@ -271,6 +273,91 @@ def test_add_refined_item_appends_row_with_mapped_columns(monkeypatch):
     assert appended_row[HEADER.index("Title")] == "New refined item"
     assert appended_row[HEADER.index("Problem")] == "Problem text."
     assert appended_row[HEADER.index("Status")] == "Backlog"
+
+
+def test_add_refined_item_respects_custom_layout_columns(monkeypatch):
+    from ai_tech_lead.backlog_repository import BacklogRefinementDraft
+
+    custom_header = [
+        "Work ID",
+        "Work Title",
+        "Goal",
+        "Issue",
+        "Outcome",
+        "Acceptance Criteria",
+        "Scope",
+        "Out of Scope",
+        "Workflow Status",
+        "Epic",
+        "Work Type",
+        "Priority",
+        "Size",
+        "Needs Approval",
+        "Approval Notes",
+        "Evidence / Validation",
+        "Notes / Cleanup Action",
+    ]
+    row = [""] * len(custom_header)
+    row[custom_header.index("Work ID")] = "HUB-001"
+    row[custom_header.index("Work Title")] = "Existing item"
+    row[custom_header.index("Workflow Status")] = "Backlog"
+    row[custom_header.index("Priority")] = "Medium"
+    row[custom_header.index("Size")] = "S"
+    worksheet = FakeWorksheet([custom_header, row])
+    client = FakeClient({SPREADSHEET_ID: FakeSpreadsheet({SHEET_NAME: worksheet})})
+    monkeypatch.setattr(sheets_mod, "_client_cache", {CREDENTIALS_PATH: client})
+    reference = BacklogReference("agent-hub", SPREADSHEET_ID, SHEET_NAME, "")
+    repo = SheetsBacklogRepository(
+        reference,
+        credentials_path=CREDENTIALS_PATH,
+        layout=BacklogSheetLayout(
+            columns=BacklogColumnContext(
+                item_id="Work ID",
+                title="Work Title",
+                problem="Issue",
+                status="Workflow Status",
+                item_type="Work Type",
+                approval_required="Needs Approval",
+                approval_reason="Approval Notes",
+            )
+        ),
+    )
+
+    draft = BacklogRefinementDraft(
+        item_id="HUB-002",
+        title="New refined item",
+        creator="tech-lead-analyst",
+        item_type="Story",
+        epic="Backlog",
+        priority="High",
+        size="M",
+        approval_required=True,
+        approval_reason="New workflow.",
+        problem="Problem text.",
+        desired_outcome="Outcome text.",
+        scope=["Keep it small"],
+        out_of_scope=["Do not broaden"],
+        acceptance_criteria=["Criterion A"],
+        duplicate_check_result="No duplicate found.",
+        stale_check_result="No stale item found.",
+        already_done_check_result="Not already done.",
+        research_required=False,
+        research_cache_used=[],
+        external_research_needed=False,
+        recommended_implementation_pattern="Reuse existing service.",
+        patterns_explicitly_rejected=["Freeform prose"],
+        freshness_risk="Low.",
+        implementation_guidance="Stay structured.",
+        approval_risk_flags=["Writes backlog items"],
+    )
+
+    repo.add_refined_item(draft)
+
+    appended_row = worksheet.appended[0]
+    assert appended_row[custom_header.index("Work ID")] == "HUB-002"
+    assert appended_row[custom_header.index("Work Title")] == "New refined item"
+    assert appended_row[custom_header.index("Issue")] == "Problem text."
+    assert appended_row[custom_header.index("Workflow Status")] == "Backlog"
 
 
 def test_dynamic_reference_to_two_different_spreadsheets(monkeypatch):

@@ -31,6 +31,7 @@ from .backlog_repository import (
     validate_backlog_refinement_draft,
 )
 from .backlog_status import BacklogStatus, backlog_status_choices, normalize_backlog_status
+from .target_project_context import BacklogColumnContext
 
 logger = logging.getLogger(__name__)
 
@@ -44,39 +45,56 @@ __all__ = [
     "repository_from_settings",
 ]
 
-_SHEET_COLUMNS = [
-    "ID",
-    "Title",
-    "Goal",
-    "Problem",
-    "Outcome",
-    "Acceptance Criteria",
-    "Scope",
-    "Out of Scope",
-    "Status",
-    "Epic",
-    "Type",
-    "Priority",
-    "Size",
-    "Approval Required",
-    "Approval Reason",
-    "Evidence / Validation",
-    "Notes / Cleanup Action",
-]
-_ALLOWED_UPDATE_FIELDS = {"Status", "Evidence / Validation"}
-_BODY_FIELDS = [
-    "Goal",
-    "Problem",
-    "Outcome",
-    "Acceptance Criteria",
-    "Scope",
-    "Out of Scope",
-    "Epic",
-    "Type",
-    "Approval Reason",
-    "Evidence / Validation",
-    "Notes / Cleanup Action",
-]
+@dataclass(frozen=True)
+class BacklogSheetLayout:
+    """Column layout for one project's backlog sheet."""
+
+    columns: BacklogColumnContext = BacklogColumnContext()
+
+    @property
+    def sheet_columns(self) -> list[str]:
+        return [
+            self.columns.item_id,
+            self.columns.title,
+            self.columns.goal,
+            self.columns.problem,
+            self.columns.outcome,
+            self.columns.acceptance_criteria,
+            self.columns.scope,
+            self.columns.out_of_scope,
+            self.columns.status,
+            self.columns.epic,
+            self.columns.item_type,
+            self.columns.priority,
+            self.columns.size,
+            self.columns.approval_required,
+            self.columns.approval_reason,
+            self.columns.evidence_validation,
+            self.columns.notes_cleanup_action,
+        ]
+
+    @property
+    def allowed_update_fields(self) -> set[str]:
+        return {self.columns.status, self.columns.evidence_validation}
+
+    @property
+    def body_fields(self) -> list[str]:
+        return [
+            self.columns.goal,
+            self.columns.problem,
+            self.columns.outcome,
+            self.columns.acceptance_criteria,
+            self.columns.scope,
+            self.columns.out_of_scope,
+            self.columns.epic,
+            self.columns.item_type,
+            self.columns.approval_reason,
+            self.columns.evidence_validation,
+            self.columns.notes_cleanup_action,
+        ]
+
+
+DEFAULT_SHEETS_LAYOUT = BacklogSheetLayout()
 
 _client_cache: dict[str, gspread.Client] = {}
 
@@ -120,9 +138,16 @@ def _get_client(credentials_path: str) -> gspread.Client:
 class SheetsBacklogRepository:
     """Google Sheets-backed backlog repository, scoped to one spreadsheet/sheet."""
 
-    def __init__(self, reference: BacklogReference, *, credentials_path: str) -> None:
+    def __init__(
+        self,
+        reference: BacklogReference,
+        *,
+        credentials_path: str,
+        layout: BacklogSheetLayout | None = None,
+    ) -> None:
         self._reference = reference
         self._credentials_path = credentials_path
+        self._layout = layout or DEFAULT_SHEETS_LAYOUT
 
     @property
     def reference(self) -> BacklogReference:
@@ -165,7 +190,8 @@ class SheetsBacklogRepository:
     def list_items(self) -> list[BacklogItem]:
         header, rows = self._all_rows()
         index = self._header_index(header)
-        items = [self._row_to_item(row, index) for row in rows if _cell(row, index, "ID")]
+        id_column = self._layout.columns.item_id
+        items = [self._row_to_item(row, index) for row in rows if _cell(row, index, id_column)]
         if not items:
             raise ValueError(
                 f"No backlog items found in spreadsheet '{self._reference.spreadsheet_id}' "
@@ -205,7 +231,7 @@ class SheetsBacklogRepository:
         matches = [
             (row_number, row)
             for row_number, row in enumerate(rows, start=2)
-            if _cell(row, index, "ID").strip().lower() == requested
+            if _cell(row, index, self._layout.columns.item_id).strip().lower() == requested
         ]
         if not matches:
             raise ValueError(
@@ -246,14 +272,16 @@ class SheetsBacklogRepository:
         status_value = normalize_backlog_status(new_status)
         if status_value is None:
             raise ValueError(f"Status must be one of: {backlog_status_choices()}.")
-        return self.apply_fields(item_id, {"Status": status_value.value})
+        return self.apply_fields(item_id, {self._layout.columns.status: status_value.value})
 
     def complete_item(self, item_id: str, validation_note: str) -> BacklogItem:
         return self.apply_fields(
             item_id,
             {
-                "Status": BacklogStatus.DONE.value,
-                "Evidence / Validation": _normalize_validation_note(validation_note),
+                self._layout.columns.status: BacklogStatus.DONE.value,
+                self._layout.columns.evidence_validation: _normalize_validation_note(
+                    validation_note
+                ),
             },
         )
 
@@ -264,11 +292,11 @@ class SheetsBacklogRepository:
         used directly here and by the runtime-state outbox flush.
         """
 
-        disallowed = sorted(set(fields) - _ALLOWED_UPDATE_FIELDS)
+        disallowed = sorted(set(fields) - self._layout.allowed_update_fields)
         if disallowed:
             raise BacklogValidationError(
                 f"Fields {disallowed} are not allowed runtime update fields. "
-                f"Allowed fields: {sorted(_ALLOWED_UPDATE_FIELDS)}."
+                f"Allowed fields: {sorted(self._layout.allowed_update_fields)}."
             )
 
         normalized_id = item_id.strip().upper()
@@ -299,7 +327,7 @@ class SheetsBacklogRepository:
         header, _ = self._all_rows()
         index = self._header_index(header)
         row = [""] * len(header)
-        for field_name, value in _refinement_draft_to_columns(draft).items():
+        for field_name, value in _refinement_draft_to_columns(draft, self._layout).items():
             column = index.get(field_name)
             if column is not None:
                 row[column] = value
@@ -315,30 +343,32 @@ class SheetsBacklogRepository:
         return self.get_item(draft.item_id)
 
     def _row_to_item(self, row: list[str], index: dict[str, int]) -> BacklogItem:
-        item_id = _cell(row, index, "ID").strip()
-        raw_status = _cell(row, index, "Status").strip()
+        item_id = _cell(row, index, self._layout.columns.item_id).strip()
+        raw_status = _cell(row, index, self._layout.columns.status).strip()
         status = normalize_backlog_status(raw_status) if raw_status else BacklogStatus.BACKLOG
         if raw_status and status is None:
             raise BacklogValidationError(
                 f"Unknown backlog status '{raw_status}' for item '{item_id}'. "
                 f"Allowed statuses: {backlog_status_choices()}."
             )
-        approval_required = _cell(row, index, "Approval Required").strip().lower() in {
+        approval_required = _cell(
+            row, index, self._layout.columns.approval_required
+        ).strip().lower() in {
             "yes",
             "true",
             "1",
         }
         body_lines = [
             f"{field_name}: {value}"
-            for field_name in _BODY_FIELDS
+            for field_name in self._layout.body_fields
             if (value := _cell(row, index, field_name).strip())
         ]
         return BacklogItem(
             item_id=item_id,
-            title=_cell(row, index, "Title").strip(),
+            title=_cell(row, index, self._layout.columns.title).strip(),
             body="\n".join(body_lines),
-            priority=_cell(row, index, "Priority").strip(),
-            complexity=_cell(row, index, "Size").strip(),
+            priority=_cell(row, index, self._layout.columns.priority).strip(),
+            complexity=_cell(row, index, self._layout.columns.size).strip(),
             created_date="",
             interrupt_before_implementation=approval_required,
             status=status or BacklogStatus.BACKLOG,
@@ -352,6 +382,7 @@ def repository_from_settings(settings) -> SheetsBacklogRepository:
     return SheetsBacklogRepository(
         reference,
         credentials_path=settings.backlog_google_credentials_path,
+        layout=DEFAULT_SHEETS_LAYOUT,
     )
 
 
@@ -360,6 +391,7 @@ def repository_for(
     sheet_name: str,
     *,
     credentials_path: str,
+    layout: BacklogSheetLayout | None = None,
 ) -> SheetsBacklogRepository:
     """Build a repository for an arbitrary spreadsheet/sheet (e.g. bounded recovery,
     where pending updates may span multiple projects)."""
@@ -370,7 +402,7 @@ def repository_for(
         sheet_name=sheet_name,
         item_id="",
     )
-    return SheetsBacklogRepository(reference, credentials_path=credentials_path)
+    return SheetsBacklogRepository(reference, credentials_path=credentials_path, layout=layout)
 
 
 def _cell(row: list[str], index: dict[str, int], field_name: str) -> str:
@@ -380,20 +412,25 @@ def _cell(row: list[str], index: dict[str, int], field_name: str) -> str:
     return row[column]
 
 
-def _refinement_draft_to_columns(draft: BacklogRefinementDraft) -> dict[str, str]:
+def _refinement_draft_to_columns(
+    draft: BacklogRefinementDraft,
+    layout: BacklogSheetLayout,
+) -> dict[str, str]:
     return {
-        "ID": draft.item_id,
-        "Title": draft.title.strip(),
-        "Problem": draft.problem.strip(),
-        "Outcome": draft.desired_outcome.strip(),
-        "Acceptance Criteria": "\n".join(item.strip() for item in draft.acceptance_criteria),
-        "Scope": "\n".join(item.strip() for item in draft.scope),
-        "Out of Scope": "\n".join(item.strip() for item in draft.out_of_scope),
-        "Status": BacklogStatus.BACKLOG.value,
-        "Epic": draft.epic.strip(),
-        "Type": draft.item_type.strip(),
-        "Priority": draft.priority.strip(),
-        "Size": draft.size.strip(),
-        "Approval Required": "yes" if draft.approval_required else "no",
-        "Approval Reason": draft.approval_reason.strip(),
+        layout.columns.item_id: draft.item_id,
+        layout.columns.title: draft.title.strip(),
+        layout.columns.problem: draft.problem.strip(),
+        layout.columns.outcome: draft.desired_outcome.strip(),
+        layout.columns.acceptance_criteria: "\n".join(
+            item.strip() for item in draft.acceptance_criteria
+        ),
+        layout.columns.scope: "\n".join(item.strip() for item in draft.scope),
+        layout.columns.out_of_scope: "\n".join(item.strip() for item in draft.out_of_scope),
+        layout.columns.status: BacklogStatus.BACKLOG.value,
+        layout.columns.epic: draft.epic.strip(),
+        layout.columns.item_type: draft.item_type.strip(),
+        layout.columns.priority: draft.priority.strip(),
+        layout.columns.size: draft.size.strip(),
+        layout.columns.approval_required: "yes" if draft.approval_required else "no",
+        layout.columns.approval_reason: draft.approval_reason.strip(),
     }

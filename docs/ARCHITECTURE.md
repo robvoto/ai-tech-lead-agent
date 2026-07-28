@@ -146,8 +146,10 @@ This section replaces the standalone `ARMY_INTEGRATION.md` page. Keep the bounde
 
 - A caller invokes AI Tech Lead through `run-agent-task`.
 - A caller discovers the callable contract through `uv run python -m ai_tech_lead manifest`.
-- A new task is JSON with a task string plus bounded metadata such as `request_id`, optional Hub `run_id`, `source`, `project_root`, `project_reference`, `references`, and `execution_mode`.
+- A new task is JSON with a task string plus bounded metadata such as `request_id`, optional Hub `run_id`, `source`, `project_root`, `project_reference`, optional `task_kind`, `references`, and `execution_mode`.
 - `run-agent-task` accepts generic caller project/context data, validates it once, and converts it into AI Tech Lead's internal immutable `TargetProjectContext`. If the target project root is missing or invalid, project-aware steps fail clearly instead of silently substituting AI Tech Lead's own repo.
+- `task_kind` defaults to `coding_task`. `task_kind: "backlog_refinement"` routes through the existing backlog-refinement service instead of the coding workflow and is the primary Hub entrypoint for proposing new backlog items.
+- Backlog refinement reads project-specific backlog settings from the supplied target-project context (`project_reference.backlog` / `project_reference.backlog_project`) rather than from hardcoded Sheet IDs, tabs, prefixes, columns, or repo-local aliases. Telegram `/propose` reuses the same underlying capability.
 - `execution_mode` is a request, not a grant. `instruction_only` is the safe default.
 - A paused conversation is resumed by resubmitting the same `request_id` with a `decision: {"option": ..., "text": ..., "actor": ...}` object — no `task` field needed. The option must be one of the names the paused response's `pending_decision.options` just reported; anything else is rejected.
 - Output is structured JSON with status, summary, formulated task, brief, coding-agent instruction, backend used, execution flag, logs, evidence, next action, a `pending_decision` block describing exactly what's paused and what decisions are valid right now, and a tiny `agent_manifest` reference.
@@ -160,10 +162,10 @@ This section replaces the standalone `ARMY_INTEGRATION.md` page. Keep the bounde
 - Supported subprocess statuses are:
   - `success` - work completed or an instruction package is ready.
   - `needs_clarification` - the workflow ended (not paused) needing more information, e.g. an unresolved reference. There is no conversation to resume; the caller should submit a brand new task with the answer folded in.
-  - `waiting_decision` - the workflow is genuinely paused (approval, plan/failure guidance, research approval). See `pending_decision` for the exact options; resume by resubmitting `request_id` with a `decision`.
+  - `waiting_decision` - the workflow is genuinely paused (approval, plan/failure guidance, research approval, backlog-refinement approval). See `pending_decision` for the exact options; resume by resubmitting `request_id` with a `decision`.
   - `failed` - terminal failure; the caller should report the error instead of waiting for resume.
 - Callers should prefer machine-readable fields over parsing prose:
-  - `result_kind` distinguishes `instruction_package`, `execution_result`, `clarification_request`, `decision_required`, and `terminal_failure`.
+  - `result_kind` distinguishes `instruction_package`, `execution_result`, `backlog_refinement_draft`, `backlog_item_created`, `clarification_request`, `decision_required`, and `terminal_failure`.
   - `pending_decision` (present only on `waiting_decision`) carries `thread_id` (informational), `kind` (which internal pause this is — relay it, don't interpret it), `prompt` (plain-language description), and `options` (the exact, only valid `decision.option` values right now, each optionally flagged `needs_text`). This is intentionally generic: a caller never needs agent-specific knowledge of what option names mean to relay them correctly, and new pause kinds or option sets require no caller code changes.
 - A caller should rely on that bounded JSON contract rather than reading the full codebase.
 - Telegram is only an interactive operator surface; it does not replace the subprocess contract.

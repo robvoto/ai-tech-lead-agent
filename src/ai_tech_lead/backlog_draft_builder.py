@@ -49,6 +49,8 @@ def build_backlog_refinement_from_text(
     text: str,
     repository: BacklogRepositoryProtocol,
     settings: AppSettings,
+    item_id_prefix: str = "ATL",
+    skill_instructions: str = "",
 ) -> BacklogRefinementBuildResult:
     """Use the orchestrator AI to turn a rough idea into a refined backlog item."""
 
@@ -60,7 +62,7 @@ def build_backlog_refinement_from_text(
             "Orchestrator AI must be enabled before I can refine backlog items from free text."
         )
 
-    next_item_id = repository.next_item_id("ATL")
+    next_item_id = repository.next_item_id(item_id_prefix)
     existing_items = repository.list_items()
     try:
         research_cache_entries = load_research_cache_entries()
@@ -70,6 +72,7 @@ def build_backlog_refinement_from_text(
                 next_item_id,
                 existing_items=existing_items[:MAX_REFINEMENT_CONTEXT_ITEMS],
                 research_cache_block=format_research_cache_for_prompt(research_cache_entries),
+                skill_instructions=skill_instructions,
             ),
             config=OrchestratorLlmConfig(
                 model=settings.orchestrator_ai_model,
@@ -210,6 +213,7 @@ def _backlog_refinement_prompt(
     *,
     existing_items: list[Any],
     research_cache_block: str,
+    skill_instructions: str,
 ) -> str:
     existing_item_lines = [
         f"- {item.item_id} - {item.title}: {_summarize_text(item.body, limit=140)}"
@@ -251,6 +255,8 @@ def _backlog_refinement_prompt(
         "Do not invent implementation details beyond the user's request and the cached research. "
         "Do not use hidden heuristics; make duplicate, stale, and already-done "
         "checks explicit in the JSON.\n\n"
+        "Runtime skill instructions:\n"
+        f"{skill_instructions or '(none supplied)'}\n\n"
         f"Backlog item ID to use: {item_id}\n"
         f"User rough idea:\n{text}\n\n"
         "Existing backlog items:\n"
