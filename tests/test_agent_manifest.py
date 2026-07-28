@@ -50,7 +50,8 @@ def test_build_agent_manifest_contains_core_contract_fields() -> None:
     assert "human_approved" in manifest["input_contract"]["optional"]
     assert "approval_token" in manifest["input_contract"]["optional"]
     assert "task_kind" in manifest["input_contract"]["optional"]
-    assert manifest["input_contract"]["task_kinds"] == ["coding_task", "backlog_refinement"]
+    assert manifest["task_contract"]["task_kinds"] == ["coding_task", "backlog_refinement"]
+    assert manifest["task_contract"]["default_task_kind"] == "coding_task"
     assert "backlog_refinement" in manifest["output_contract"]["fields"]
     assert "run_id" in manifest["input_contract"]["optional"]
     assert manifest["progress_contract"]["transport"] == "stdout_jsonl"
@@ -89,10 +90,14 @@ def test_build_agent_manifest_declares_project_context_contract() -> None:
     assert manifest["project_context_contract"]["enforced_filesystem_permission"] == "write"
     assert "project_context" in manifest["input_contract"]["optional"]
     assert manifest["input_contract"]["project_context_shape"]["schema_version"]
-    assert manifest["input_contract"]["target_project_authorization"]["fail_closed"] == [
-        "unavailable_platform",
-        "missing_credentials",
-        "missing_location",
+    assert manifest["target_project_access"]["authorization_modes"] == [
+        "registered_target",
+        "unregistered_with_approval",
+    ]
+    assert manifest["target_project_access"]["fail_closed_when"] == [
+        "platform_unavailable",
+        "credentials_unavailable",
+        "location_unavailable",
     ]
 
 

@@ -95,23 +95,11 @@ def build_agent_manifest(settings: AppSettings | None = None) -> dict[str, Any]:
                 "text": "required only if the chosen option's needs_text is true",
                 "actor": "optional — free-text identity of who or what is deciding",
             },
-            "task_kinds": ["coding_task", "backlog_refinement"],
             "execution_modes": ["instruction_only", "execute"],
             "context_resolution": (
                 "AI Tech Lead understands and bounds the request, resolves explicit project/resource "
                 "context, and asks one clarification question for unresolved references before research."
             ),
-            "target_project_authorization": {
-                "project_root": "explicit target location supplied per task when project work is requested",
-                "registered_target": "preferred; project_root matches a settings.project_registry entry",
-                "explicit_approval": "allowed for one task when human_approved is true and the target "
-                "root is not registered",
-                "fail_closed": [
-                    "unavailable_platform",
-                    "missing_credentials",
-                    "missing_location",
-                ],
-            },
             "project_reference_backlog_shape": {
                 "project_key": "optional descriptive alias for the target backlog",
                 "spreadsheet_id": "required for backlog_refinement when no local alias resolves it",
@@ -146,6 +134,25 @@ def build_agent_manifest(settings: AppSettings | None = None) -> dict[str, Any]:
                 "it must be explicitly supplied, authorised via the project registry or human "
                 "approval, and may then be read and, in execute mode, written to."
             ),
+        },
+        "task_contract": {
+            "task_kinds": ["coding_task", "backlog_refinement"],
+            "default_task_kind": "coding_task",
+        },
+        "target_project_access": {
+            "requires_explicit_project_root": True,
+            "authorization_modes": [
+                "registered_target",
+                "unregistered_with_approval",
+            ],
+            "registry_source": "settings.project_registry",
+            "allows_target_creation": False,
+            "creation_scope": "none",
+            "fail_closed_when": [
+                "platform_unavailable",
+                "credentials_unavailable",
+                "location_unavailable",
+            ],
         },
         "output_contract": {
             "status_values": _SUPPORTED_OUTPUT_STATUSES,
