@@ -28,6 +28,7 @@ from .research_cache import save_online_source_to_cache
 from .research_checker import check_research_requirements
 from .research_code_context import collect_code_context, format_code_context_for_prompt
 from .research_discovery import discover_official_source
+from .research_policy import select_research_policy
 from .research_sources import collect_online_research_sources
 from .risk_reviewer import review_task_risk
 from .target_project_context import TargetProjectContext
@@ -101,6 +102,9 @@ class GraphState(TypedDict):
     research_source_titles: list[str]
     research_source_locations: list[str]
     research_source_summaries: list[str]
+    research_policy_profiles: list[str]
+    research_trusted_domains: list[str]
+    research_seed_urls: list[str]
     online_research_approved: bool
     formulated_task: str
     plan_text: str
@@ -176,6 +180,9 @@ def build_initial_graph_state(
         "research_source_titles": [],
         "research_source_locations": [],
         "research_source_summaries": [],
+        "research_policy_profiles": [],
+        "research_trusted_domains": [],
+        "research_seed_urls": [],
         "online_research_approved": online_research_approved,
         "formulated_task": "",
         "plan_text": "",
@@ -295,7 +302,7 @@ def check_research_node(state: GraphState) -> dict[str, Any]:
         question = (
             f"Local docs found {result.sources_found} relevant source(s) "
             f"(minimum {settings.research_min_local_sources} required) for this knowledge gap:\n"
-            f"\"{result.gap_question}\"\n"
+            f'"{result.gap_question}"\n'
             f"Reason: {result.gap_reason}\n"
             f"Do you want me to fetch from the approved online source registry next "
             f"(bounded to: {domains_text})?"
@@ -338,20 +345,40 @@ def discover_research_source_node(state: GraphState) -> dict[str, Any]:
     settings = load_settings()
     gap_question = str(state.get("research_gap_question", "")).strip()
 
-    candidate = discover_official_source(gap_question, settings)
+    context = _target_project_context_from_state(state)
+    target_root = (
+        context.project_root if context and context.project_root else settings.project_root
+    )
+    policy = select_research_policy(gap_question, settings, project_root=target_root)
+    policy_state = {
+        "research_policy_profiles": list(policy.profile_names),
+        "research_trusted_domains": list(policy.trusted_domains),
+        "research_seed_urls": list(policy.seed_urls),
+    }
+    logger.info(
+        "[LEARN] Research source policy: profiles=%s domains=%s seeds=%d",
+        ",".join(policy.profile_names) or "configured-fallback",
+        ",".join(policy.trusted_domains),
+        len(policy.seed_urls),
+    )
+
+    candidate = discover_official_source(
+        gap_question, settings, trusted_domains=policy.trusted_domains
+    )
     if candidate is None:
         logger.info("[LEARN] No discovered source candidate; keeping bounded-registry question.")
-        return {}
+        return policy_state
 
     question = (
         "I found a candidate official documentation page for this knowledge gap:\n"
-        f"\"{gap_question}\"\n"
+        f'"{gap_question}"\n'
         f"{candidate.title} — {candidate.url}\n"
         "Do you approve fetching this specific URL? No other URL will be fetched "
         "without separate approval."
     )
     logger.info("[LEARN] Discovered source candidate for approval: %s", candidate.url)
     return {
+        **policy_state,
         "discovered_source_url": candidate.url,
         "discovered_source_title": candidate.title,
         "orchestrator_input_question": question,
@@ -427,7 +454,13 @@ def collect_research_evidence_node(state: GraphState) -> dict[str, Any]:
     )
     discovered_url = str(state.get("discovered_source_url", "")).strip()
     extra_urls = [discovered_url] if discovered_url else None
-    online_sources = collect_online_research_sources(gap_question, settings, extra_urls=extra_urls)
+    online_sources = collect_online_research_sources(
+        gap_question,
+        settings,
+        extra_urls=extra_urls,
+        seed_urls=list(state.get("research_seed_urls", [])) or None,
+        trusted_domains=list(state.get("research_trusted_domains", [])) or None,
+    )
     online_titles = [source.title for source in online_sources]
     online_locations = [source.location for source in online_sources]
     online_summaries = [source.summary for source in online_sources]
@@ -638,6 +671,7 @@ def _target_project_root(state: GraphState, settings: Any) -> Path:
 
     resolved = str(state.get("resolved_project_root", "")).strip()
     return Path(resolved or settings.project_root).resolve()
+
 
 def request_plan_node(
     state: GraphState,

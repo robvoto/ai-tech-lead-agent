@@ -24,6 +24,7 @@ from .orchestrator_llm import (
     OrchestratorLlmError,
     call_orchestrator_web_search,
 )
+from .research_policy import is_url_on_trusted_domain
 from .research_sources import ResearchUrlSafetyError, validate_outbound_research_url
 
 logger = logging.getLogger(LOGGER_NAME)
@@ -42,6 +43,8 @@ class DiscoveredSource:
 def discover_official_source(
     gap_question: str,
     settings: AppSettings,
+    *,
+    trusted_domains: tuple[str, ...] | list[str] | None = None,
 ) -> DiscoveredSource | None:
     """Discover a candidate official documentation URL for a knowledge gap.
 
@@ -63,8 +66,14 @@ def discover_official_source(
     try:
         result = call_orchestrator_web_search(
             query=(
-                "Find the single official documentation page that answers this "
-                f"question: {gap_question}"
+                "Find the single official or primary documentation page that answers this "
+                f"question: {gap_question}. "
+                + (
+                    "Only return a page from one of these trusted domains: "
+                    + ", ".join(trusted_domains)
+                    if trusted_domains
+                    else "Prefer the technology owner's official documentation."
+                )
             ),
             config=config,
         )
@@ -77,6 +86,12 @@ def discover_official_source(
         candidates = _extract_urls_from_text(result.text)
 
     for url, title in candidates[: settings.research_discovery_max_candidates]:
+        if trusted_domains and not is_url_on_trusted_domain(url, trusted_domains):
+            logger.warning(
+                "[LEARN] Discovered source candidate rejected by trusted-domain policy: %s",
+                url,
+            )
+            continue
         try:
             validate_outbound_research_url(url)
         except ResearchUrlSafetyError as error:

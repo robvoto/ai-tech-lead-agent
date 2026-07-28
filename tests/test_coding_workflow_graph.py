@@ -299,7 +299,7 @@ def test_discover_research_source_node_names_candidate_in_question(monkeypatch) 
     monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.load_settings", lambda: settings)
     monkeypatch.setattr(
         "ai_tech_lead.coding_workflow_graph.discover_official_source",
-        lambda _gap_question, _settings: SimpleNamespace(
+        lambda _gap_question, _settings, **_kwargs: SimpleNamespace(
             url="https://core.telegram.org/bots/api",
             title="Telegram Bot API",
         ),
@@ -323,7 +323,7 @@ def test_discover_research_source_node_falls_back_when_no_candidate(monkeypatch)
     monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.load_settings", lambda: settings)
     monkeypatch.setattr(
         "ai_tech_lead.coding_workflow_graph.discover_official_source",
-        lambda _gap_question, _settings: None,
+        lambda _gap_question, _settings, **_kwargs: None,
     )
 
     original_question = (
@@ -337,7 +337,9 @@ def test_discover_research_source_node_falls_back_when_no_candidate(monkeypatch)
 
     result = discover_research_source_node(state)
 
-    assert result == {}
+    assert result["research_policy_profiles"] == ["telegram"]
+    assert "core.telegram.org" in result["research_trusted_domains"]
+    assert result["research_seed_urls"][0] == "https://core.telegram.org/bots/api"
     assert state["orchestrator_input_question"] == original_question
 
 

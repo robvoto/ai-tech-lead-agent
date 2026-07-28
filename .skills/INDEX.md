@@ -17,6 +17,7 @@ Pick the smallest skill that matches the requested outcome or the files being ch
 - `risk-review-change/SKILL.md` - LLM risk reviewer, approval routing, or safety gate behaviour.
 - `instruction-maintenance/SKILL.md` - AGENTS, skills, prompt files, or instruction documentation.
 - `research-cache/SKILL.md` - reusable research notes, indexes, or implementation pattern cache.
+- `technical-research/SKILL.md` - bounded repo-first research using technology-aware official sources and explicit stop conditions.
 
 - `run-app/SKILL.md` - launch the bot for manual testing, background startup, and Telegram interaction.
 

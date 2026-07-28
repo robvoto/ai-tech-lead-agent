@@ -41,7 +41,10 @@
   "research_min_local_sources": 2,
   "research_max_local_sources": 4,
   "research_allowed_domains": [
-    "docs.langchain.com"
+    "docs.langchain.com",
+    "docs.python.org",
+    "docs.litellm.ai",
+    "core.telegram.org"
   ],
   "research_online_source_urls": [
     "https://docs.langchain.com/oss/python/langgraph/overview",

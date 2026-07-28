@@ -30,6 +30,7 @@ from .research_cache import (
     load_research_cache_entries,
     write_research_cache_note,
 )
+from .research_policy import is_url_on_trusted_domain
 
 logger = logging.getLogger(LOGGER_NAME)
 
@@ -80,8 +81,7 @@ def validate_outbound_research_url(url: str) -> None:
             or ip_address.is_unspecified
         ):
             raise ResearchUrlSafetyError(
-                f"Research fetch URL resolves to a disallowed address "
-                f"({ip_address}): {url}"
+                f"Research fetch URL resolves to a disallowed address ({ip_address}): {url}"
             )
 
 
@@ -106,11 +106,10 @@ def _read_bounded_response(response, *, max_bytes: int, url: str) -> bytes:
             break
         total_bytes += len(chunk)
         if total_bytes > max_bytes:
-            raise ValueError(
-                f"Research fetch response exceeded {max_bytes} bytes: {url}"
-            )
+            raise ValueError(f"Research fetch response exceeded {max_bytes} bytes: {url}")
         chunks.append(chunk)
     return b"".join(chunks)
+
 
 _DOC_INDEX_ENTRY_PATTERN = re.compile(r"^-\s+`(?P<path>[^`]+)`\s*-\s*(?P<summary>.+)$")
 
@@ -199,6 +198,8 @@ def collect_online_research_sources(
     settings: AppSettings,
     *,
     extra_urls: list[str] | None = None,
+    seed_urls: list[str] | tuple[str, ...] | None = None,
+    trusted_domains: list[str] | tuple[str, ...] | None = None,
 ) -> list[ResearchSource]:
     """Fetch a bounded set of approved online documentation pages in parallel.
 
@@ -209,8 +210,13 @@ def collect_online_research_sources(
 
     request_terms = _request_terms(request)
     _log_research_request("Online research selection", request, request_terms)
-    combined_urls = list(dict.fromkeys((extra_urls or []) + settings.research_online_source_urls))
-    selected_urls = combined_urls[: settings.research_max_online_source_urls]
+    combined_urls = list(
+        dict.fromkeys((extra_urls or []) + list(seed_urls or settings.research_online_source_urls))
+    )
+    effective_domains = tuple(trusted_domains or settings.research_allowed_domains)
+    selected_urls = [
+        url for url in combined_urls if is_url_on_trusted_domain(url, effective_domains)
+    ][: settings.research_max_online_source_urls]
     logger.debug(
         "[LEARN] Online research candidate URLs (%d): %s",
         len(selected_urls),
@@ -512,12 +518,10 @@ def _fetch_online_source(
         charset = response.headers.get_content_charset() or "utf-8"
         content_length = response.headers.get("Content-Length")
         if content_length is not None and int(content_length) > max_fetch_bytes:
-            raise ValueError(
-                f"Research fetch response too large ({content_length} bytes): {url}"
-            )
-        raw_body = _read_bounded_response(
-            response, max_bytes=max_fetch_bytes, url=url
-        ).decode(charset, errors="replace")
+            raise ValueError(f"Research fetch response too large ({content_length} bytes): {url}")
+        raw_body = _read_bounded_response(response, max_bytes=max_fetch_bytes, url=url).decode(
+            charset, errors="replace"
+        )
 
     title, summary, excerpt = _extract_online_document_fields(
         raw_body,

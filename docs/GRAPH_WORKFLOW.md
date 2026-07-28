@@ -176,3 +176,9 @@ The graph does not directly edit files. Real file changes can only happen throug
 ## Maintenance rule
 
 When graph nodes, routes, interrupts, or state fields change, update this document and `docs/ARCHITECTURE.md` if the system boundary changes.
+
+## Technology-aware research source policy
+
+Online research remains a bounded workflow, not an open-ended agent loop. Before source discovery, AI Tech Lead derives a small research policy from the precise knowledge-gap question and a bounded set of target-repository signal files (`pyproject.toml`, requirements files, `package.json`, and README files). The selected policy is stored in graph state as profile names, trusted domains, and bounded seed URLs so the same decision is reused after approval and resume.
+
+The current built-in profiles cover LangGraph/LangChain, Python, LiteLLM, and Telegram. Request matches take priority over repository signals. Every discovered or configured URL must match a selected trusted official domain, pass the existing SSRF/redirect/response-size guards, and remain within configured source limits. The human approval gate, local-cache-first behaviour, and explicit stop conditions are unchanged. The reusable behaviour rules live in `.skills/technical-research/SKILL.md`; executable limits and enforcement remain in code.

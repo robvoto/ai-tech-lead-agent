@@ -193,3 +193,29 @@ def test_discover_official_source_returns_first_valid_of_mixed_candidates(monkey
 
     assert result is not None
     assert result.url == "https://core.telegram.org/bots/api"
+
+
+def test_discover_official_source_rejects_candidate_outside_trusted_domains(
+    monkeypatch, caplog
+) -> None:
+    caplog.set_level("WARNING")
+
+    def fake_call_orchestrator_web_search(**_kwargs):
+        return OrchestratorWebSearchResult(
+            data={"citations": [{"url": "https://example.com/blog", "title": "Unofficial"}]},
+            text="",
+        )
+
+    monkeypatch.setattr(
+        "ai_tech_lead.research_discovery.call_orchestrator_web_search",
+        fake_call_orchestrator_web_search,
+    )
+
+    result = discover_official_source(
+        "What is the Python pathlib contract?",
+        _settings(),
+        trusted_domains=("docs.python.org",),
+    )
+
+    assert result is None
+    assert "rejected by trusted-domain policy" in caplog.text
