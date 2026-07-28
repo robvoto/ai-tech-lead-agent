@@ -474,6 +474,8 @@ def emit_terminal_progress(reporter: ProgressReporter, result: Mapping[str, Any]
         elif interrupt_kind == "plan_guidance":
             summary = "AI Tech Lead needs human guidance for the implementation plan."
         reporter.waiting("waiting_clarification", summary)
+    elif status == "waiting_decision":
+        reporter.waiting("waiting_decision", summary)
     else:
         reporter.failed("AI Tech Lead failed. Check the final result for details.")
 

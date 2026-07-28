@@ -242,6 +242,10 @@ def test_terminal_result_statuses_map_to_safe_progress_events() -> None:
     )
     emit_terminal_progress(
         reporter,
+        {"status": "waiting_decision", "summary": "Plan needs guidance (rejected 1x)."},
+    )
+    emit_terminal_progress(
+        reporter,
         {"status": "success", "summary": "Task completed successfully."},
     )
     emit_terminal_progress(
@@ -253,6 +257,8 @@ def test_terminal_result_statuses_map_to_safe_progress_events() -> None:
     assert [(event["event_type"], event["phase"]) for event in events] == [
         ("waiting", "waiting_approval"),
         ("waiting", "waiting_clarification"),
+        ("waiting", "waiting_decision"),
         ("completed", "completed"),
         ("failure", "failed"),
     ]
+    assert events[2]["human_summary"] == "Plan needs guidance (rejected 1x)."
