@@ -145,6 +145,39 @@ def test_collect_local_research_sources_uses_local_indexes(tmp_path: Path, caplo
     assert "Local research cache candidate: score=" in caplog.text
 
 
+def test_collect_local_research_sources_skips_directory_index_entries(
+    tmp_path: Path, caplog
+) -> None:
+    caplog.set_level(logging.DEBUG)
+    docs_dir = tmp_path / "docs"
+    (docs_dir / "diagrams").mkdir(parents=True)
+
+    doc_path = docs_dir / "ARCHITECTURE.md"
+    doc_path.write_text(
+        "# Architecture\n\nLangGraph interrupts and checkpointers should stay separate.\n",
+        encoding="utf-8",
+    )
+    (docs_dir / "INDEX.md").write_text(
+        "# Documentation Index\n\n"
+        "## Core project documents\n\n"
+        "- `diagrams/` - generated PNG and hash artifact for the main coding workflow.\n"
+        "- `ARCHITECTURE.md` - LangGraph interrupts and checkpointers.\n",
+        encoding="utf-8",
+    )
+
+    settings = replace(
+        parse_settings(valid_settings_dict()),
+        project_root=str(tmp_path),
+        research_local_index_paths=["docs/INDEX.md"],
+        research_max_local_sources=2,
+    )
+
+    sources = collect_local_research_sources("LangGraph interrupts and checkpointers", settings)
+
+    assert {source.title for source in sources} == {"ARCHITECTURE.md"}
+    assert "Local docs source is a directory, skipping" in caplog.text
+
+
 def test_collect_online_research_sources_fetches_bounded_docs(monkeypatch, caplog) -> None:
     caplog.set_level(logging.DEBUG)
     settings = replace(

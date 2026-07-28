@@ -361,6 +361,9 @@ def _score_docs_index_entries(
         if not doc_path.exists():
             logger.info("[LEARN] Local docs source missing: %s", doc_path)
             continue
+        if doc_path.is_dir():
+            logger.info("[LEARN] Local docs source is a directory, skipping: %s", doc_path)
+            continue
 
         title = Path(relative_path).name
         excerpt = _extract_local_excerpt(doc_path, max_excerpt_chars=max_excerpt_chars)
