@@ -8,12 +8,9 @@ from dataclasses import dataclass
 from typing import Any
 
 from .app_settings import AppSettings
+from .llm_json import call_llm_for_json
 from .logging_setup import LOGGER_NAME
-from .orchestrator_llm import (
-    OrchestratorLlmConfig,
-    OrchestratorLlmError,
-    call_orchestrator_llm,
-)
+from .orchestrator_llm import OrchestratorLlmConfig, OrchestratorLlmError
 from .prompt_loader import PLAN_REVIEW_PROMPT_KEY, render_prompt
 
 logger = logging.getLogger(LOGGER_NAME)
@@ -88,23 +85,28 @@ def _llm_review_plan(
         formulated_task=formulated_task,
         plan_text=plan_text,
     )
-    result = call_orchestrator_llm(
+    config = OrchestratorLlmConfig(
+        model=settings.orchestrator_ai_model,
+        max_output_tokens=settings.orchestrator_ai_max_output_tokens,
+        timeout_seconds=settings.orchestrator_ai_timeout_seconds,
+    )
+
+    def _log_metric(result: Any) -> None:
+        logger.info(
+            "Plan review LLM: in=%d out=%d total=%d cost_total=$%.5f",
+            result.tokens_in,
+            result.tokens_out,
+            result.tokens_in + result.tokens_out,
+            result.cost_usd,
+        )
+
+    return call_llm_for_json(
         prompt=prompt,
-        config=OrchestratorLlmConfig(
-            model=settings.orchestrator_ai_model,
-            max_output_tokens=settings.orchestrator_ai_max_output_tokens,
-            timeout_seconds=settings.orchestrator_ai_timeout_seconds,
-        ),
+        config=config,
+        error_label="Plan review response",
+        parse=_parse_review_payload,
+        on_result=_log_metric,
     )
-    logger.info(
-        "Plan review LLM: in=%d out=%d total=%d cost_total=$%.5f",
-        result.tokens_in,
-        result.tokens_out,
-        result.tokens_in + result.tokens_out,
-        result.cost_usd,
-    )
-    payload = json.loads(result.text)
-    return _parse_review_payload(payload)
 
 
 def _parse_review_payload(payload: dict[str, Any]) -> PlanReviewDecision:

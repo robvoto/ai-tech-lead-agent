@@ -20,12 +20,9 @@ from dataclasses import dataclass
 from typing import Any
 
 from .app_settings import AppSettings
+from .llm_json import call_llm_for_json
 from .logging_setup import LOGGER_NAME
-from .orchestrator_llm import (
-    OrchestratorLlmConfig,
-    OrchestratorLlmError,
-    call_orchestrator_llm,
-)
+from .orchestrator_llm import OrchestratorLlmConfig, OrchestratorLlmError
 from .prompt_loader import RESEARCH_KNOWLEDGE_GAP_PROMPT_KEY, render_prompt
 from .research_code_context import collect_code_context, format_code_context_for_prompt
 from .research_sources import collect_local_research_sources
@@ -177,9 +174,6 @@ def check_research_requirements(
     )
 
 
-_KNOWLEDGE_GAP_CHECK_ATTEMPTS = 2
-
-
 def _collect_code_context_text(
     request: str,
     settings: AppSettings,
@@ -209,9 +203,7 @@ def _llm_check_knowledge_gap(
         timeout_seconds=settings.orchestrator_ai_timeout_seconds,
     )
 
-    last_error: Exception = ValueError("knowledge-gap check produced no attempts")
-    for attempt in range(1, _KNOWLEDGE_GAP_CHECK_ATTEMPTS + 1):
-        result = call_orchestrator_llm(prompt=prompt, config=config)
+    def _log_metric(result: Any) -> None:
         logger.info(
             "Research knowledge-gap LLM: in=%d out=%d total=%d cost_total=$%.5f",
             result.tokens_in,
@@ -219,34 +211,14 @@ def _llm_check_knowledge_gap(
             result.tokens_in + result.tokens_out,
             result.cost_usd,
         )
-        try:
-            payload = _load_knowledge_gap_json(result.text)
-            return _parse_knowledge_gap_payload(payload)
-        except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
-            last_error = error
-            logger.warning(
-                "Research knowledge-gap response invalid on attempt %d/%d: %s — raw response: %r",
-                attempt,
-                _KNOWLEDGE_GAP_CHECK_ATTEMPTS,
-                error,
-                result.text,
-            )
 
-    raise last_error
-
-
-def _load_knowledge_gap_json(raw_text: str) -> dict[str, Any]:
-    """Parse plain JSON or a single Markdown-fenced JSON object."""
-
-    text = raw_text.strip()
-    if text.startswith("```") and text.endswith("```"):
-        lines = text.splitlines()
-        if len(lines) >= 3:
-            text = "\n".join(lines[1:-1]).strip()
-    payload = json.loads(text)
-    if not isinstance(payload, dict):
-        raise TypeError("knowledge-gap response must be a JSON object")
-    return payload
+    return call_llm_for_json(
+        prompt=prompt,
+        config=config,
+        error_label="Research knowledge-gap response",
+        parse=_parse_knowledge_gap_payload,
+        on_result=_log_metric,
+    )
 
 
 def _parse_knowledge_gap_payload(payload: dict[str, Any]) -> tuple[bool, str, str]:

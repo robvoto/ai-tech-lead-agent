@@ -24,7 +24,7 @@ def test_knowledge_gap_check_retries_once_on_malformed_response(monkeypatch, cap
         return OrchestratorLlmResult(text='{"has_gap": false, "gap_question": "", "reason": "no external fact needed"}')
 
     monkeypatch.setattr(
-        "ai_tech_lead.research_checker.call_orchestrator_llm",
+        "ai_tech_lead.llm_json.call_orchestrator_llm",
         fake_call_orchestrator_llm,
     )
 
@@ -46,7 +46,7 @@ def test_knowledge_gap_check_falls_back_to_approval_after_retry_exhausted(monkey
         return OrchestratorLlmResult(text="not json")
 
     monkeypatch.setattr(
-        "ai_tech_lead.research_checker.call_orchestrator_llm",
+        "ai_tech_lead.llm_json.call_orchestrator_llm",
         fake_call_orchestrator_llm,
     )
 
@@ -66,7 +66,7 @@ def test_knowledge_gap_check_accepts_markdown_fenced_json(monkeypatch):
         )
 
     monkeypatch.setattr(
-        "ai_tech_lead.research_checker.call_orchestrator_llm",
+        "ai_tech_lead.llm_json.call_orchestrator_llm",
         fake_call_orchestrator_llm,
     )
 
@@ -82,7 +82,7 @@ def test_knowledge_gap_check_rejects_missing_gap_question_when_gap_true(monkeypa
         return OrchestratorLlmResult(text='{"has_gap": true, "gap_question": "", "reason": "unclear"}')
 
     monkeypatch.setattr(
-        "ai_tech_lead.research_checker.call_orchestrator_llm",
+        "ai_tech_lead.llm_json.call_orchestrator_llm",
         fake_call_orchestrator_llm,
     )
 

@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from dataclasses import replace
 
+import pytest
 from helpers import valid_settings_dict
 
 from ai_tech_lead.app_settings import parse_settings
-from ai_tech_lead.plan_reviewer import review_plan
+from ai_tech_lead.orchestrator_llm import OrchestratorLlmResult
+from ai_tech_lead.plan_reviewer import PlanReviewUnavailable, review_plan
 
 
 def test_review_plan_empty_plan_includes_agent_error_in_reason() -> None:
@@ -33,7 +35,7 @@ def test_review_plan_rejects_verbose_plan_without_calling_llm(monkeypatch) -> No
     settings = replace(parse_settings(valid_settings_dict()), orchestrator_ai_enabled=True)
 
     monkeypatch.setattr(
-        "ai_tech_lead.plan_reviewer.call_orchestrator_llm",
+        "ai_tech_lead.llm_json.call_orchestrator_llm",
         lambda **_kw: (_ for _ in ()).throw(AssertionError("LLM should not be called")),
     )
 
@@ -53,3 +55,53 @@ def test_review_plan_rejects_verbose_plan_without_calling_llm(monkeypatch) -> No
     assert decision.approved is False
     assert "too long" in decision.reason.lower()
     assert "3 to 5 short bullets" in decision.correction
+
+
+def test_review_plan_accepts_markdown_fenced_json(monkeypatch) -> None:
+    """The live failure this guards against: gpt-4.1-mini sometimes wraps its
+    review reply in a ```json fence, which used to crash with
+    'Expecting value: line 1 column 1 (char 0)' instead of being parsed."""
+    settings = replace(parse_settings(valid_settings_dict()), orchestrator_ai_enabled=True)
+
+    monkeypatch.setattr(
+        "ai_tech_lead.llm_json.call_orchestrator_llm",
+        lambda **_kw: OrchestratorLlmResult(
+            text='```json\n{"approved": true, "reason": "Looks good."}\n```'
+        ),
+    )
+
+    decision = review_plan("Build the feature", "1. Do the thing.", settings)
+
+    assert decision.approved is True
+    assert decision.reason == "Looks good."
+
+
+def test_review_plan_retries_once_on_invalid_response_then_succeeds(monkeypatch) -> None:
+    settings = replace(parse_settings(valid_settings_dict()), orchestrator_ai_enabled=True)
+    calls: list[int] = []
+
+    def fake_call(**_kw):
+        calls.append(1)
+        if len(calls) == 1:
+            return OrchestratorLlmResult(text="")
+        return OrchestratorLlmResult(text='{"approved": true, "reason": "Fine on retry."}')
+
+    monkeypatch.setattr("ai_tech_lead.llm_json.call_orchestrator_llm", fake_call)
+
+    decision = review_plan("Build the feature", "1. Do the thing.", settings)
+
+    assert len(calls) == 2
+    assert decision.approved is True
+    assert decision.reason == "Fine on retry."
+
+
+def test_review_plan_routes_to_human_after_retry_exhausted(monkeypatch) -> None:
+    settings = replace(parse_settings(valid_settings_dict()), orchestrator_ai_enabled=True)
+
+    monkeypatch.setattr(
+        "ai_tech_lead.llm_json.call_orchestrator_llm",
+        lambda **_kw: OrchestratorLlmResult(text="not json"),
+    )
+
+    with pytest.raises(PlanReviewUnavailable, match="invalid response"):
+        review_plan("Build the feature", "1. Do the thing.", settings)
