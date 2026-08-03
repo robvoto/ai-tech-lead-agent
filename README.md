@@ -1,142 +1,134 @@
-# AI Tech Lead
+# AI Tech Lead Agent
 
-Local AI Technical Lead Assistant project.
+AI Tech Lead is a local specialist agent that turns approved technical work into bounded, reviewable coding execution. It prepares a plan, invokes a coding agent through an explicit contract, validates the result, and reports evidence rather than assuming success.
 
-## Source of truth
-
-Start with the documentation index:
+## Platform role
 
 ```text
-docs/INDEX.md
+Human request or backlog item
+            │
+            ▼
+        Agent Hub
+            │
+            ▼
+     AI Tech Lead Agent
+            │
+            ├── resolve pinned project context
+            ├── inspect bounded repository evidence
+            ├── prepare and refine an execution plan
+            ├── invoke the configured coding agent
+            └── validate changes, tests, and outcome
 ```
 
-For current project direction and structure, read:
+AI Tech Lead is a specialist. Agent Hub owns orchestration and task state; Agent Factory owns agent creation and lifecycle management.
+
+## Responsibilities
+
+- interpret a technical task within its pinned project context;
+- inspect relevant code, documentation, skills, and constraints;
+- prepare a bounded coding plan;
+- pause for clarification or approval when required;
+- invoke a coding agent through the JSON subprocess contract;
+- constrain file, command, project, and execution scope;
+- review changed files and validation evidence;
+- report completed, partial, blocked, or failed outcomes accurately;
+- retain reusable technical knowledge without silently changing project rules.
+
+## Repository boundaries
+
+| Repository | Responsibility |
+|---|---|
+| `agent-hub` | Orchestration, routing, task state, approvals, and operator interaction |
+| `agent-factory` | Agent creation, validation, staging, approval, and promotion |
+| `ai-tech-lead-agent` | Technical planning and bounded coding-agent coordination |
+
+AI Tech Lead must not become a general orchestrator, silently select a different project, or treat coding-agent output as validated work.
+
+## Execution workflow
 
 ```text
-docs/ARCHITECTURE.md
-docs/GRAPH_WORKFLOW.md
-docs/RUNTIME_RUNBOOK.md
-docs/plan/INITIAL_PLAN.md
+Task accepted
+     ▼
+Project context pinned
+     ▼
+Relevant evidence inspected
+     ▼
+Plan prepared and reviewed
+     ▼
+Approval or clarification when required
+     ▼
+Coding agent invoked
+     ▼
+Diff, tests, lint, and task outcome checked
+     ▼
+Evidence-based result returned
 ```
 
-## Environment
+## Current capabilities
 
-- Runtime/backend: WSL Ubuntu
-- Project root: `/home/robvoto/projects/ai-tech-lead`
-- Python: 3.13
-- Package manager: uv
+- interactive CLI and Telegram entry points;
+- backlog-task execution;
+- machine-readable JSON subprocess input and output;
+- bounded coding-agent invocation;
+- approval and clarification interruptions;
+- configurable execution enablement through local settings;
+- project-aware repository inspection;
+- test, lint, and changed-file validation;
+- local administration interface;
+- LangGraph development and inspection workflow;
+- persistent knowledge-store diagnostics;
+- setup and health checks.
 
-## JSON subprocess entry point
-
-AI Tech Lead can also be called non-interactively through the local JSON subprocess contract. The caller may be a human script, local automation, or another tool; this path does not start Telegram or the admin UI.
-
-```bash
-cd /home/robvoto/projects/ai-tech-lead
-uv run python -m ai_tech_lead run-agent-task --input-json input.json --output-json output.json
-```
-
-See `docs/ARCHITECTURE.md` for the subprocess contract and safety boundary.
-
-## Telegram bot
-
-AI Tech Lead also has a human-facing Telegram bot for direct use by you. When Telegram is enabled in local settings, the bot runs the coding-agent workflow interactively from chat:
-
-- use it for direct coding requests from Telegram
-- use `/run ATL-###` to trigger a backlog item
-- use `/code` for an explicit coding workflow
-
-The Telegram bot is the interactive human entry point; `run-agent-task` is the non-interactive subprocess entry point.
-
-## Normal project run
-
-Run from Ubuntu/WSL:
-
-```bash
-cd /home/robvoto/projects/ai-tech-lead
-uv run python -m ai_tech_lead --debug
-```
-
-For local development, add `--reload` to restart the process when `src/`, `config/`, or `docs/` change:
-
-```bash
-uv run python -m ai_tech_lead --debug --reload
-```
-
-Trigger backlog tasks through Telegram, for example:
+## Repository structure
 
 ```text
-/run ATL-001
+.
+├── src/ai_tech_lead/          # Workflow, contracts, tools, and interfaces
+├── config/                    # Local-safe defaults and project metadata
+├── docs/                      # Architecture, workflow, runtime, and planning guidance
+├── tests/                     # Automated workflow and contract tests
+└── scripts and run helpers    # Local development entry points
 ```
 
-Bootstrap a fresh workspace or inspect local health:
+## Local development
 
-```bash
-uv run python -m ai_tech_lead setup
-uv run python -m ai_tech_lead doctor
-uv run python -m ai_tech_lead knowledge-store stats
-```
-
-Coding-agent execution is controlled by the local settings/admin toggle (`execute_coding_agent`); there is no `--execute-coding-agent` CLI flag.
-
-## Tests
-
-Run the core test suite:
-
-```bash
-uv run pytest
-```
-
-The default tests should stay fast and should not call real coding agents.
-
-## Local admin screen
-
-Run from Ubuntu/WSL:
-
-```bash
-uv run python -m ai_tech_lead --admin
-```
-
-Or use the local helper script:
-
-```bash
-./run_admin.sh
-```
-
-Telegram bot credentials are read from the local `TELEGRAM_BOT_TOKEN` environment variable. You can place it in the project `.env` file for local development.
-
-## LangGraph Studio run
-
-Run from Ubuntu/WSL and leave the terminal running:
-
-```bash
-cd /home/robvoto/projects/ai-tech-lead
-./run_langsmith.sh
-```
-
-## Dev tools
-
-Install dev tools:
+Install dependencies and run the fast validation suite using the commands documented in the runtime guide. Core checks include:
 
 ```bash
 uv sync --group dev
-```
-
-Check formatting and linting:
-
-```bash
+uv run pytest
 uv run ruff check .
 ```
 
-Format changed Python files only:
+The default test suite should not call a real coding agent unless an explicit integration test enables that behaviour.
 
-```bash
-uv run ruff format <file-or-folder>
-```
+## Architecture principles
 
-Fix safe lint issues:
+- **Pinned project context** — execution cannot silently move to another repository.
+- **Plan before modification** — the coding agent receives a bounded task rather than an ambiguous request.
+- **Approval for consequential actions** — risky execution pauses rather than proceeding silently.
+- **Untrusted agent output** — diffs and claimed success require validation.
+- **Evidence-based completion** — a task is complete only when the requested outcome and relevant checks are demonstrated.
+- **Controlled execution** — coding-agent execution is disabled unless explicitly enabled in local settings.
+- **No hidden scope expansion** — extra files, commands, tools, or research require a justified task need and the applicable approval.
 
-```bash
-uv run ruff check . --fix
-```
+## Documentation
 
-Use dev commands on changed files where possible. Do not reformat the whole repository unless a separate cleanup task asks for it.
+Start with [`docs/INDEX.md`](docs/INDEX.md).
+
+Key references:
+
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
+- [`docs/GRAPH_WORKFLOW.md`](docs/GRAPH_WORKFLOW.md)
+- [`docs/RUNTIME_RUNBOOK.md`](docs/RUNTIME_RUNBOOK.md)
+- [`docs/plan/INITIAL_PLAN.md`](docs/plan/INITIAL_PLAN.md)
+
+Operational paths, local bot commands, Studio commands, and environment-specific run instructions belong in the runtime documentation rather than the repository landing page.
+
+## Security
+
+See [`SECURITY.md`](SECURITY.md) for coding-agent, command, repository, Telegram, credential, and validation boundaries.
+
+## Licence
+
+This private repository does not grant an open-source licence. A licence should be selected deliberately before any public source release.
