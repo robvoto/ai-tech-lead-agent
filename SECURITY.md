@@ -33,14 +33,17 @@ Do not commit or publish:
 - Report partial or failed validation accurately.
 - Do not permit silent scope expansion, destructive commands, or credential access.
 
-## Subprocess contract
+## Inbound subprocess contract
 
-Validate all JSON subprocess input and output. Reject malformed, incomplete, mismatched-project, or unsupported contract versions rather than guessing missing fields.
+The JSON subprocess contract is the caller-facing boundary into AI Tech Lead. Validate all inbound task data and all structured output. Reject malformed, incomplete, mismatched-project, or unsupported contract versions rather than guessing missing fields.
+
+The configured coding agent is invoked separately by the controlled runner as a CLI subprocess. It does not receive authority merely because the inbound caller supplied a valid JSON task.
 
 ## Telegram and interactive interfaces
 
 - Store bot credentials outside source control.
-- Restrict access to approved users or chats.
+- Configure a non-empty `telegram_allowed_chat_ids` allowlist before enabling Telegram.
+- The current implementation treats an empty allowlist as unrestricted access; an empty value is therefore **not** an access control and must not be used in an enabled deployment.
 - Treat incoming messages as untrusted task input.
 - Apply the same project, approval, and execution controls used by non-interactive requests.
 - Do not send private source files, secrets, or full sensitive logs through chat.
