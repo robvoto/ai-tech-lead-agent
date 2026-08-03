@@ -1,6 +1,6 @@
 # AI Tech Lead Agent
 
-AI Tech Lead is a local specialist agent that turns approved technical work into bounded, reviewable coding execution. It prepares a plan, invokes a coding agent through an explicit contract, validates the result, and reports evidence rather than assuming success.
+AI Tech Lead is a local specialist agent that turns approved technical work into bounded, reviewable coding execution. External callers submit validated tasks through the JSON subprocess adapter; AI Tech Lead then prepares a plan, invokes the configured coding-agent CLI through its controlled runner, validates the result, and reports evidence rather than assuming success.
 
 ## Platform role
 
@@ -24,11 +24,12 @@ AI Tech Lead is a specialist. Agent Hub owns orchestration and task state; Agent
 
 ## Responsibilities
 
+- accept validated caller tasks through the inbound JSON subprocess contract;
 - interpret a technical task within its pinned project context;
 - inspect relevant code, documentation, skills, and constraints;
 - prepare a bounded coding plan;
 - pause for clarification or approval when required;
-- invoke a coding agent through the JSON subprocess contract;
+- invoke the configured coding-agent CLI through the controlled runner;
 - constrain file, command, project, and execution scope;
 - review changed files and validation evidence;
 - report completed, partial, blocked, or failed outcomes accurately;
@@ -66,10 +67,10 @@ Evidence-based result returned
 
 ## Current capabilities
 
-- interactive CLI and Telegram entry points;
+- Telegram operator interaction and non-interactive CLI/process commands;
 - backlog-task execution;
-- machine-readable JSON subprocess input and output;
-- bounded coding-agent invocation;
+- machine-readable inbound JSON subprocess input and structured output;
+- bounded coding-agent CLI invocation through a controlled runner;
 - approval and clarification interruptions;
 - configurable execution enablement through local settings;
 - project-aware repository inspection;
@@ -78,6 +79,8 @@ Evidence-based result returned
 - LangGraph development and inspection workflow;
 - persistent knowledge-store diagnostics;
 - setup and health checks.
+
+The CLI starts services and exposes non-interactive maintenance or adapter commands. It is not a separate interactive task-submission interface.
 
 ## Repository structure
 
