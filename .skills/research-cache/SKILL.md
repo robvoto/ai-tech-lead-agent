@@ -50,4 +50,4 @@ sources:
 - If a cached finding is more than 6 months old and the topic evolves fast (LLM tooling, APIs), note it may be stale before relying on it.
 
 ## Note on the automated fetch path
-Notes written automatically by `1d_collect_research_evidence` (see `docs/GRAPH_WORKFLOW.md`) only populate `topic`/`date`/`question`/`sources` and a plain `## Summary` — they skip `Options found`/`Recommendation`/`Raw notes` because that automated path fetches raw docs without synthesizing them into those sections. Use this manual template's full structure when you do the synthesis yourself.
+Notes written automatically by `2b_collect_research_evidence` (see `docs/GRAPH_WORKFLOW.md`) only populate `topic`/`date`/`question`/`sources` and a plain `## Summary` — they skip `Options found`/`Recommendation`/`Raw notes` because that automated path fetches raw docs without synthesizing them into those sections. Use this manual template's full structure when you do the synthesis yourself.

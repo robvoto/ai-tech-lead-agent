@@ -50,12 +50,12 @@ class NodeName(StrEnum):
     UNDERSTAND_AND_BOUND_REQUEST = "1a Understand Request"
     RESOLVE_CONTEXT = "1b Find Project Context"
     CONTEXT_CLARIFICATION_INTERRUPT = "1b_context_clarification_interrupt"
-    CHECK_RESEARCH = "1c_check_research"
-    DISCOVER_RESEARCH_SOURCE = "1c1_discover_research_source"
-    RESEARCH_INTERRUPT = "1c_research_interrupt"
-    COLLECT_RESEARCH_EVIDENCE = "1d_collect_research_evidence"
-    REVIEW_RISK = "2_review_risk"
-    TECH_LEAD_ANALYSE = "3c Analyse Task"
+    CHECK_RESEARCH = "2a_check_research"
+    DISCOVER_RESEARCH_SOURCE = "2a1_discover_research_source"
+    RESEARCH_INTERRUPT = "2a_research_interrupt"
+    COLLECT_RESEARCH_EVIDENCE = "2b_collect_research_evidence"
+    REVIEW_RISK = "3_review_risk"
+    TECH_LEAD_ANALYSE = "2 Analyse Task"
     APPROVAL_INTERRUPT = "4_approval_interrupt"
     REQUEST_PLAN = "5b_request_plan"
     REVIEW_PLAN = "5c_review_plan"
@@ -330,7 +330,7 @@ def context_clarification_interrupt_node(state: GraphState) -> dict[str, Any]:
 def check_research_node(state: GraphState) -> dict[str, Any]:
     """Identify a knowledge gap, if any, and check research evidence requirements."""
 
-    _log_node_start("1b", "CHECK_RESEARCH", "Check research evidence requirements")
+    _log_node_start("2a", "CHECK_RESEARCH", "Check research evidence requirements")
     settings = load_settings()
     context = _target_project_context_from_state(state)
     code_context_root = (
@@ -408,7 +408,7 @@ def discover_research_source_node(state: GraphState) -> dict[str, Any]:
     is off, errors, or finds no safe candidate.
     """
 
-    _log_node_start("1c1", "DISCOVER_RESEARCH_SOURCE", "Discover a candidate official source")
+    _log_node_start("2a1", "DISCOVER_RESEARCH_SOURCE", "Discover a candidate official source")
     settings = load_settings()
     gap_question = str(state.get("research_gap_question", "")).strip()
 
@@ -455,7 +455,7 @@ def discover_research_source_node(state: GraphState) -> dict[str, Any]:
 def research_interrupt_node(state: GraphState) -> dict[str, Any]:
     """Pause and ask for human approval before running online research."""
 
-    _log_node_start("1c", "RESEARCH_INTERRUPT", "Pause for human online research approval")
+    _log_node_start("2a", "RESEARCH_INTERRUPT", "Pause for human online research approval")
     question = str(state.get("orchestrator_input_question", "")).strip()
     logger.info("Research interrupt: awaiting human approval. Question: %s", question)
     result = interrupt({"kind": "research_approval", "question": question})
@@ -472,7 +472,7 @@ def research_interrupt_node(state: GraphState) -> dict[str, Any]:
 def route_after_check_research(state: GraphState) -> str:
     """Route after research check: interrupt if complex task lacks local sources, else continue."""
 
-    _log_decision_start("1b", "ROUTE_AFTER_CHECK_RESEARCH", "Route after research evidence check")
+    _log_decision_start("2a", "ROUTE_AFTER_CHECK_RESEARCH", "Route after research evidence check")
 
     if state.get("research_evidence_required") and not state.get("online_research_approved", True):
         logger.info("Decision: research interrupt needed -> DISCOVER_RESEARCH_SOURCE")
@@ -502,7 +502,7 @@ def route_after_research_interrupt(state: GraphState) -> str:
 def collect_research_evidence_node(state: GraphState) -> dict[str, Any]:
     """Fetch bounded official docs after the human approves online research."""
 
-    _log_node_start("1d", "COLLECT_RESEARCH_EVIDENCE", "Fetch approved online documentation")
+    _log_node_start("2b", "COLLECT_RESEARCH_EVIDENCE", "Fetch approved online documentation")
     settings = load_settings()
 
     local_titles = list(state.get("research_source_titles", []))
@@ -588,7 +588,7 @@ def review_risk_node(state: GraphState) -> dict[str, Any]:
     no longer decides whether approval is required.
     """
 
-    _log_node_start("2/7", "REVIEW_RISK", "Review task risk")
+    _log_node_start("3", "REVIEW_RISK", "Review task risk")
     settings = load_settings()
     logger.info("AI channel: OpenAI Responses API")
     logger.info("AI model: %s", settings.orchestrator_ai_model)
@@ -650,7 +650,7 @@ def tech_lead_analyse_node(state: GraphState) -> dict[str, Any]:
     """Tech lead analysis: formulate the task and produce high-level technical direction."""
 
     _log_node_start(
-        "3c", "TECH_LEAD_ANALYSE", "Tech lead analysis — formulate task and set direction"
+        "2", "TECH_LEAD_ANALYSE", "Tech lead analysis — formulate task and set direction"
     )
     settings = load_settings()
 
@@ -692,7 +692,7 @@ def route_after_tech_lead_analyse(state: GraphState) -> str:
     research gap check a second time.
     """
 
-    _log_decision_start("3c", "ROUTE_AFTER_TECH_LEAD_ANALYSE", "Route after tech lead analysis")
+    _log_decision_start("2", "ROUTE_AFTER_TECH_LEAD_ANALYSE", "Route after tech lead analysis")
 
     if not state.get("research_checked"):
         logger.info("Decision: research not yet checked -> CHECK_RESEARCH")
@@ -710,7 +710,7 @@ def route_after_review_risk(state: GraphState) -> str:
     exact implementation scope is only known once analysis has run.
     """
 
-    _log_decision_start("2", "ROUTE_AFTER_REVIEW_RISK", "Route after risk review")
+    _log_decision_start("3", "ROUTE_AFTER_REVIEW_RISK", "Route after risk review")
 
     if state.get("approved"):
         logger.info("Decision: already approved -> REQUEST_PLAN")
