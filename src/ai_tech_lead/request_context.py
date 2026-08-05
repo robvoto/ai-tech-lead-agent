@@ -56,8 +56,17 @@ def resolve_request_context(
     request: str,
     *,
     target_project_context: TargetProjectContext | None = None,
+    clarification_answer: str = "",
 ) -> dict[str, Any]:
-    """Resolve detected references only from explicit caller-supplied context."""
+    """Resolve detected references only from explicit caller-supplied context.
+
+    ``clarification_answer`` is explicit human text answering a prior clarification
+    question about this request's one unresolved reference (the first one named in
+    ``detected_references`` — the function only ever asks about one at a time). It
+    resolves only that single reference and is recorded verbatim as evidence; it is
+    never parsed or used to guess meaning, the same trust level already given to
+    ``target_project_context``.
+    """
 
     understanding = understand_request(request)
     resolved_ids: set[str] = {match.upper() for match in _INLINE_BACKLOG_PATTERN.findall(request)}
@@ -77,7 +86,17 @@ def resolve_request_context(
             resolved_ids.add(resource_id)
             evidence.append(f"Resource reference {resource_id} supplied by caller.")
 
-    unresolved = tuple(ref for ref in understanding.detected_references if ref.upper() not in resolved_ids)
+    unresolved_list = [
+        ref for ref in understanding.detected_references if ref.upper() not in resolved_ids
+    ]
+
+    clarification_answer = clarification_answer.strip()
+    clarified_reference = ""
+    if clarification_answer and unresolved_list:
+        clarified_reference = unresolved_list.pop(0)
+        evidence.append(f"Reference {clarified_reference} clarified by human: {clarification_answer}")
+
+    unresolved = tuple(unresolved_list)
     project_name = target_project_context.project_identity if target_project_context else ""
     project_root = target_project_context.project_root if target_project_context else ""
     if project_name:
@@ -98,6 +117,8 @@ def resolve_request_context(
         context_lines.append(f"Backlog item: {item_id}{' - ' + title if title else ''}")
         if body:
             context_lines.append(body)
+    if clarified_reference:
+        context_lines.append(f"Clarification for {clarified_reference}: {clarification_answer}")
     if context_lines:
         bounded = f"{bounded}\n\nResolved context:\n" + "\n".join(context_lines)
 

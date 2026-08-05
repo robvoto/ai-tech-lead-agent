@@ -45,3 +45,25 @@ def test_plain_request_requires_no_backlog_context():
 
     assert result["unresolved_references"] == []
     assert result["clarification_question"] == ""
+
+
+def test_clarification_answer_resolves_only_the_asked_reference():
+    result = resolve_request_context(
+        "Code AF-052 for Agent Factory",
+        clarification_answer="AF-052 is the agent-factory repo, root at /projects/agent-factory.",
+    )
+
+    assert result["unresolved_references"] == []
+    assert result["clarification_question"] == ""
+    assert any("AF-052 clarified by human" in note for note in result["context_resolution_evidence"])
+    assert "Clarification for AF-052" in result["bounded_request"]
+
+
+def test_empty_clarification_answer_leaves_reference_unresolved():
+    result = resolve_request_context(
+        "Code AF-052 for Agent Factory",
+        clarification_answer="   ",
+    )
+
+    assert result["unresolved_references"] == ["AF-052"]
+    assert result["clarification_question"] != ""

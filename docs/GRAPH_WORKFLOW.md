@@ -34,16 +34,26 @@ START
 -> 1_read_request
 -> 1a_understand_and_bound_request
 -> 1b_resolve_context
--> [7_end_node with clarification, if a reference cannot be resolved safely]
--> 1c_check_research
+-> [1b_context_clarification_interrupt, if a reference cannot be resolved safely]
+   -> back to 1b_resolve_context with the human's answer folded in (bounded to 1 round;
+      still unresolved after that -> 7_end_node, a clear failure, not another interrupt)
+-> 3c_tech_lead_analyse          (formulate task + high-level tech direction; runs before the
+   research gap check so the gap is judged against the formulated task, not the raw request)
+-> 1c_check_research             (checks research_checked=False -> runs once per attempt)
 -> [1c1_discover_research_source, if a knowledge gap needs online sources]
 -> 1c_research_interrupt
 -> 1d_collect_research_evidence  (if online research approved)
--> 2_review_risk                 (sets risk_level: LOW/MEDIUM/HIGH/UNKNOWN; sleep mode applied here)
--> 3c_tech_lead_analyse          (formulate task + high-level tech direction)
+   -> back to 3c_tech_lead_analyse to finalize the task using the collected evidence
+      (research_checked is now True, so this second pass goes straight to 2_review_risk
+      instead of re-running 1c_check_research)
+-> 2_review_risk                 (sets risk_level: LOW/MEDIUM/HIGH/UNKNOWN; sleep mode applied
+   here; reviews the formulated task + technical direction, not the raw request, since the
+   actual implementation scope is only known once analysis has run)
 -> [4_approval_interrupt, if approval is needed]
    -> approve: continue below
-   -> request changes: back to 3c_tech_lead_analyse (up to 5 revision cycles, then ends)
+   -> request changes: back to 3c_tech_lead_analyse (research_checked is already True at this
+      point, so this goes straight through to 2_review_risk again rather than re-checking
+      research; up to 5 revision cycles, then ends)
    -> ask a question: back to 4_approval_interrupt (answer shown, same choices again)
    -> cancel: 7_end_node
 -> 5b_request_plan
@@ -65,14 +75,18 @@ Before research, the graph now separates the original request from the bounded t
 
 - `1a_understand_and_bound_request` classifies the request intent, detects possible external references, and records whether execution was requested. Phrases such as `report only` or `do not code` keep execution intent false.
 - `1b_resolve_context` resolves references only from explicit caller-supplied project, resource, or fetched backlog context. It never infers that a prefix such as `AF` means a particular project. The subprocess boundary has already validated and normalized that caller data into AI Tech Lead's immutable internal `TargetProjectContext`, and downstream project-aware steps reuse that same context instead of rebuilding it ad hoc.
-- If a reference cannot be resolved, the workflow asks one precise clarification question and ends before research.
-- `bounded_request` contains the original request plus verified project/backlog context. Research, risk review, tech-lead analysis, completion verification, and operator Q&A use this bounded form rather than the raw ambiguous request.
+- If a reference cannot be resolved, the workflow pauses at `1b_context_clarification_interrupt` and asks one precise clarification question, instead of ending the run. The human's answer resolves only the single reference that was asked about (never parsed or guessed at — recorded verbatim as trusted human context, the same trust level already given to caller-supplied `TargetProjectContext`), and the workflow loops back to `1b_resolve_context` to retry. This is bounded to one clarification round (`CONTEXT_CLARIFICATION_MAX_RETRIES`); if the reference is still unresolved after that, the workflow ends clearly at `7_end_node` instead of asking again — see "Human interrupt nodes" below.
+- `bounded_request` contains the original request plus verified project/backlog context (and any clarification answer). Research, risk review, tech-lead analysis, completion verification, and operator Q&A use this bounded form rather than the raw ambiguous request.
 
 Backlog context is optional. Plain reviews, explanations, bug investigations, and direct coding requests continue without requiring a backlog reference.
 
 ## Tech lead analysis node
 
-`3c_tech_lead_analyse` is the orchestrator's thinking step. It acts as a senior tech lead:
+`3c_tech_lead_analyse` is the orchestrator's thinking step. It is re-entered more than once per
+task: a preliminary pass runs before `1c_check_research` (to give the research gap check a
+formulated task instead of the raw request), a final pass runs after research completes (or
+immediately, if no gap was found), and further passes run on each approval "request changes"
+revision. It acts as a senior tech lead each time:
 
 1. Reads the request and any clarification feedback.
 2. Considers the project constraints, watched directories, acceptance criteria, risk notes, and research evidence.
@@ -121,6 +135,7 @@ The subprocess contract (`agent_task_runner.py`) only reports `status: success` 
 
 These nodes call `interrupt(value)` (LangGraph dynamic breakpoint pattern) to pause and wait for human input. The graph resumes via `invoke(Command(resume=value))`.
 
+- `1b_context_clarification_interrupt` — emits `{"kind": "context_clarification", "question": "...", "reason": "...", "retry_count": N}`. Resume with a plain text answer. The answer is stored and the workflow loops back to `1b_resolve_context` to retry resolution with it folded in. Bounded to `CONTEXT_CLARIFICATION_MAX_RETRIES` (1) round — if still unresolved after that, `1b_resolve_context` routes straight to `7_end_node` instead of interrupting again, and the subprocess boundary reports a clear failure (`context_clarification_exhausted`), not another `needs_clarification` that would invite an automated resubmit.
 - `1c_research_interrupt` — emits `{"kind": "research_approval", "question": "..."}`. Resume with `{"approved": True/False}`.
   - `approved: True` continues to `1d_collect_research_evidence`.
   - `approved: False` ends the workflow.
@@ -155,7 +170,11 @@ When sleep mode is active, the `2_review_risk` node applies these rules instead 
 
 ## Looping behaviour
 
-- `1c_check_research` asks the LLM to name one specific external knowledge gap, not to rate task complexity — a large or architecturally significant task can need no research, and a small task can hinge on one unfamiliar external fact. If no gap is named, research is skipped regardless of task size. The check also sees bounded code context read from `watched_directories` (`research_code_context_enabled`, on by default) so a gap already answered by existing code is not flagged. This code-context scan is scoped to `resolved_project_root` when the task targets a different project than AI Tech Lead itself — it reads the target project's code, not this repo's. The local docs/research cache lookup is unaffected by this and always stays anchored to this repo (`settings.project_root`), since that cache is AI Tech Lead's own shared knowledge base, not project-specific.
+- An unresolved reference at `1b_resolve_context` pauses for exactly one human clarification round (`CONTEXT_CLARIFICATION_MAX_RETRIES` = 1). If the answer resolves the reference, the workflow continues to `3c_tech_lead_analyse`. If it's still unresolved after that one round, the workflow ends at `7_end_node` and reports a clear failure rather than looping or asking again — this keeps the bound tight even when the caller resuming the task is an automated agent (e.g. Agent Hub) rather than a person.
+- `3c_tech_lead_analyse` now runs immediately after context resolution, before `1c_check_research`. `route_after_tech_lead_analyse` checks the `research_checked` flag: on the first pass (flag not yet set) it routes to `1c_check_research`; on every later pass through this same node (after research evidence arrives, or after an approval "request changes" revision) the flag is already `True`, so it routes straight to `2_review_risk` instead. This is what lets one node serve as both the preliminary and the final analysis pass without a separate node type.
+- `1c_check_research` asks the LLM to name one specific external knowledge gap, not to rate task complexity — a large or architecturally significant task can need no research, and a small task can hinge on one unfamiliar external fact. If no gap is named, research is skipped regardless of task size. The gap check now runs against `formulated_task` (falling back to `bounded_request`/`request` if analysis has not produced one), so the gap reflects the tech lead's own understanding of the task rather than only the raw ask. The check also sees bounded code context read from `watched_directories` (`research_code_context_enabled`, on by default) so a gap already answered by existing code is not flagged. This code-context scan is scoped to `resolved_project_root` when the task targets a different project than AI Tech Lead itself — it reads the target project's code, not this repo's. The local docs/research cache lookup is unaffected by this and always stays anchored to this repo (`settings.project_root`), since that cache is AI Tech Lead's own shared knowledge base, not project-specific. `1c_check_research` always sets `research_checked=True` before routing onward, whether or not a gap was found.
+- `2_review_risk` now runs after `3c_tech_lead_analyse` rather than before it. It reviews the formulated task plus technical direction (falling back to the raw request only if analysis has not produced a `formulated_task` yet), so risk reflects the actual scope the tech lead decided on rather than the original, sometimes-vaguer request.
+- A known trade-off: on the common path (no research gap at all), `3c_tech_lead_analyse` still runs twice — once before `1c_check_research`, once immediately after it confirms no gap — since the same node is reused for both the preliminary and final pass. This keeps the node count small and the reasoning consistent, at the cost of one extra `analyse_task` call per attempt versus a design with a dedicated "gap-only" pass. Revisit only if that extra call proves to be a real cost/latency problem in practice.
 - If the knowledge-gap check is disabled, unavailable, or returns invalid output, the workflow fails closed and routes to the research approval path instead of silently treating the task as gap-free.
 - `1c1_discover_research_source` only runs when a gap needs online sources. It is off by default (`research_discovery_enabled`). When on, it calls OpenAI's hosted web-search tool to propose one official-documentation candidate for the gap, and every candidate — like every online fetch, static or discovered — must pass the outbound URL safety guard (`research_sources.validate_outbound_research_url`: https-only, no private/loopback/link-local/reserved addresses, redirects re-validated, response size capped) before it is ever shown to a human. If a safe candidate is found, `1c_research_interrupt`'s question names that specific URL; approving it approves fetching only that URL. If discovery is off, errors, or finds nothing safe, the interrupt falls back to the existing bounded-registry question. Discovered URLs are never written back into `research_allowed_domains`/`research_online_source_urls` — growing that permanent list stays a manual config change.
 - Research approval rejection ends the workflow before risk review.

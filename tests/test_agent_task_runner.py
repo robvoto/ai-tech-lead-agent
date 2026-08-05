@@ -626,6 +626,14 @@ def test_map_decision_research_approval_cancel() -> None:
     assert payload == {"approved": False}
 
 
+def test_map_decision_context_clarification_is_plain_text() -> None:
+    decision = _parse_decision(
+        {"option": "answer", "text": "AF-052 is the agent-factory repo."}
+    )
+    payload = _map_decision_to_resume_payload("context_clarification", decision)
+    assert payload == "AF-052 is the agent-factory repo."
+
+
 def test_map_decision_completion_verification_confirm_complete() -> None:
     decision = _parse_decision({"option": "confirm_complete"})
     payload = _map_decision_to_resume_payload("completion_verification", decision)
@@ -980,6 +988,68 @@ def test_map_state_to_output_maps_research_approval() -> None:
     assert result["pending_decision"]["kind"] == "research_approval"
     option_names = {opt["name"] for opt in result["pending_decision"]["options"]}
     assert option_names == {"approve", "cancel"}
+
+
+def test_map_state_to_output_maps_context_clarification_interrupt() -> None:
+    result = _map_state_to_output(
+        "req-context-clarify",
+        {
+            "agent_instruction": "",
+            "formulated_task": "",
+            "brief": "",
+            "orchestrator_input_required": True,
+            "orchestrator_input_question": "What does AF-052 refer to, and where should I retrieve it from?",
+            "coding_agent_success": False,
+            "coding_agent_result": "",
+            "restart_required": False,
+            "task_feedback": [],
+            "research_source_titles": [],
+        },
+        False,
+        state_snapshot=_FakeSnapshot(
+            {
+                "kind": "context_clarification",
+                "question": "What does AF-052 refer to, and where should I retrieve it from?",
+                "reason": "A referenced project resource could not be resolved safely.",
+                "retry_count": 0,
+            }
+        ),
+        thread_id="subprocess-req-context-clarify",
+    )
+
+    assert result["status"] == STATUS_WAITING_DECISION
+    assert result["pending_decision"]["kind"] == "context_clarification"
+    option_names = {opt["name"] for opt in result["pending_decision"]["options"]}
+    assert option_names == {"answer"}
+    assert "AF-052" in result["pending_decision"]["prompt"]
+
+
+def test_map_state_to_output_context_clarification_exhausted_fails_clearly() -> None:
+    result = _map_state_to_output(
+        "req-context-exhausted",
+        {
+            "agent_instruction": "",
+            "formulated_task": "",
+            "brief": "",
+            "orchestrator_input_required": True,
+            "orchestrator_input_question": "What does AF-052 refer to, and where should I retrieve it from?",
+            "coding_agent_success": False,
+            "coding_agent_result": "",
+            "restart_required": False,
+            "task_feedback": [],
+            "research_source_titles": [],
+            "context_clarification_exhausted": True,
+        },
+        False,
+        state_snapshot=None,
+        thread_id="subprocess-req-context-exhausted",
+    )
+
+    assert result["status"] == STATUS_FAILED
+    assert result["result_kind"] == "terminal_failure"
+    assert result["pending_decision"] is None
+    assert "AF-052" in result["summary"]
+    assert "human review" in result["next_action"].lower()
 
 
 def test_map_state_to_output_maps_completion_verification_interrupt() -> None:

@@ -12,6 +12,7 @@ from langgraph.types import Command
 
 from ai_tech_lead.app_settings import parse_settings
 from ai_tech_lead.coding_workflow_graph import (
+    CONTEXT_CLARIFICATION_MAX_RETRIES,
     NodeName,
     build_graph,
     build_initial_graph_state,
@@ -19,6 +20,7 @@ from ai_tech_lead.coding_workflow_graph import (
     collect_research_evidence_node,
     create_agent_instruction_node,
     discover_research_source_node,
+    end_node,
     request_plan_node,
     resolve_context_node,
     route_after_approval,
@@ -26,6 +28,7 @@ from ai_tech_lead.coding_workflow_graph import (
     route_after_research_interrupt,
     route_after_resolve_context,
     route_after_review_plan,
+    route_after_review_risk,
     route_after_tech_lead_analyse,
     route_after_verify_completion,
     run_coding_agent_node,
@@ -198,28 +201,39 @@ def test_graph_state_can_store_task_feedback_list() -> None:
 
 
 def test_routes_follow_explicit_approval_state() -> None:
+    assert route_after_review_risk(graph_state(needs_approval=True)) == "approval required"
     assert (
-        route_after_tech_lead_analyse(graph_state(needs_approval=True))
-        == NodeName.APPROVAL_INTERRUPT
+        route_after_review_risk(graph_state(needs_approval=True, approved=True))
+        == "already approved"
     )
-    assert (
-        route_after_tech_lead_analyse(graph_state(needs_approval=True, approved=True))
-        == NodeName.REQUEST_PLAN
-    )
-    assert route_after_tech_lead_analyse(graph_state(needs_approval=False)) == NodeName.REQUEST_PLAN
+    assert route_after_review_risk(graph_state(needs_approval=False)) == "low risk"
     assert (
         route_after_approval(graph_state(approved=True, approval_action="approve"))
-        == NodeName.REQUEST_PLAN
+        == "approved"
     )
     assert (
         route_after_approval(graph_state(approved=False, approval_action="cancel"))
-        == NodeName.END_NODE
+        == "cancelled"
     )
+
+
+def test_route_after_tech_lead_analyse_checks_research_once() -> None:
+    """First pass (research not yet checked) routes to CHECK_RESEARCH."""
+
+    state = graph_state(research_checked=False)
+    assert route_after_tech_lead_analyse(state) == "check research"
+
+
+def test_route_after_tech_lead_analyse_skips_research_second_time() -> None:
+    """Once CHECK_RESEARCH has run (or on an approval revision), go straight to risk review."""
+
+    state = graph_state(research_checked=True)
+    assert route_after_tech_lead_analyse(state) == "analysis complete"
 
 
 def test_route_after_check_research_simple_task_skips_gate() -> None:
     state = graph_state(research_evidence_required=False, online_research_approved=False)
-    assert route_after_check_research(state) == NodeName.REVIEW_RISK
+    assert route_after_check_research(state) == "no research needed"
 
 
 def test_route_after_check_research_complex_with_sufficient_sources_skips_gate() -> None:
@@ -227,7 +241,7 @@ def test_route_after_check_research_complex_with_sufficient_sources_skips_gate()
         research_evidence_required=True,
         online_research_approved=True,
     )
-    assert route_after_check_research(state) == NodeName.REVIEW_RISK
+    assert route_after_check_research(state) == "no research needed"
 
 
 def test_route_after_check_research_complex_with_insufficient_sources_gates() -> None:
@@ -235,17 +249,17 @@ def test_route_after_check_research_complex_with_insufficient_sources_gates() ->
         research_evidence_required=True,
         online_research_approved=False,
     )
-    assert route_after_check_research(state) == NodeName.DISCOVER_RESEARCH_SOURCE
+    assert route_after_check_research(state) == "research needed"
 
 
 def test_route_after_research_interrupt_rejection_ends_workflow() -> None:
     state = graph_state(online_research_approved=False)
-    assert route_after_research_interrupt(state) == NodeName.END_NODE
+    assert route_after_research_interrupt(state) == "declined"
 
 
 def test_route_after_research_interrupt_approval_continues() -> None:
     state = graph_state(online_research_approved=True)
-    assert route_after_research_interrupt(state) == NodeName.COLLECT_RESEARCH_EVIDENCE
+    assert route_after_research_interrupt(state) == "approved"
 
 
 def test_check_research_node_passes_resolved_project_root_as_code_context_root(
@@ -936,44 +950,117 @@ def test_rejected_research_interrupt_ends_graph(monkeypatch) -> None:
     assert final_state.values["coding_agent_result"] == ""
 
 
+def test_context_clarification_interrupt_resumes_and_continues(monkeypatch) -> None:
+    settings = replace(parse_settings(valid_settings_dict()), orchestrator_ai_enabled=True)
+
+    monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.load_settings", lambda: settings)
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.check_research_requirements",
+        lambda _request, _settings, **_kwargs: _research_result(has_gap=False),
+    )
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.review_task_risk",
+        lambda _request: RiskReviewDecision(
+            needs_approval=True,
+            approval_reason="High-risk task needs explicit approval.",
+            risk_level="HIGH",
+        ),
+    )
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.analyse_task",
+        lambda **_kwargs: TechLeadAnalysis(
+            task_statement="Code AF-052 for Agent Factory.",
+            tech_direction="Keep the change scoped to the agent-factory repo.",
+        ),
+    )
+
+    app = build_graph(checkpointer_storage=MemorySaver(), execute_coding_agent_override=False)
+    thread_config = {"configurable": {"thread_id": "test-context-clarification"}}
+
+    app.invoke(
+        graph_state(request="Code AF-052 for Agent Factory"),
+        config=thread_config,
+    )
+    state_snapshot = app.get_state(thread_config)
+
+    assert state_snapshot.next == (NodeName.CONTEXT_CLARIFICATION_INTERRUPT,)
+    pending_interrupt = state_snapshot.tasks[0].interrupts[0].value
+    assert pending_interrupt["kind"] == "context_clarification"
+    assert "AF-052" in pending_interrupt["question"]
+
+    app.invoke(
+        Command(resume="AF-052 is the agent-factory repo, already registered."),
+        config=thread_config,
+    )
+
+    final_state = app.get_state(thread_config)
+    assert final_state.next == (NodeName.APPROVAL_INTERRUPT,)
+    assert final_state.values["unresolved_references"] == []
+    assert final_state.values["orchestrator_input_required"] is False
+    assert final_state.values["context_clarification_retry_count"] == 1
+    assert "Clarification for AF-052" in final_state.values["bounded_request"]
+
+
+def test_context_clarification_fails_clearly_after_retry_limit() -> None:
+    app = build_graph(checkpointer_storage=MemorySaver(), execute_coding_agent_override=False)
+    thread_config = {"configurable": {"thread_id": "test-context-clarification-exhausted"}}
+
+    app.invoke(
+        graph_state(request="Code AF-052 for Agent Factory"),
+        config=thread_config,
+    )
+    state_snapshot = app.get_state(thread_config)
+    assert state_snapshot.next == (NodeName.CONTEXT_CLARIFICATION_INTERRUPT,)
+
+    # An empty answer leaves the reference unresolved (resolve_request_context only
+    # resolves it given non-empty clarification text), so the one allowed round is used
+    # up without success and the workflow must fail clearly instead of asking again.
+    app.invoke(Command(resume={"text": ""}), config=thread_config)
+
+    final_state = app.get_state(thread_config)
+    assert final_state.next == ()
+    assert final_state.values["context_clarification_exhausted"] is True
+    assert final_state.values["unresolved_references"] == ["AF-052"]
+
+
 def test_route_after_review_plan_approved() -> None:
     state = graph_state(plan_approved=True)
-    assert route_after_review_plan(state) == NodeName.CREATE_AGENT_INSTRUCTION
+    assert route_after_review_plan(state) == "plan approved"
 
 
 def test_route_after_review_plan_rejected_first_time() -> None:
     state = graph_state(plan_approved=False, plan_rejection_count=1)
-    assert route_after_review_plan(state) == NodeName.REQUEST_PLAN
+    assert route_after_review_plan(state) == "revise plan"
 
 
 def test_route_after_review_plan_rejected_twice_goes_to_human() -> None:
     state = graph_state(plan_approved=False, plan_rejection_count=2)
-    assert route_after_review_plan(state) == NodeName.PLAN_INTERRUPT
+    assert route_after_review_plan(state) == "human review needed"
 
 
 def test_route_after_review_plan_reviewer_unavailable_goes_to_human() -> None:
     state = graph_state(plan_approved=False, plan_needs_human_review=True)
-    assert route_after_review_plan(state) == NodeName.PLAN_INTERRUPT
+    assert route_after_review_plan(state) == "human review needed"
 
 
 def test_route_after_verify_completion_complete_goes_to_end() -> None:
     state = graph_state(verification_status="complete")
-    assert route_after_verify_completion(state) == NodeName.END_NODE
+    assert route_after_verify_completion(state) == "verification finished"
 
 
 def test_route_after_verify_completion_failed_goes_to_end() -> None:
     state = graph_state(verification_status="failed")
-    assert route_after_verify_completion(state) == NodeName.END_NODE
+    assert route_after_verify_completion(state) == "verification finished"
 
 
 def test_route_after_verify_completion_correction_required_loops_back() -> None:
     state = graph_state(verification_status="correction_required")
-    assert route_after_verify_completion(state) == NodeName.CREATE_AGENT_INSTRUCTION
+    assert route_after_verify_completion(state) == "correction needed"
 
 
 def test_route_after_verify_completion_human_required_goes_to_interrupt() -> None:
     state = graph_state(verification_status="human_verification_required")
-    assert route_after_verify_completion(state) == NodeName.COMPLETION_VERIFICATION_INTERRUPT
+    assert route_after_verify_completion(state) == "human verification needed"
 
 
 def test_workflow_scenario_approval_interrupt_resumes_to_success(monkeypatch) -> None:
@@ -1156,8 +1243,10 @@ def test_workflow_scenario_request_changes_loops_back_with_feedback(monkeypatch)
     assert state_snapshot.values["formulated_task"] == (
         "Update the runtime docs, docs-only as requested."
     )
-    # The second analyse_task call saw the appended feedback.
-    assert seen_task_feedback == [[], ["Keep this to docs only."]]
+    # Tech Lead Analysis now runs twice on the first pass (once to check whether
+    # research is needed, once more after that check completes) before the
+    # human ever sees the approval interrupt, then once more on the revision.
+    assert seen_task_feedback == [[], [], ["Keep this to docs only."]]
 
 
 def test_workflow_scenario_ask_question_preserves_state_and_reasks(monkeypatch) -> None:
@@ -1817,13 +1906,27 @@ def test_graph_has_no_clarification_gate_nodes() -> None:
     assert "3b_clarification_interrupt" not in node_names
 
 
-def test_review_risk_connects_directly_to_tech_lead_analyse() -> None:
-    """After review_risk, the graph must route to tech_lead_analyse without a clarification gate."""
+def test_tech_lead_analyse_runs_before_check_research() -> None:
+    """Analysis runs first so the research gap is judged against the formulated task."""
+    app = build_graph()
+    edges = [(e.source, e.target) for e in app.get_graph().edges]
+    targets_from_resolve_context = [t for s, t in edges if s == NodeName.RESOLVE_CONTEXT]
+    assert NodeName.TECH_LEAD_ANALYSE in targets_from_resolve_context
+    assert NodeName.CHECK_RESEARCH not in targets_from_resolve_context
+
+    targets_from_tech_lead_analyse = [t for s, t in edges if s == NodeName.TECH_LEAD_ANALYSE]
+    assert NodeName.CHECK_RESEARCH in targets_from_tech_lead_analyse
+    assert NodeName.REVIEW_RISK in targets_from_tech_lead_analyse
+
+
+def test_review_risk_connects_to_approval_routing_not_tech_lead_analyse() -> None:
+    """Risk review now runs after analysis and routes to approval/plan, not back to analysis."""
     app = build_graph()
     edges = [(e.source, e.target) for e in app.get_graph().edges]
     targets_from_review_risk = [t for s, t in edges if s == NodeName.REVIEW_RISK]
-    assert NodeName.TECH_LEAD_ANALYSE in targets_from_review_risk
-    assert "3_check_clarification" not in targets_from_review_risk
+    assert NodeName.TECH_LEAD_ANALYSE not in targets_from_review_risk
+    assert NodeName.APPROVAL_INTERRUPT in targets_from_review_risk
+    assert NodeName.REQUEST_PLAN in targets_from_review_risk
 
 
 def test_request_context_is_resolved_before_research(monkeypatch) -> None:
@@ -1847,7 +1950,7 @@ def test_request_context_is_resolved_before_research(monkeypatch) -> None:
     resolved = resolve_context_node(state)
     state.update(resolved)
 
-    assert route_after_resolve_context(state) == NodeName.CHECK_RESEARCH
+    assert route_after_resolve_context(state) == "context found"
     assert state["unresolved_references"] == []
     assert "bounded validation" in state["bounded_request"]
 
@@ -1861,11 +1964,43 @@ def test_unresolved_reference_routes_to_clarification_before_research() -> None:
     state.update(understand_and_bound_request_node(state))
     state.update(resolve_context_node(state))
 
-    assert route_after_resolve_context(state) == NodeName.END_NODE
+    assert route_after_resolve_context(state) == "clarification needed"
     assert state["orchestrator_input_required"] is True
     assert state["orchestrator_input_question"] == (
         "What does AF-052 refer to, and where should I retrieve it from?"
     )
+
+
+def test_route_after_resolve_context_retries_within_budget() -> None:
+    state = graph_state(
+        orchestrator_input_required=True,
+        context_clarification_retry_count=CONTEXT_CLARIFICATION_MAX_RETRIES - 1,
+    )
+    assert route_after_resolve_context(state) == "clarification needed"
+
+
+def test_route_after_resolve_context_fails_clearly_once_retry_limit_reached() -> None:
+    state = graph_state(
+        orchestrator_input_required=True,
+        context_clarification_retry_count=CONTEXT_CLARIFICATION_MAX_RETRIES,
+    )
+    assert route_after_resolve_context(state) == "clarification limit reached"
+
+
+def test_end_node_returns_restart_required() -> None:
+    state = graph_state(restart_required=True)
+    result = end_node(state)
+    assert result["restart_required"] is True
+    assert result["context_clarification_exhausted"] is False
+
+
+def test_end_node_flags_exhausted_context_clarification() -> None:
+    state = graph_state(
+        orchestrator_input_required=True,
+        context_clarification_retry_count=CONTEXT_CLARIFICATION_MAX_RETRIES,
+    )
+    result = end_node(state)
+    assert result["context_clarification_exhausted"] is True
 
 
 def test_request_plan_node_uses_resolved_target_project_root(monkeypatch, tmp_path) -> None:

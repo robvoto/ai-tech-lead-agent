@@ -106,6 +106,7 @@ _DECISION_OPTIONS_BY_KIND: dict[str, list[dict[str, Any]]] = {
     "plan_guidance": [{"name": "answer", "needs_text": True}],
     "failure_guidance": [{"name": "answer", "needs_text": True}],
     "research_approval": [{"name": "approve"}, {"name": "cancel"}],
+    "context_clarification": [{"name": "answer", "needs_text": True}],
     "completion_verification": [
         {"name": "confirm_complete"},
         {"name": "reject", "needs_text": True},
@@ -752,7 +753,7 @@ def _map_decision_to_resume_payload(kind: str, decision: _Decision) -> Any:
             payload["question"] = decision.text
         return payload
 
-    if kind in {"plan_guidance", "failure_guidance"}:
+    if kind in {"plan_guidance", "failure_guidance", "context_clarification"}:
         return decision.text
 
     if kind == "research_approval":
@@ -791,6 +792,14 @@ def _prompt_for_pending_interrupt(kind: str, payload: dict[str, Any]) -> str:
 
     if kind == "research_approval":
         return str(payload.get("question", "")).strip() or "Online research approval needed."
+
+    if kind == "context_clarification":
+        question = str(payload.get("question", "")).strip()
+        reason = str(payload.get("reason", "")).strip()
+        parts = [f"Context clarification needed: {question}" if question else "Context clarification needed."]
+        if reason:
+            parts.append(f"Reason: {reason}")
+        return "\n".join(parts)
 
     if kind == "completion_verification":
         reason = str(payload.get("reason", "")).strip()
@@ -907,6 +916,15 @@ def _map_state_to_output(
         option_names = ", ".join(opt["name"] for opt in pending_decision["options"])
         next_action = f"Resubmit request_id with a decision. Options: {option_names}."
         result_kind = RESULT_KIND_DECISION_REQUIRED
+    elif state.get("context_clarification_exhausted"):
+        # Context clarification was asked once and resumed, but the reference is
+        # still unresolved. This must not invite another automated retry loop
+        # (a caller like Agent Hub could otherwise resubmit forever) — it needs a
+        # person to look at it directly.
+        status = STATUS_FAILED
+        summary = f"Context could not be resolved after 1 clarification attempt: {orchestrator_input_question}"
+        next_action = "Needs direct human review — do not resubmit automatically."
+        result_kind = RESULT_KIND_TERMINAL_FAILURE
     elif orchestrator_input_required:
         # No real interrupt behind this — the workflow ended rather than paused
         # (e.g. an unresolved reference). There is nothing to resume; the only

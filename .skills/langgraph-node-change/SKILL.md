@@ -66,6 +66,20 @@ Return a list with the new item only — the reducer accumulates:
 return {"task_feedback": ["new feedback item"]}
 ```
 
+## Bounded retry-then-fail-clearly interrupt pattern
+
+Several human interrupt nodes (plan guidance, coding failure guidance, completion
+verification, context clarification) share the same shape: pause, get a human answer,
+loop back to retry — but only up to a fixed number of rounds.
+
+- Track the attempt/retry count in graph state (e.g. `context_clarification_retry_count`).
+- Compare it to a module-level constant (e.g. `CONTEXT_CLARIFICATION_MAX_RETRIES`) in the
+  *router*, before deciding to interrupt again — not inside the interrupt node itself.
+- When the limit is reached, route straight to a terminal outcome instead of interrupting
+  again. Set an explicit boolean for that terminal state (e.g. `context_clarification_exhausted`)
+  rather than overloading a shared/generic flag — the subprocess boundary (`agent_task_runner.py`)
+  needs an unambiguous signal to report a clear failure instead of inviting another retry.
+
 ## Review checklist
 
 1. Inspect `docs/ARCHITECTURE.md` and the affected graph/node files before editing.
