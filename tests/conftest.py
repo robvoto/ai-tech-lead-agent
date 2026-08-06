@@ -30,3 +30,20 @@ def _isolate_knowledge_store(tmp_path, monkeypatch):
 
     monkeypatch.setattr(ks_mod, "_DEFAULT_STORE_PATH", tmp_path / "knowledge_store.sqlite3")
     monkeypatch.setattr(ks_mod, "_store", None)
+
+
+@pytest.fixture(autouse=True)
+def _disable_relevance_check_ai_by_default(monkeypatch):
+    """Default the ATL-relevance check to AI-disabled (fails open to relevant=True).
+
+    Without this, every test that runs the full graph would make a real
+    network call on the very first node. Tests that specifically want to
+    exercise the AI path can still monkeypatch it themselves afterward.
+    """
+    from helpers import valid_settings_dict
+
+    import ai_tech_lead.app_settings as settings_mod
+    import ai_tech_lead.request_relevance as relevance_mod
+
+    settings = settings_mod.parse_settings(valid_settings_dict())
+    monkeypatch.setattr(relevance_mod, "load_settings", lambda: settings)

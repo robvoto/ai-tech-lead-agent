@@ -31,8 +31,10 @@ coding_workflow_graph -> ai_tech_lead.coding_workflow_graph:graph
 
 ```text
 START
--> 1_read_request
--> 1a Understand Request
+-> 1_read_and_classify_request  (validates the request isn't empty, then checks it's actually
+   coding/technical work AI Tech Lead should handle; if not, ends here with a clear reason)
+-> 1a_decide_project_scope      (stub for now — always "existing"; new-project handling is a
+   separate, not-yet-built capability, see backlog ATL-081)
 -> 1b Find Project Context
 -> [1b_context_clarification_interrupt, if a reference cannot be resolved safely]
    -> back to 1b Find Project Context with the human's answer folded in (bounded to 1 round;
@@ -73,7 +75,12 @@ START
 
 Before research, the graph now separates the original request from the bounded task context:
 
-- `1a Understand Request` classifies the request intent, detects possible external references, and records whether execution was requested. Phrases such as `report only` or `do not code` keep execution intent false.
+- `1_read_and_classify_request` validates the request isn't empty, then runs a cheap LLM
+  check: is this actually coding/technical work AI Tech Lead should handle at all? Fails open
+  (treats the request as relevant) if AI is disabled or the check errors, so infrastructure
+  problems never silently block real work.
+- `1a_decide_project_scope` is a stub — it always returns "existing" today. Real new-vs-existing
+  project detection is a separate, not-yet-built capability (backlog ATL-081).
 - `1b Find Project Context` resolves references only from explicit caller-supplied project, resource, or fetched backlog context. It never infers that a prefix such as `AF` means a particular project. The subprocess boundary has already validated and normalized that caller data into AI Tech Lead's immutable internal `TargetProjectContext`, and downstream project-aware steps reuse that same context instead of rebuilding it ad hoc.
 - If a reference cannot be resolved, the workflow pauses at `1b_context_clarification_interrupt` and asks one precise clarification question, instead of ending the run. The human's answer resolves only the single reference that was asked about (never parsed or guessed at — recorded verbatim as trusted human context, the same trust level already given to caller-supplied `TargetProjectContext`), and the workflow loops back to `1b Find Project Context` to retry. This is bounded to one clarification round (`CONTEXT_CLARIFICATION_MAX_RETRIES`); if the reference is still unresolved after that, the workflow ends clearly at `7_end_node` instead of asking again — see "Human interrupt nodes" below.
 - `bounded_request` contains the original request plus verified project/backlog context (and any clarification answer). Research, risk review, tech-lead analysis, completion verification, and operator Q&A use this bounded form rather than the raw ambiguous request.

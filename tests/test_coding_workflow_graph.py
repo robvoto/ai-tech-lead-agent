@@ -21,10 +21,13 @@ from ai_tech_lead.coding_workflow_graph import (
     create_agent_instruction_node,
     discover_research_source_node,
     end_node,
+    project_scope_decision_node,
+    read_and_classify_request_node,
     request_plan_node,
     resolve_context_node,
     route_after_approval,
     route_after_check_research,
+    route_after_read_and_classify_request,
     route_after_research_interrupt,
     route_after_resolve_context,
     route_after_review_plan,
@@ -32,7 +35,6 @@ from ai_tech_lead.coding_workflow_graph import (
     route_after_tech_lead_analyse,
     route_after_verify_completion,
     run_coding_agent_node,
-    understand_and_bound_request_node,
 )
 from ai_tech_lead.completion_verifier import CompletionVerificationDecision
 from ai_tech_lead.plan_reviewer import PlanReviewDecision
@@ -1929,6 +1931,48 @@ def test_review_risk_connects_to_approval_routing_not_tech_lead_analyse() -> Non
     assert NodeName.REQUEST_PLAN in targets_from_review_risk
 
 
+def test_read_and_classify_request_rejects_empty_request() -> None:
+    with pytest.raises(ValueError):
+        read_and_classify_request_node(graph_state(request="   "))
+
+
+def test_read_and_classify_request_defaults_relevant_when_ai_disabled(monkeypatch) -> None:
+    """Relevance check fails open: AI disabled means the request proceeds."""
+    settings = parse_settings(valid_settings_dict())  # orchestrator_ai_enabled defaults False
+    monkeypatch.setattr("ai_tech_lead.request_relevance.load_settings", lambda: settings)
+    result = read_and_classify_request_node(graph_state(request="Fix the login bug"))
+    assert result["atl_relevant"] is True
+
+
+def test_route_after_read_and_classify_request_ends_when_not_relevant() -> None:
+    state = graph_state(atl_relevant=False)
+    assert route_after_read_and_classify_request(state) == "not relevant"
+
+
+def test_route_after_read_and_classify_request_continues_when_relevant() -> None:
+    state = graph_state(atl_relevant=True)
+    assert route_after_read_and_classify_request(state) == "relevant"
+
+
+def test_project_scope_decision_defaults_to_existing() -> None:
+    result = project_scope_decision_node(graph_state())
+    assert result["project_scope"] == "existing"
+
+
+def test_read_request_routes_to_project_scope_decision_not_resolve_context() -> None:
+    """The merged read+classify node no longer goes straight to context resolution."""
+    app = build_graph()
+    edges = [(e.source, e.target) for e in app.get_graph().edges]
+    targets_from_read_request = [t for s, t in edges if s == NodeName.READ_REQUEST]
+    assert NodeName.PROJECT_SCOPE_DECISION in targets_from_read_request
+    assert NodeName.END_NODE in targets_from_read_request
+
+    targets_from_scope_decision = [
+        t for s, t in edges if s == NodeName.PROJECT_SCOPE_DECISION
+    ]
+    assert targets_from_scope_decision == [NodeName.RESOLVE_CONTEXT]
+
+
 def test_request_context_is_resolved_before_research(monkeypatch) -> None:
     state = graph_state(
         request="Code AF-052 for Agent Factory",
@@ -1945,8 +1989,6 @@ def test_request_context_is_resolved_before_research(monkeypatch) -> None:
         ).to_payload(),
     )
 
-    understood = understand_and_bound_request_node(state)
-    state.update(understood)
     resolved = resolve_context_node(state)
     state.update(resolved)
 
@@ -1961,7 +2003,6 @@ def test_unresolved_reference_routes_to_clarification_before_research() -> None:
         target_project_context=TargetProjectContext().to_payload(),
     )
 
-    state.update(understand_and_bound_request_node(state))
     state.update(resolve_context_node(state))
 
     assert route_after_resolve_context(state) == "clarification needed"

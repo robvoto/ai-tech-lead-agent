@@ -1,0 +1,83 @@
+"""Relevance check: decide whether a request is actually AI Tech Lead's job.
+
+AI Tech Lead is a coding/technical-lead specialist. This module answers one
+narrow question before any other work happens: is this request coding or
+technical-implementation work at all, or something ATL should not attempt?
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+from dataclasses import dataclass
+from typing import Any
+
+from .app_settings import AppSettings, load_settings
+from .logging_setup import LOGGER_NAME
+from .orchestrator_llm import (
+    OrchestratorLlmConfig,
+    OrchestratorLlmError,
+    call_orchestrator_llm,
+)
+from .prompt_loader import ATL_RELEVANCE_PROMPT_KEY, render_prompt
+
+logger = logging.getLogger(LOGGER_NAME)
+
+
+@dataclass(frozen=True)
+class RelevanceDecision:
+    """Structured decision written back into LangGraph state."""
+
+    is_atl_relevant: bool
+    reason: str
+
+
+def classify_request_relevance(request: str) -> RelevanceDecision:
+    """Decide if a request is coding/technical work AI Tech Lead should handle.
+
+    Fails open (treats the request as relevant) when AI is disabled or the
+    call errors, so infrastructure problems never silently block real work.
+    """
+
+    normalized_request = request.strip()
+    if not normalized_request:
+        raise ValueError("Relevance check request cannot be empty.")
+
+    settings = load_settings()
+    if not settings.orchestrator_ai_enabled:
+        return RelevanceDecision(is_atl_relevant=True, reason="Orchestrator AI disabled.")
+
+    try:
+        return _llm_relevance_decision(normalized_request, settings)
+    except OrchestratorLlmError as error:
+        logger.warning("Orchestrator AI relevance check unavailable: %s", error)
+        return RelevanceDecision(
+            is_atl_relevant=True,
+            reason=f"Relevance check failed open (AI unavailable): {error}",
+        )
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
+        logger.warning("Invalid orchestrator AI relevance response: %s", error)
+        return RelevanceDecision(
+            is_atl_relevant=True,
+            reason=f"Relevance check failed open (invalid AI response): {error}",
+        )
+
+
+def _llm_relevance_decision(request: str, settings: AppSettings) -> RelevanceDecision:
+    prompt = render_prompt(ATL_RELEVANCE_PROMPT_KEY, request=request)
+    result = call_orchestrator_llm(
+        prompt=prompt,
+        config=OrchestratorLlmConfig(
+            model=settings.orchestrator_ai_model,
+            max_output_tokens=settings.orchestrator_ai_max_output_tokens,
+            timeout_seconds=settings.orchestrator_ai_timeout_seconds,
+        ),
+    )
+    payload: dict[str, Any] = json.loads(result.text)
+    is_atl_relevant = payload["atl_relevant"]
+    reason = str(payload["reason"]).strip()
+    if not isinstance(is_atl_relevant, bool):
+        raise ValueError("atl_relevant must be boolean")
+    if not reason:
+        raise ValueError("reason cannot be empty")
+    return RelevanceDecision(is_atl_relevant=is_atl_relevant, reason=reason)

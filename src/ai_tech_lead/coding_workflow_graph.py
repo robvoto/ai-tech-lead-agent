@@ -23,7 +23,8 @@ from .logging_setup import LOGGER_NAME
 from .operator_question import answer_operator_question
 from .plan_reviewer import PlanReviewUnavailable, review_plan
 from .prompt_loader import PLAN_REQUEST_INSTRUCTION_PROMPT_KEY, render_prompt
-from .request_context import resolve_request_context, understand_request
+from .request_context import resolve_request_context
+from .request_relevance import classify_request_relevance
 from .research_cache import save_online_source_to_cache
 from .research_checker import check_research_requirements
 from .research_code_context import collect_code_context, format_code_context_for_prompt
@@ -46,8 +47,8 @@ LOG_SEPARATOR = "----------------------------------------"
 class NodeName(StrEnum):
     """Stable LangGraph node names."""
 
-    READ_REQUEST = "1_read_request"
-    UNDERSTAND_AND_BOUND_REQUEST = "1a Understand Request"
+    READ_REQUEST = "1_read_and_classify_request"
+    PROJECT_SCOPE_DECISION = "1a_decide_project_scope"
     RESOLVE_CONTEXT = "1b Find Project Context"
     CONTEXT_CLARIFICATION_INTERRUPT = "1b_context_clarification_interrupt"
     CHECK_RESEARCH = "2a_check_research"
@@ -74,9 +75,9 @@ class GraphState(TypedDict):
     request: str
     bounded_request: str
     target_project_context: dict[str, Any] | None
-    request_intent: str
-    execution_requested: bool
-    detected_references: list[str]
+    atl_relevant: bool
+    atl_relevance_reason: str
+    project_scope: str
     resolved_project_identity: str
     resolved_project_root: str
     resolved_resource_references: list[str]
@@ -156,9 +157,9 @@ def build_initial_graph_state(
         "target_project_context": (
             target_project_context.to_payload() if target_project_context is not None else None
         ),
-        "request_intent": "",
-        "execution_requested": False,
-        "detected_references": [],
+        "atl_relevant": True,
+        "atl_relevance_reason": "",
+        "project_scope": "",
         "resolved_project_identity": "",
         "resolved_project_root": "",
         "resolved_resource_references": [],
@@ -220,29 +221,50 @@ def build_initial_graph_state(
     }
 
 
-def read_request_node(state: GraphState) -> dict[str, Any]:
-    """Validate and normalize the incoming backlog request."""
+def read_and_classify_request_node(state: GraphState) -> dict[str, Any]:
+    """Validate the request, then check it's actually AI Tech Lead's job.
 
-    _log_node_start("1/7", "READ_REQUEST", "Read backlog request")
+    Merges what used to be two separate deterministic nodes plus a new
+    relevance check, since neither original split point ever branched.
+    """
+
+    _log_node_start("1", "READ_AND_CLASSIFY_REQUEST", "Read and classify request")
 
     request = state["request"].strip()
     if not request:
         raise ValueError("Request cannot be empty.")
-
     logger.info("Task: %s", _request_title(request))
-    return {"request": request, "restart_required": False}
 
+    decision = classify_request_relevance(request)
+    logger.info("ATL relevance: %s (%s)", decision.is_atl_relevant, decision.reason)
 
-def understand_and_bound_request_node(state: GraphState) -> dict[str, Any]:
-    """Classify intent and detect references before any research decision."""
-
-    _log_node_start("1a", "UNDERSTAND_AND_BOUND_REQUEST", "Understand and bound request")
-    understanding = understand_request(state["request"])
     return {
-        "request_intent": understanding.intent,
-        "execution_requested": understanding.execution_requested,
-        "detected_references": list(understanding.detected_references),
+        "request": request,
+        "restart_required": False,
+        "atl_relevant": decision.is_atl_relevant,
+        "atl_relevance_reason": decision.reason,
     }
+
+
+def route_after_read_and_classify_request(state: GraphState) -> str:
+    """Route to the normal path, or end early if this isn't ATL's job at all."""
+
+    if not state.get("atl_relevant", True):
+        logger.info("Decision: request is not ATL-relevant -> END_NODE")
+        return "not relevant"
+    return "relevant"
+
+
+def project_scope_decision_node(state: GraphState) -> dict[str, Any]:
+    """Decide new vs existing project. Stub: always "existing" for now.
+
+    New-project handling is a separate, not-yet-built capability (backlog
+    ATL-081). This node exists so that future work has a clear place to
+    plug in the "new project" branch without re-wiring the graph.
+    """
+
+    _log_node_start("1a", "PROJECT_SCOPE_DECISION", "Decide project scope")
+    return {"project_scope": "existing"}
 
 
 def resolve_context_node(state: GraphState) -> dict[str, Any]:
@@ -1529,6 +1551,8 @@ def end_node(state: GraphState) -> dict[str, Any]:
 
     _log_node_start("7/7", "END_NODE", "Workflow complete")
     logger.info("Task: %s", _request_title(state["request"]))
+    if not state.get("atl_relevant", True):
+        logger.info("Stopped early: not ATL-relevant — %s", state.get("atl_relevance_reason", ""))
     logger.info("Approval: required=%s approved=%s", state["needs_approval"], state["approved"])
     logger.info("Approved by: %s", state.get("approved_by", "") or "not required")
     logger.info("Performed by: %s", state.get("coding_agent_performed_by", "") or "not run")
@@ -1573,8 +1597,8 @@ def build_graph(
 
     workflow = StateGraph(GraphState)
 
-    workflow.add_node(NodeName.READ_REQUEST, read_request_node)
-    workflow.add_node(NodeName.UNDERSTAND_AND_BOUND_REQUEST, understand_and_bound_request_node)
+    workflow.add_node(NodeName.READ_REQUEST, read_and_classify_request_node)
+    workflow.add_node(NodeName.PROJECT_SCOPE_DECISION, project_scope_decision_node)
     workflow.add_node(NodeName.RESOLVE_CONTEXT, resolve_context_node)
     workflow.add_node(
         NodeName.CONTEXT_CLARIFICATION_INTERRUPT, context_clarification_interrupt_node
@@ -1617,8 +1641,15 @@ def build_graph(
     workflow.add_node(NodeName.END_NODE, end_node)
 
     workflow.add_edge(START, NodeName.READ_REQUEST)
-    workflow.add_edge(NodeName.READ_REQUEST, NodeName.UNDERSTAND_AND_BOUND_REQUEST)
-    workflow.add_edge(NodeName.UNDERSTAND_AND_BOUND_REQUEST, NodeName.RESOLVE_CONTEXT)
+    workflow.add_conditional_edges(
+        NodeName.READ_REQUEST,
+        route_after_read_and_classify_request,
+        {
+            "relevant": NodeName.PROJECT_SCOPE_DECISION,
+            "not relevant": NodeName.END_NODE,
+        },
+    )
+    workflow.add_edge(NodeName.PROJECT_SCOPE_DECISION, NodeName.RESOLVE_CONTEXT)
     workflow.add_conditional_edges(
         NodeName.RESOLVE_CONTEXT,
         route_after_resolve_context,
