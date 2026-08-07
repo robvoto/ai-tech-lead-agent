@@ -50,7 +50,7 @@ def test_build_agent_manifest_contains_core_contract_fields() -> None:
     assert "human_approved" in manifest["input_contract"]["optional"]
     assert "approval_token" in manifest["input_contract"]["optional"]
     assert "task_kind" in manifest["input_contract"]["optional"]
-    assert manifest["task_contract"]["task_kinds"] == ["coding_task", "backlog_refinement"]
+    assert manifest["task_contract"]["task_kinds"] == ["coding_task", "technical_analysis", "backlog_refinement"]
     assert manifest["task_contract"]["default_task_kind"] == "coding_task"
     assert "backlog_refinement" in manifest["output_contract"]["fields"]
     assert "run_id" in manifest["input_contract"]["optional"]

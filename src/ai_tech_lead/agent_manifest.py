@@ -136,7 +136,12 @@ def build_agent_manifest(settings: AppSettings | None = None) -> dict[str, Any]:
             ),
         },
         "task_contract": {
-            "task_kinds": ["coding_task", "backlog_refinement"],
+            "task_kinds": ["coding_task", "technical_analysis", "backlog_refinement"],
+            "task_kind_descriptions": {
+                "coding_task": "Implement, modify, debug, test, review, or otherwise execute technical solution changes.",
+                "technical_analysis": "Analyse or review an existing or proposed technical solution and produce recommendations, plans, architecture, documentation, or improvement proposals without requiring implementation.",
+                "backlog_refinement": "Analyse and refine backlog work into a structured implementation-ready proposal or draft item.",
+            },
             "default_task_kind": "coding_task",
         },
         "target_project_access": {

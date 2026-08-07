@@ -91,7 +91,7 @@ RESULT_KIND_DECISION_REQUIRED = "decision_required"
 RESULT_KIND_TERMINAL_FAILURE = "terminal_failure"
 RESULT_KIND_BACKLOG_REFINEMENT_DRAFT = "backlog_refinement_draft"
 RESULT_KIND_BACKLOG_ITEM_CREATED = "backlog_item_created"
-ALLOWED_TASK_KINDS = {"coding_task", "backlog_refinement"}
+ALLOWED_TASK_KINDS = {"coding_task", "technical_analysis", "backlog_refinement"}
 
 # One entry per LangGraph interrupt `kind` this runner knows how to resume, and the
 # options that pause offers. This table is the single source of truth for both what
@@ -180,7 +180,7 @@ def run_agent_task(input_path: str | Path, output_path: str | Path) -> int:
             output_file,
             progress_reporter,
             request_id,
-            "task_kind must be one of: coding_task, backlog_refinement.",
+            "task_kind must be one of: coding_task, technical_analysis, backlog_refinement.",
             settings=settings,
         )
         return 1
