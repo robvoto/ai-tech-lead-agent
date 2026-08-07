@@ -33,6 +33,8 @@ def test_prompt_registry_exposes_central_catalog() -> None:
         "risk_review_reason",
         "tech_lead_analysis",
         "atl_relevance_check",
+        "code_look_need",
+        "code_recon_instruction",
     ]
 
 

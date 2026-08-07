@@ -28,6 +28,7 @@ def analyse_task(
     approval_reason: str,
     research_evidence: list[str],
     settings: AppSettings,
+    code_recon_report: str = "",
 ) -> TechLeadAnalysis:
     """Produce a task statement and high-level technical direction for the coding agent."""
 
@@ -36,7 +37,12 @@ def analyse_task(
 
     try:
         return _llm_analyse_task(
-            request, task_feedback, approval_reason, research_evidence, settings
+            request,
+            task_feedback,
+            approval_reason,
+            research_evidence,
+            settings,
+            code_recon_report,
         )
     except OrchestratorLlmError as error:
         logger.warning("Tech lead analysis LLM call failed: %s", error)
@@ -52,12 +58,16 @@ def _llm_analyse_task(
     approval_reason: str,
     research_evidence: list[str],
     settings: AppSettings,
+    code_recon_report: str = "",
 ) -> TechLeadAnalysis:
     feedback_text = "\n".join(task_feedback) if task_feedback else "(none)"
     evidence_text = (
         "Research evidence:\n" + "\n".join(f"- {e}" for e in research_evidence)
         if research_evidence
         else ""
+    )
+    code_recon_text = (
+        f"Code look report:\n{code_recon_report}" if code_recon_report.strip() else ""
     )
     approval_note = f"Approval reason: {approval_reason}" if approval_reason else ""
     watched_dirs = "\n".join(f"- {d}" for d in settings.watched_directories) or "(none)"
@@ -75,6 +85,7 @@ def _llm_analyse_task(
         acceptance_criteria=acceptance,
         risk_notes=risk_notes,
         research_evidence=evidence_text,
+        code_recon=code_recon_text,
     )
     config = OrchestratorLlmConfig(
         model=settings.orchestrator_ai_model,

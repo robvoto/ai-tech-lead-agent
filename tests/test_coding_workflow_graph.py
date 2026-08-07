@@ -16,7 +16,9 @@ from ai_tech_lead.coding_workflow_graph import (
     NodeName,
     build_graph,
     build_initial_graph_state,
+    check_code_look_need_node,
     check_research_node,
+    codex_reads_code_node,
     collect_research_evidence_node,
     create_agent_instruction_node,
     discover_research_source_node,
@@ -26,6 +28,7 @@ from ai_tech_lead.coding_workflow_graph import (
     request_plan_node,
     resolve_context_node,
     route_after_approval,
+    route_after_check_code_look_need,
     route_after_check_research,
     route_after_read_and_classify_request,
     route_after_research_interrupt,
@@ -1913,12 +1916,30 @@ def test_tech_lead_analyse_runs_before_check_research() -> None:
     app = build_graph()
     edges = [(e.source, e.target) for e in app.get_graph().edges]
     targets_from_resolve_context = [t for s, t in edges if s == NodeName.RESOLVE_CONTEXT]
-    assert NodeName.TECH_LEAD_ANALYSE in targets_from_resolve_context
+    assert NodeName.CHECK_CODE_LOOK_NEED in targets_from_resolve_context
+    assert NodeName.TECH_LEAD_ANALYSE not in targets_from_resolve_context
     assert NodeName.CHECK_RESEARCH not in targets_from_resolve_context
 
     targets_from_tech_lead_analyse = [t for s, t in edges if s == NodeName.TECH_LEAD_ANALYSE]
     assert NodeName.CHECK_RESEARCH in targets_from_tech_lead_analyse
     assert NodeName.REVIEW_RISK in targets_from_tech_lead_analyse
+
+
+def test_check_code_look_need_routes_to_codex_or_straight_to_analyse() -> None:
+    """Confirms the code-look step sits between context resolution and analysis."""
+    app = build_graph()
+    edges = [(e.source, e.target) for e in app.get_graph().edges]
+    targets_from_check = [t for s, t in edges if s == NodeName.CHECK_CODE_LOOK_NEED]
+    assert NodeName.CODEX_READS_CODE in targets_from_check
+    assert NodeName.TECH_LEAD_ANALYSE in targets_from_check
+
+    targets_from_codex_read = [t for s, t in edges if s == NodeName.CODEX_READS_CODE]
+    assert targets_from_codex_read == [NodeName.TECH_LEAD_ANALYSE]
+
+
+def test_route_after_check_code_look_need() -> None:
+    assert route_after_check_code_look_need(graph_state(code_look_needed=True)) == "needed"
+    assert route_after_check_code_look_need(graph_state(code_look_needed=False)) == "not needed"
 
 
 def test_review_risk_connects_to_approval_routing_not_tech_lead_analyse() -> None:
@@ -1957,6 +1978,53 @@ def test_route_after_read_and_classify_request_continues_when_relevant() -> None
 def test_project_scope_decision_defaults_to_existing() -> None:
     result = project_scope_decision_node(graph_state())
     assert result["project_scope"] == "existing"
+
+
+def test_check_code_look_need_node_records_decision(monkeypatch) -> None:
+    def fake_check_code_look_need(request: str):
+        assert request == "Fix the login bug"
+        return SimpleNamespace(needs_code_look=True, reason="Touches existing auth code.")
+
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.check_code_look_need", fake_check_code_look_need
+    )
+    result = check_code_look_need_node(graph_state(bounded_request="Fix the login bug"))
+    assert result["code_look_needed"] is True
+    assert result["code_look_need_reason"] == "Touches existing auth code."
+
+
+def test_codex_reads_code_node_is_read_only_and_stores_report(monkeypatch) -> None:
+    settings = replace(parse_settings(valid_settings_dict()), execute_coding_agent=False)
+    captured: dict[str, object] = {}
+    progress_messages: list[str] = []
+
+    def fake_load_settings():
+        return settings
+
+    def fake_run_coding_agent(*, agent_instruction, project_root, settings, **kwargs):
+        captured["agent_instruction"] = agent_instruction
+        captured["sandbox_override"] = kwargs.get("sandbox_override")
+
+        class Result:
+            stdout = "auth.py handles login; no changes needed to the schema."
+            stderr = ""
+            returncode = 0
+            changed_files_delta: tuple[str, ...] = ()
+
+        return Result()
+
+    monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.load_settings", fake_load_settings)
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.run_coding_agent", fake_run_coding_agent
+    )
+
+    state = graph_state(bounded_request="Fix the login bug")
+    result = codex_reads_code_node(state, progress_callback=progress_messages.append)
+
+    assert captured["sandbox_override"] == "read-only"
+    assert "Fix the login bug" in str(captured["agent_instruction"])
+    assert result["code_recon_report"] == "auth.py handles login; no changes needed to the schema."
+    assert progress_messages == ["Codex finished looking at the code."]
 
 
 def test_read_request_routes_to_project_scope_decision_not_resolve_context() -> None:

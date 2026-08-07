@@ -16,13 +16,18 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
 from .app_settings import load_settings
+from .code_look_checker import check_code_look_need
 from .coding_agent_runner import CodingAgentCancellationToken, run_coding_agent
 from .completion_verifier import CompletionVerificationUnavailable, verify_completion
 from .instruction_assembler import build_agent_instruction
 from .logging_setup import LOGGER_NAME
 from .operator_question import answer_operator_question
 from .plan_reviewer import PlanReviewUnavailable, review_plan
-from .prompt_loader import PLAN_REQUEST_INSTRUCTION_PROMPT_KEY, render_prompt
+from .prompt_loader import (
+    CODE_RECON_INSTRUCTION_PROMPT_KEY,
+    PLAN_REQUEST_INSTRUCTION_PROMPT_KEY,
+    render_prompt,
+)
 from .request_context import resolve_request_context
 from .request_relevance import classify_request_relevance
 from .research_cache import save_online_source_to_cache
@@ -51,6 +56,8 @@ class NodeName(StrEnum):
     PROJECT_SCOPE_DECISION = "1a_decide_project_scope"
     RESOLVE_CONTEXT = "1b Find Project Context"
     CONTEXT_CLARIFICATION_INTERRUPT = "1b_context_clarification_interrupt"
+    CHECK_CODE_LOOK_NEED = "1c_check_if_code_look_needed"
+    CODEX_READS_CODE = "1c1_codex_reads_code"
     CHECK_RESEARCH = "2a_check_research"
     DISCOVER_RESEARCH_SOURCE = "2a1_discover_research_source"
     RESEARCH_INTERRUPT = "2a_research_interrupt"
@@ -87,6 +94,9 @@ class GraphState(TypedDict):
     context_clarification_retry_count: int
     context_clarification_exhausted: bool
     research_checked: bool
+    code_look_needed: bool
+    code_look_need_reason: str
+    code_recon_report: str
     brief: str
     force_approval: bool
     orchestrator_input_required: bool
@@ -169,6 +179,9 @@ def build_initial_graph_state(
         "context_clarification_retry_count": 0,
         "context_clarification_exhausted": False,
         "research_checked": False,
+        "code_look_needed": False,
+        "code_look_need_reason": "",
+        "code_recon_report": "",
         "brief": "",
         "force_approval": force_approval,
         "orchestrator_input_required": False,
@@ -668,6 +681,76 @@ def review_risk_node(state: GraphState) -> dict[str, Any]:
     }
 
 
+def check_code_look_need_node(state: GraphState) -> dict[str, Any]:
+    """Cheap check: does this task need Codex to look at real code first?
+
+    Scales effort to complexity — most tasks skip this. Fails open toward
+    skipping if AI is disabled or the check errors, since this only saves
+    cost/time and is never the thing standing between a task and safety.
+    """
+
+    _log_node_start("1c", "CHECK_CODE_LOOK_NEED", "Check if code look is needed")
+    decision = check_code_look_need(state.get("bounded_request", "") or state["request"])
+    logger.info("Code look needed: %s (%s)", decision.needs_code_look, decision.reason)
+    return {
+        "code_look_needed": decision.needs_code_look,
+        "code_look_need_reason": decision.reason,
+    }
+
+
+def route_after_check_code_look_need(state: GraphState) -> str:
+    """Route to Codex's read-only look, or straight to analysis if not needed."""
+
+    if state.get("code_look_needed"):
+        logger.info("Decision: code look needed -> CODEX_READS_CODE")
+        return "needed"
+    logger.info("Decision: code look not needed -> TECH_LEAD_ANALYSE")
+    return "not needed"
+
+
+def codex_reads_code_node(
+    state: GraphState,
+    progress_callback: Callable[[str], None] | None = None,
+) -> dict[str, Any]:
+    """Codex looks at real code, read-only, and reports back what it found.
+
+    Reuses the same run_coding_agent machinery as REQUEST_PLAN, explicitly
+    forced to read-only — this is a look, not implementation. If Codex is
+    stuck or uncertain it's asked to prefix its report with "NEEDS_HELP:"
+    so that signal carries into ATL's own analysis and, downstream, risk
+    review rather than being silently lost.
+    """
+
+    _log_node_start("1c1", "CODEX_READS_CODE", "Codex reads code, read-only")
+    settings = load_settings()
+
+    instruction = render_prompt(
+        CODE_RECON_INSTRUCTION_PROMPT_KEY,
+        request=state.get("bounded_request", "") or state["request"],
+    )
+    target_project_root = _target_project_root(state, settings)
+    result = run_coding_agent(
+        agent_instruction=instruction,
+        project_root=target_project_root,
+        settings=settings,
+        sandbox_override="read-only",
+    )
+    report = result.stdout.strip()
+    logger.info(
+        "Code recon report (%d chars): %s",
+        len(report),
+        _single_line_preview(report, limit=360),
+    )
+    if report.startswith("NEEDS_HELP:"):
+        logger.warning("Codex flagged it needs help during code recon: %s", report[:200])
+    if result.changed_files_delta:
+        logger.warning("Code recon unexpectedly changed files: %s", result.changed_files_delta)
+    if progress_callback is not None:
+        progress_callback("Codex finished looking at the code.")
+
+    return {"code_recon_report": report}
+
+
 def tech_lead_analyse_node(state: GraphState) -> dict[str, Any]:
     """Tech lead analysis: formulate the task and produce high-level technical direction."""
 
@@ -688,6 +771,7 @@ def tech_lead_analyse_node(state: GraphState) -> dict[str, Any]:
         approval_reason=state.get("approval_reason", ""),
         research_evidence=research_evidence,
         settings=settings,
+        code_recon_report=state.get("code_recon_report", ""),
     )
 
     logger.info(
@@ -850,6 +934,7 @@ def request_plan_node(
         agent_instruction=instruction,
         project_root=target_project_root,
         settings=settings,
+        sandbox_override="read-only",
     )
     plan_text = result.stdout.strip()
     plan_stderr = result.stderr.strip()
@@ -1604,6 +1689,13 @@ def build_graph(
         NodeName.CONTEXT_CLARIFICATION_INTERRUPT, context_clarification_interrupt_node
     )
     workflow.add_node(NodeName.CHECK_RESEARCH, check_research_node)
+    workflow.add_node(NodeName.CHECK_CODE_LOOK_NEED, check_code_look_need_node)
+    workflow.add_node(
+        NodeName.CODEX_READS_CODE,
+        lambda state: codex_reads_code_node(
+            state, progress_callback=coding_agent_progress_callback
+        ),
+    )
     workflow.add_node(NodeName.DISCOVER_RESEARCH_SOURCE, discover_research_source_node)
     workflow.add_node(NodeName.RESEARCH_INTERRUPT, research_interrupt_node)
     workflow.add_node(NodeName.COLLECT_RESEARCH_EVIDENCE, collect_research_evidence_node)
@@ -1654,12 +1746,21 @@ def build_graph(
         NodeName.RESOLVE_CONTEXT,
         route_after_resolve_context,
         {
-            "context found": NodeName.TECH_LEAD_ANALYSE,
+            "context found": NodeName.CHECK_CODE_LOOK_NEED,
             "clarification needed": NodeName.CONTEXT_CLARIFICATION_INTERRUPT,
             "clarification limit reached": NodeName.END_NODE,
         },
     )
     workflow.add_edge(NodeName.CONTEXT_CLARIFICATION_INTERRUPT, NodeName.RESOLVE_CONTEXT)
+    workflow.add_conditional_edges(
+        NodeName.CHECK_CODE_LOOK_NEED,
+        route_after_check_code_look_need,
+        {
+            "needed": NodeName.CODEX_READS_CODE,
+            "not needed": NodeName.TECH_LEAD_ANALYSE,
+        },
+    )
+    workflow.add_edge(NodeName.CODEX_READS_CODE, NodeName.TECH_LEAD_ANALYSE)
     workflow.add_conditional_edges(
         NodeName.TECH_LEAD_ANALYSE,
         route_after_tech_lead_analyse,

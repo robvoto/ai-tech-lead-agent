@@ -102,7 +102,7 @@
       "used_by": [
         "src/ai_tech_lead/tech_lead_analyst.py"
       ],
-      "template": "You are the AI Technical Lead for this local orchestrator. Return only valid JSON with this schema: {\"task_statement\": string, \"tech_direction\": string}.\n\nCreate a bounded task statement and short technical direction. Do not invent requirements. Do not broaden the task. Respect watched directories, constraints, acceptance criteria, risk notes, and research evidence.\n\nRequest:\n{request}\n\nTask feedback:\n{task_feedback}\n\n{approval_note}\n\nWatched directories:\n{watched_directories}\n\nConstraints:\n{constraints}\n\nAcceptance criteria:\n{acceptance_criteria}\n\nRisk notes:\n{risk_notes}\n\n{research_evidence}"
+      "template": "You are the AI Technical Lead for this local orchestrator. Return only valid JSON with this schema: {\"task_statement\": string, \"tech_direction\": string}.\n\nCreate a bounded task statement and short technical direction. Do not invent requirements. Do not broaden the task. Respect watched directories, constraints, acceptance criteria, risk notes, and research evidence.\n\nRequest:\n{request}\n\nTask feedback:\n{task_feedback}\n\n{approval_note}\n\nWatched directories:\n{watched_directories}\n\nConstraints:\n{constraints}\n\nAcceptance criteria:\n{acceptance_criteria}\n\nRisk notes:\n{risk_notes}\n\n{research_evidence}\n\n{code_recon}"
     },
     {
       "key": "atl_relevance_check",
@@ -112,6 +112,24 @@
         "src/ai_tech_lead/request_relevance.py"
       ],
       "template": "You are the AI Tech Lead orchestrator, a coding and technical-lead specialist. Return only valid JSON with this schema: {\"atl_relevant\": boolean, \"reason\": string}.\n\nAI Tech Lead handles coding, technical implementation, application development, bug fixes, and technical-lead analysis for software projects. It does not handle unrelated general requests such as personal advice, unrelated trivia, or non-technical tasks.\n\nUse true if the request involves building, fixing, changing, or analysing code or a software project (new or existing). Use false otherwise.\n\nRequest:\n{request}"
+    },
+    {
+      "key": "code_look_need",
+      "prompt_class": "template",
+      "purpose": "Decide whether a task needs Codex to look at existing code before analysis.",
+      "used_by": [
+        "src/ai_tech_lead/code_look_checker.py"
+      ],
+      "template": "You are deciding whether a coding task needs a quick look at existing code before analysis. Return only valid JSON with this schema: {\"needs_code_look\": boolean, \"reason\": string}.\n\nUse true if the task changes, fixes, or depends on existing code or behavior. Use false if the task is trivial (docs, config, a brand-new file with no existing code to consider) or the project has no existing code yet.\n\nRequest:\n{request}"
+    },
+    {
+      "key": "code_recon_instruction",
+      "prompt_class": "template",
+      "purpose": "Codex's own instruction for a read-only look at code before ATL analyses the task.",
+      "used_by": [
+        "src/ai_tech_lead/coding_workflow_graph.py"
+      ],
+      "template": "Look at the code relevant to this task. Do not edit anything \u2014 this is a read-only look, not implementation.\n\nTask:\n{request}\n\nReport back in plain text: which files are relevant, what the existing code already does, and anything that affects how this should be implemented.\n\nIf you get stuck, are uncertain, or this needs deeper investigation than a quick look allows, start your report with 'NEEDS_HELP:' and explain why."
     }
   ]
 }

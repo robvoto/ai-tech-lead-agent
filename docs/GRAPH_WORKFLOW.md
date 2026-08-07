@@ -39,8 +39,15 @@ START
 -> [1b_context_clarification_interrupt, if a reference cannot be resolved safely]
    -> back to 1b Find Project Context with the human's answer folded in (bounded to 1 round;
       still unresolved after that -> 7_end_node, a clear failure, not another interrupt)
+-> 1c_check_if_code_look_needed  (cheap check: does this task actually touch existing code?
+   scales effort to complexity — most tasks skip the next step entirely)
+-> [1c1_codex_reads_code, if needed]  (Codex looks at real code, read-only, reports back in
+   plain text; reuses the same run_coding_agent machinery as 5b_request_plan, explicitly
+   forced read-only; if Codex is stuck it prefixes its report "NEEDS_HELP:" so that signal
+   carries into analysis and, downstream, risk review, instead of being silently lost)
 -> 2 Analyse Task              (formulate task + high-level tech direction; runs before the
-   research gap check so the gap is judged against the formulated task, not the raw request)
+   research gap check so the gap is judged against the formulated task, not the raw request;
+   now also sees Codex's code-look report, when there is one)
 -> 2a_check_research            (checks research_checked=False -> runs once per attempt)
 -> [2a1_discover_research_source, if a knowledge gap needs online sources]
 -> 2a_research_interrupt
@@ -86,6 +93,32 @@ Before research, the graph now separates the original request from the bounded t
 - `bounded_request` contains the original request plus verified project/backlog context (and any clarification answer). Research, risk review, tech-lead analysis, completion verification, and operator Q&A use this bounded form rather than the raw ambiguous request.
 
 Backlog context is optional. Plain reviews, explanations, bug investigations, and direct coding requests continue without requiring a backlog reference.
+
+## Code look node
+
+`1c_check_if_code_look_needed` is a cheap classification: does this task actually change,
+fix, or depend on existing code, or is it trivial (docs, config, a brand-new file)? Scales
+effort to complexity — most tasks skip the next step. Fails open toward *skipping* if AI is
+disabled or the check errors, since this is a cost-saving enhancement, not a safety gate.
+
+`1c1_codex_reads_code` only runs when the check above says yes. It reuses the exact same
+`run_coding_agent` call that `5b_request_plan` uses, forced explicitly to `sandbox_override=
+"read-only"` — Codex looks, doesn't touch. It reports back in plain text: which files are
+relevant, what the existing code does, anything that affects implementation. If Codex is
+stuck or uncertain, it's instructed to prefix its report `NEEDS_HELP:` rather than guess —
+that signal flows into `2 Analyse Task`'s prompt and, from there, into risk review, rather
+than being silently lost. No new human-interrupt gate was added for this in v1; ATL is
+expected to fold the concern into its own analysis and let the existing approval/risk-review
+path catch anything genuinely risky. Revisit if that proves insufficient in practice.
+
+Design grounding: Anthropic's own multi-agent guidance says to scale effort to task
+complexity rather than always or never doing extra work, and specifically warns against
+parallel multi-agent fan-out for coding tasks (too interdependent, unlike independent
+research threads) — hence one bounded Codex call here, not several.
+
+Note: `5b_request_plan` was also updated to set `sandbox_override="read-only"` explicitly.
+It previously relied on Codex's own default and only logged a warning if files changed
+unexpectedly instead of preventing it.
 
 ## Tech lead analysis node
 

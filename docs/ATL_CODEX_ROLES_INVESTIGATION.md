@@ -39,7 +39,9 @@ ATL should mostly be doing **Select** (small, narrow peeks) and
 | `1_read_and_classify_request` | Deterministic validation + ATL (LLM) | Rebuilt this session: merged old `1_read_request` + `1a Understand Request` into one node. Validates non-empty, then a cheap LLM call checks "is this actually ATL's job (coding/technical)?" Fails open if AI is off. |
 | `1a_decide_project_scope` | Stub (no AI yet) | New this session. Always returns "existing" for now. Real new-vs-existing detection is ATL-081, not built. |
 | `1b Find Project Context` | Deterministic code (no AI) | Misleading name — it doesn't search anything. Only uses data the caller already supplied. Never touches the codebase itself. Confirmed: the project list it checks against is a simple flat JSON file already owned by ATL, but it never writes new entries back. |
-| `2 Analyse Task` | ATL (LLM) | Writes the task brief. Still doesn't get a real code look before doing this — see open items below. |
+| `1c_check_if_code_look_needed` | ATL (LLM), cheap | New. Decides if Codex needs to actually look at code before analysis. Fails open toward skipping. |
+| `1c1_codex_reads_code` | **Codex**, read-only | New. Only runs if needed. Real code access, but explicitly read-only — reuses Request Plan's own machinery. Reports back in plain text. |
+| `2 Analyse Task` | ATL (LLM) | Writes the task brief. Now sees Codex's code-look report when there is one. |
 | `2a_check_research` | ATL (LLM) | Peeks at 5 filenames, 800 chars each. |
 | Approval Q&A | ATL (LLM) | Same peek, but picks files using the wrong text (gap). |
 | Plan Review | ATL (LLM) | No code access at all — judges the plan on logic only. |
@@ -131,11 +133,13 @@ diagram or docs later so it's visible at a glance, not just written here.
   logic (does it match the task?) without needing real code access —
   same way Rob reviews Claude's plan without reading every line first.
 - No gap here.
-- **Real bug found here too (unrelated to this session's build):**
-  `request_plan_node` calls Codex without ever setting `sandbox_override`
-  — it never explicitly tells Codex "read-only." The code already has a
-  warning for exactly this ("Plan request unexpectedly changed files")
-  instead of preventing it. Not fixed yet — logged as an open item below.
+- **Bug found and fixed here too (this session, unrelated to the initial
+  Plan Review check):** `request_plan_node` called Codex without ever
+  setting `sandbox_override` — it never explicitly told Codex "read-only."
+  The code already had a warning for exactly this ("Plan request
+  unexpectedly changed files") instead of preventing it. Fixed alongside
+  the code-look build below, since both call the exact same underlying
+  function.
 
 ### Step: The handoff to Codex (`instruction_assembler.py`)
 - **Status: Checked — this is the most important finding so far.**
@@ -149,23 +153,28 @@ diagram or docs later so it's visible at a glance, not just written here.
   Codex does the real code work on its own. No gap here. This is the
   cleanest example in the whole workflow.
 
-### Step 5/6 design: Codex reads code before Analyse Task (decided, not yet built)
-- **Status: Designed, not implemented yet.**
-- Confirmed feasible: Codex CLI already supports read-only mode
-  (`sandbox_override="read-only"`), and that plumbing already exists in
-  `coding_agent_runner.py` — no new infrastructure needed.
-- Design: reuse `request_plan_node`'s existing Codex-calling machinery
-  (don't build new plumbing), call it earlier (before Analyse Task,
-  read-only), Codex reports back what it found, flags itself if it's
-  stuck or has too many doubts. ATL tries to resolve that first; escalates
-  to Rob/Agent Hub only if it can't.
-- Grounded in Anthropic's own multi-agent guidance: **scale effort to
-  complexity** (don't always run this, don't never run it — cheap
-  classification decides), and coding specifically should NOT get
-  parallel multi-agent fan-out (that pattern is for independent research
-  threads, not interdependent coding work) — one bounded Codex call, not
-  several.
-- Not built yet — this is the next real implementation step.
+### Step 5/6: Codex reads code before Analyse Task — BUILT this session
+- **Status: Built and tested.** (Previously logged as "designed, not
+  implemented" — now done.)
+- New nodes: `1c_check_if_code_look_needed` (cheap classifier, fails open
+  toward *skipping*) → `1c1_codex_reads_code` (only if needed; read-only,
+  reuses `request_plan_node`'s exact `run_coding_agent` machinery).
+- Codex's report now feeds into `2 Analyse Task` via a new `code_recon`
+  section in its prompt — `analyse_task()` was updated to accept it.
+- If Codex is stuck, it prefixes its report `NEEDS_HELP:` rather than
+  guess. No new human-interrupt gate was built for this in v1 — that
+  signal flows into ATL's analysis and, from there, into risk review,
+  rather than pausing the graph directly. Revisit if that proves
+  insufficient in practice.
+- **Also fixed while here:** `request_plan_node` now explicitly sets
+  `sandbox_override="read-only"` (previously logged as open gap #3 below
+  — now closed, since this node's read-only call reuses the exact same
+  code path).
+- **Real test-hygiene bug found and fixed, same shape as before:** the
+  new `check_code_look_need_node`, left unpatched, would have made a real
+  live OpenAI call in every graph test in this environment. Extended the
+  same `conftest.py` autouse fixture (already built for the relevance
+  check) to also cover `code_look_checker.load_settings`.
 
 ### Prompt caching — checked, mostly already fine, one open item
 - ATL's LLM calls (`orchestrator_llm.py`) are raw HTTP calls to OpenAI's
@@ -189,10 +198,6 @@ diagram or docs later so it's visible at a glance, not just written here.
 
 ## Still to check (node by node)
 
-- [ ] Build the actual Codex-recon-before-analysis step (designed above,
-      not implemented).
-- [ ] Fix the Request Plan sandbox-mode gap (currently no explicit
-      read-only setting).
 - [ ] (Smaller, optional) Skill selection during handoff reads a skills
       index file — worth a quick look later, lower priority than the above.
 
@@ -203,10 +208,10 @@ diagram or docs later so it's visible at a glance, not just written here.
 2. When Rob asks ATL a follow-up question, ATL still picks files based on
    the original task wording, not the question itself. (Found at:
    approval Q&A step. Severity: medium — could give wrong-file answers.)
-3. `request_plan_node` never sets `sandbox_override` — relies on Codex's
-   own default instead of explicitly forcing read-only. The code already
-   has a warning anticipating unexpected file changes instead of
-   preventing them. (Severity: medium — a real safety gap, not yet fixed.)
-4. DeepSeek's prompt-caching behavior is unverified — needs research
+3. DeepSeek's prompt-caching behavior is unverified — needs research
    before ATL could safely switch providers and assume caching still
    works the same way. (Severity: low, future-facing only.)
+4. Codex code-look reports don't currently escalate to a human interrupt
+   if Codex flags "NEEDS_HELP:" — the signal only flows into ATL's own
+   analysis/risk review. Intentionally kept simple for v1; revisit if
+   that proves insufficient. (Severity: low, by design for now.)
