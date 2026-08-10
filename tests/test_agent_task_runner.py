@@ -1351,6 +1351,10 @@ def test_execute_workflow_translates_existing_graph_progress_callbacks(
             return _Snapshot()
 
     def fake_build_graph(**kwargs: Any) -> _Graph:
+        workflow_callback = kwargs["workflow_progress_callback"]
+        assert callable(workflow_callback)
+        workflow_callback("resolving_context", "Resolving project scope and context.")
+        workflow_callback("risk_review", "Reviewing execution risk and approval requirements.")
         return _Graph(kwargs["coding_agent_progress_callback"])
 
     monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.build_graph", fake_build_graph)
@@ -1366,6 +1370,8 @@ def test_execute_workflow_translates_existing_graph_progress_callbacks(
     events = [json.loads(line) for line in stream.getvalue().splitlines()]
     assert [event["phase"] for event in events] == [
         "analysing",
+        "resolving_context",
+        "risk_review",
         "planning",
         "reviewing_plan",
         "coding",

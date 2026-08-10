@@ -686,6 +686,11 @@ def _execute_workflow(
         coding_agent_progress_callback=(
             reporter.handle_workflow_message if reporter.enabled else None
         ),
+        workflow_progress_callback=(
+            (lambda phase, summary: reporter.phase(phase, summary))
+            if reporter.enabled
+            else None
+        ),
     )
 
     thread_id = f"subprocess-{request_id}"

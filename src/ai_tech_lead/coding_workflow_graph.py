@@ -1676,20 +1676,34 @@ def build_graph(
     execute_coding_agent_override: bool | None = None,
     project_root_override: str | None = None,
     coding_agent_progress_callback: Callable[[str], None] | None = None,
+    workflow_progress_callback: Callable[[str, str], None] | None = None,
     coding_agent_cancellation_token: CodingAgentCancellationToken | None = None,
 ):
     """Build and compile the backlog-to-agent-instruction workflow."""
 
     workflow = StateGraph(GraphState)
 
-    workflow.add_node(NodeName.READ_REQUEST, read_and_classify_request_node)
-    workflow.add_node(NodeName.PROJECT_SCOPE_DECISION, project_scope_decision_node)
-    workflow.add_node(NodeName.RESOLVE_CONTEXT, resolve_context_node)
+    def with_progress(node, phase: str, summary: str):
+        if workflow_progress_callback is None:
+            return node
+
+        def wrapped(state):
+            workflow_progress_callback(phase, summary)
+            return node(state)
+
+        return wrapped
+
+    workflow.add_node(
+        NodeName.READ_REQUEST,
+        with_progress(read_and_classify_request_node, "understanding_request", "Understanding the request."),
+    )
+    workflow.add_node(NodeName.PROJECT_SCOPE_DECISION, with_progress(project_scope_decision_node, "resolving_context", "Resolving project scope and context."))
+    workflow.add_node(NodeName.RESOLVE_CONTEXT, with_progress(resolve_context_node, "resolving_context", "Resolving project scope and context."))
     workflow.add_node(
         NodeName.CONTEXT_CLARIFICATION_INTERRUPT, context_clarification_interrupt_node
     )
-    workflow.add_node(NodeName.CHECK_RESEARCH, check_research_node)
-    workflow.add_node(NodeName.CHECK_CODE_LOOK_NEED, check_code_look_need_node)
+    workflow.add_node(NodeName.CHECK_RESEARCH, with_progress(check_research_node, "research_check", "Checking whether external research is needed."))
+    workflow.add_node(NodeName.CHECK_CODE_LOOK_NEED, with_progress(check_code_look_need_node, "analysing", "Assessing the technical context needed for the task."))
     workflow.add_node(
         NodeName.CODEX_READS_CODE,
         lambda state: codex_reads_code_node(
@@ -1699,8 +1713,8 @@ def build_graph(
     workflow.add_node(NodeName.DISCOVER_RESEARCH_SOURCE, discover_research_source_node)
     workflow.add_node(NodeName.RESEARCH_INTERRUPT, research_interrupt_node)
     workflow.add_node(NodeName.COLLECT_RESEARCH_EVIDENCE, collect_research_evidence_node)
-    workflow.add_node(NodeName.REVIEW_RISK, review_risk_node)
-    workflow.add_node(NodeName.TECH_LEAD_ANALYSE, tech_lead_analyse_node)
+    workflow.add_node(NodeName.REVIEW_RISK, with_progress(review_risk_node, "risk_review", "Reviewing execution risk and approval requirements."))
+    workflow.add_node(NodeName.TECH_LEAD_ANALYSE, with_progress(tech_lead_analyse_node, "analysing", "Analysing the task and setting technical direction."))
     workflow.add_node(NodeName.APPROVAL_INTERRUPT, approval_interrupt_node)
     workflow.add_node(
         NodeName.REQUEST_PLAN,
@@ -1726,11 +1740,11 @@ def build_graph(
         ),
     )
     workflow.add_node(NodeName.FAILURE_INTERRUPT, failure_interrupt_node)
-    workflow.add_node(NodeName.VERIFY_COMPLETION, verify_completion_node)
+    workflow.add_node(NodeName.VERIFY_COMPLETION, with_progress(verify_completion_node, "validating", "Validating the completed work."))
     workflow.add_node(
         NodeName.COMPLETION_VERIFICATION_INTERRUPT, completion_verification_interrupt_node
     )
-    workflow.add_node(NodeName.END_NODE, end_node)
+    workflow.add_node(NodeName.END_NODE, with_progress(end_node, "finalising", "Finalising the specialist result."))
 
     workflow.add_edge(START, NodeName.READ_REQUEST)
     workflow.add_conditional_edges(
