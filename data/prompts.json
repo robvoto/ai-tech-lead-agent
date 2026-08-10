@@ -130,6 +130,15 @@
         "src/ai_tech_lead/coding_workflow_graph.py"
       ],
       "template": "Look at the code relevant to this task. Do not edit anything \u2014 this is a read-only look, not implementation.\n\nTask:\n{request}\n\nReport back in plain text: which files are relevant, what the existing code already does, and anything that affects how this should be implemented.\n\nIf you get stuck, are uncertain, or this needs deeper investigation than a quick look allows, start your report with 'NEEDS_HELP:' and explain why."
+    },
+    {
+      "key": "project_guidance_governance",
+      "prompt_class": "template",
+      "purpose": "Decide whether discovered target-project guidance is sufficient, missing, or conflicting for this task, without inventing a rule.",
+      "used_by": [
+        "src/ai_tech_lead/project_guidance_governance.py"
+      ],
+      "template": "You are reviewing whether the target project's own guidance, already gathered below, is sufficient for this task \u2014 or whether something relevant is missing or contradictory. Return only valid JSON with this schema: {\"status\": \"sufficient\"|\"missing\"|\"conflicting\", \"requires_review\": boolean, \"summary\": string, \"related_locations\": [string], \"proposed_change\": string, \"reason\": string}.\n\nSet status to \"sufficient\" when the guidance below already covers what this task needs, or when the task does not depend on any project-specific rule, pattern, or convention at all \u2014 most tasks fall here. Set status to \"missing\" only when the task clearly depends on a project-specific rule, pattern, or convention that nothing below covers. Set status to \"conflicting\" only when the guidance below contains statements that contradict each other on something relevant to this task. Set requires_review to true only when the gap or conflict actually matters for doing this task safely or correctly; many tasks can proceed fine on incomplete project guidance, and requires_review must stay false in that case \u2014 conflicting guidance always requires review regardless of what you set here. related_locations must name the existing file(s) or section(s) discovered below that relate to the gap or conflict, or an empty list if nothing related exists in the project yet. proposed_change must be the smallest concrete addition (for example one new bullet, or one new small skill file) that would resolve the gap \u2014 never propose rewriting or restructuring existing guidance, and never state the new rule's content as if it were already decided; only describe where it should go. Do not invent the rule's substance yourself.\n\nTask:\n{request}\n\nDiscovered project guidance (may be empty):\n{project_guidance}"
     }
   ]
 }

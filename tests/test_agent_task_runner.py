@@ -1061,6 +1061,73 @@ def test_map_state_to_output_maps_research_approval() -> None:
     assert option_names == {"approve", "cancel"}
 
 
+def test_map_state_to_output_maps_project_guidance_governance_interrupt() -> None:
+    result = _map_state_to_output(
+        "req-guidance-pending",
+        {
+            "agent_instruction": "",
+            "formulated_task": "",
+            "brief": "",
+            "orchestrator_input_required": False,
+            "orchestrator_input_question": "",
+            "coding_agent_success": None,
+            "coding_agent_result": "",
+            "restart_required": False,
+            "task_feedback": [],
+            "research_source_titles": [],
+        },
+        False,
+        state_snapshot=_FakeSnapshot(
+            {
+                "kind": "project_guidance_governance",
+                "status": "missing",
+                "summary": "No rule covers database migrations.",
+                "related_locations": [],
+                "proposed_change": "Add a bullet under AGENTS.md's Universal rules about migrations.",
+                "reason": "The task adds a schema migration.",
+            }
+        ),
+        thread_id="subprocess-req-guidance-pending",
+    )
+
+    assert result["status"] == STATUS_WAITING_DECISION
+    assert result["pending_decision"]["kind"] == "project_guidance_governance"
+    option_names = {opt["name"] for opt in result["pending_decision"]["options"]}
+    assert option_names == {"approve", "reject"}
+    assert "database migrations" in result["pending_decision"]["prompt"]
+    assert "Add a bullet under AGENTS.md" in result["pending_decision"]["prompt"]
+
+
+def test_map_state_to_output_rejected_project_guidance_proposal_fails_clearly() -> None:
+    result = _map_state_to_output(
+        "req-guidance-rejected",
+        {
+            "agent_instruction": "",
+            "formulated_task": "",
+            "brief": "",
+            "orchestrator_input_required": False,
+            "orchestrator_input_question": "",
+            "coding_agent_success": None,
+            "coding_agent_result": "",
+            "restart_required": False,
+            "task_feedback": [],
+            "research_source_titles": [],
+            "project_guidance_rejected_summary": (
+                "Project guidance conflicting and the proposed change was not approved: "
+                "AGENTS.md says use pytest; docs/INDEX.md says use unittest."
+            ),
+        },
+        False,
+        state_snapshot=None,
+        thread_id="subprocess-req-guidance-rejected",
+    )
+
+    assert result["status"] == STATUS_FAILED
+    assert result["result_kind"] == "terminal_failure"
+    assert "conflicting" in result["summary"]
+    assert "pytest" in result["summary"]
+
+
 def test_map_state_to_output_maps_context_clarification_interrupt() -> None:
     result = _map_state_to_output(
         "req-context-clarify",

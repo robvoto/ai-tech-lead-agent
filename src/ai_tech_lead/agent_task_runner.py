@@ -108,6 +108,7 @@ _DECISION_OPTIONS_BY_KIND: dict[str, list[dict[str, Any]]] = {
     "failure_guidance": [{"name": "answer", "needs_text": True}],
     "research_approval": [{"name": "approve"}, {"name": "cancel"}],
     "context_clarification": [{"name": "answer", "needs_text": True}],
+    "project_guidance_governance": [{"name": "approve"}, {"name": "reject"}],
     "completion_verification": [
         {"name": "confirm_complete"},
         {"name": "reject", "needs_text": True},
@@ -840,6 +841,9 @@ def _map_decision_to_resume_payload(kind: str, decision: _Decision) -> Any:
     if kind == "research_approval":
         return {"approved": decision.option == "approve"}
 
+    if kind == "project_guidance_governance":
+        return {"approved": decision.option == "approve"}
+
     if kind == "completion_verification":
         if decision.option == "confirm_complete":
             return {"decision": "confirm_complete"}
@@ -885,6 +889,18 @@ def _prompt_for_pending_interrupt(kind: str, payload: dict[str, Any]) -> str:
     if kind == "completion_verification":
         reason = str(payload.get("reason", "")).strip()
         return f"Completion cannot be verified automatically and needs human review: {reason}"
+
+    if kind == "project_guidance_governance":
+        status = str(payload.get("status", "")).strip() or "issue"
+        summary = str(payload.get("summary", "")).strip()
+        proposed_change = str(payload.get("proposed_change", "")).strip()
+        reason = str(payload.get("reason", "")).strip()
+        parts = [f"Project guidance {status}: {summary}" if summary else f"Project guidance {status}."]
+        if proposed_change:
+            parts.append(f"Proposed change: {proposed_change}")
+        if reason:
+            parts.append(f"Reason: {reason}")
+        return "\n".join(parts)
 
     return ""
 
@@ -1043,6 +1059,14 @@ def _map_state_to_output(
         status = STATUS_FAILED
         summary = "Agent workflow requires a restart."
         next_action = "Retry the task from scratch."
+        result_kind = RESULT_KIND_TERMINAL_FAILURE
+    elif state.get("project_guidance_rejected_summary"):
+        # Guidance was flagged as missing/conflicting and required review; the
+        # human rejected the proposal, so this ends clearly rather than
+        # proceeding on an admitted gap or an unresolved conflict.
+        status = STATUS_FAILED
+        summary = str(state.get("project_guidance_rejected_summary", ""))
+        next_action = "Review the proposed project guidance change and resubmit if appropriate."
         result_kind = RESULT_KIND_TERMINAL_FAILURE
     elif agent_instruction:
         verification_status = state.get("verification_status", "")

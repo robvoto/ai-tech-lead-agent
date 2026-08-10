@@ -31,6 +31,7 @@ from .logging_setup import LOGGER_NAME
 from .operator_question import answer_operator_question
 from .plan_reviewer import PlanReviewUnavailable, review_plan
 from .project_guidance_discovery import discover_project_guidance
+from .project_guidance_governance import review_project_guidance
 from .prompt_loader import (
     CODE_RECON_INSTRUCTION_PROMPT_KEY,
     PLAN_REQUEST_INSTRUCTION_PROMPT_KEY,
@@ -66,6 +67,8 @@ class NodeName(StrEnum):
     CONTEXT_CLARIFICATION_INTERRUPT = "1b_context_clarification_interrupt"
     CHECK_CODE_LOOK_NEED = "1c_check_if_code_look_needed"
     CODEX_READS_CODE = "1c1_codex_reads_code"
+    CHECK_PROJECT_GUIDANCE = "1d_check_project_guidance"
+    PROJECT_GUIDANCE_INTERRUPT = "1d1_project_guidance_interrupt"
     CHECK_RESEARCH = "2a_check_research"
     DISCOVER_RESEARCH_SOURCE = "2a1_discover_research_source"
     RESEARCH_INTERRUPT = "2a_research_interrupt"
@@ -107,6 +110,14 @@ class GraphState(TypedDict):
     code_look_needed: bool
     code_look_need_reason: str
     code_recon_report: str
+    project_guidance_notes: list[str]
+    project_guidance_status: str
+    project_guidance_requires_review: bool
+    project_guidance_summary: str
+    project_guidance_related_locations: list[str]
+    project_guidance_proposed_change: str
+    project_guidance_reason: str
+    project_guidance_rejected_summary: str
     brief: str
     force_approval: bool
     orchestrator_input_required: bool
@@ -195,6 +206,14 @@ def build_initial_graph_state(
         "code_look_needed": False,
         "code_look_need_reason": "",
         "code_recon_report": "",
+        "project_guidance_notes": [],
+        "project_guidance_status": "",
+        "project_guidance_requires_review": False,
+        "project_guidance_summary": "",
+        "project_guidance_related_locations": [],
+        "project_guidance_proposed_change": "",
+        "project_guidance_reason": "",
+        "project_guidance_rejected_summary": "",
         "brief": "",
         "force_approval": force_approval,
         "orchestrator_input_required": False,
@@ -886,7 +905,7 @@ def route_after_check_code_look_need(state: GraphState) -> str:
     if state.get("code_look_needed"):
         logger.info("Decision: code look needed -> CODEX_READS_CODE")
         return "needed"
-    logger.info("Decision: code look not needed -> TECH_LEAD_ANALYSE")
+    logger.info("Decision: code look not needed -> CHECK_PROJECT_GUIDANCE")
     return "not needed"
 
 
@@ -933,6 +952,129 @@ def codex_reads_code_node(
     return {"code_recon_report": report}
 
 
+def check_project_guidance_node(state: GraphState) -> dict[str, Any]:
+    """Bounded discovery, then a governed check for missing/conflicting guidance.
+
+    Discovery itself (project_guidance_discovery.py) is cheap and never blocks.
+    The governance check (project_guidance_governance.py) decides whether what
+    was found — or its absence — actually matters enough to pause and ask a
+    human before this run uses anything beyond what was safely verified.
+    """
+
+    _log_node_start("1d", "CHECK_PROJECT_GUIDANCE", "Check project guidance coverage")
+    settings = load_settings()
+
+    if not settings.project_guidance_discovery_enabled:
+        return {
+            "project_guidance_notes": [],
+            "project_guidance_status": "",
+            "project_guidance_requires_review": False,
+        }
+
+    request_text = state.get("bounded_request", "") or state["request"]
+    notes = discover_project_guidance(request_text, _soft_target_project_root(state, settings))
+    decision = review_project_guidance(request_text, list(notes), settings)
+
+    logger.info(
+        "[LEARN] Project guidance governance: status=%s requires_review=%s",
+        decision.status,
+        decision.requires_review,
+    )
+
+    return {
+        "project_guidance_notes": list(notes),
+        "project_guidance_status": decision.status,
+        "project_guidance_requires_review": decision.requires_review,
+        "project_guidance_summary": decision.summary,
+        "project_guidance_related_locations": decision.related_locations,
+        "project_guidance_proposed_change": decision.proposed_change,
+        "project_guidance_reason": decision.reason,
+    }
+
+
+def route_after_check_project_guidance(state: GraphState) -> str:
+    """Route to the governance interrupt only when review is actually required."""
+
+    _log_decision_start(
+        "1d", "ROUTE_AFTER_CHECK_PROJECT_GUIDANCE", "Route after project guidance check"
+    )
+    if state.get("project_guidance_requires_review"):
+        logger.info(
+            "Decision: guidance status=%s requires review -> PROJECT_GUIDANCE_INTERRUPT",
+            state.get("project_guidance_status"),
+        )
+        return "review needed"
+    logger.info("Decision: guidance sufficient or not required -> TECH_LEAD_ANALYSE")
+    return "no review needed"
+
+
+def project_guidance_interrupt_node(state: GraphState) -> dict[str, Any]:
+    """Pause for explicit human approval before using a missing/conflicting-guidance proposal.
+
+    Approval only permits using the proposed content as this run's context —
+    it never writes anything back to the target project's own files. Rejecting
+    a proposal that was flagged as required for safe/correct work ends the run
+    clearly (mirrors RESEARCH_INTERRUPT's reject -> END_NODE) rather than
+    silently proceeding on an admitted gap or unresolved conflict.
+    """
+
+    _log_node_start(
+        "1d1", "PROJECT_GUIDANCE_INTERRUPT", "Pause for project guidance governance approval"
+    )
+    status = str(state.get("project_guidance_status", "")).strip()
+    summary = str(state.get("project_guidance_summary", "")).strip()
+    related_locations = list(state.get("project_guidance_related_locations", []))
+    proposed_change = str(state.get("project_guidance_proposed_change", "")).strip()
+    reason = str(state.get("project_guidance_reason", "")).strip()
+
+    logger.info("Project guidance governance interrupt: status=%s summary=%s", status, summary)
+    result = interrupt(
+        {
+            "kind": "project_guidance_governance",
+            "status": status,
+            "summary": summary,
+            "related_locations": related_locations,
+            "proposed_change": proposed_change,
+            "reason": reason,
+        }
+    )
+    approved = bool(result.get("approved", False)) if isinstance(result, dict) else bool(result)
+    logger.info("Project guidance governance interrupt resumed: approved=%s", approved)
+
+    if approved:
+        notes = list(state.get("project_guidance_notes", []))
+        if proposed_change:
+            notes.append(f"(human-approved this run only, not committed to the project) {proposed_change}")
+        return {
+            "project_guidance_notes": notes,
+            "project_guidance_requires_review": False,
+            "project_guidance_rejected_summary": "",
+        }
+
+    return {
+        "project_guidance_requires_review": False,
+        "project_guidance_rejected_summary": (
+            f"Project guidance {status or 'issue'} and the proposed change was not "
+            f"approved: {summary}"
+        ),
+    }
+
+
+def route_after_project_guidance_interrupt(state: GraphState) -> str:
+    """Route after the human approves or rejects the governance proposal."""
+
+    _log_decision_start(
+        "1d1",
+        "ROUTE_AFTER_PROJECT_GUIDANCE_INTERRUPT",
+        "Route after project guidance governance approval",
+    )
+    if state.get("project_guidance_rejected_summary"):
+        logger.info("Decision: guidance proposal rejected -> END_NODE")
+        return "rejected"
+    logger.info("Decision: guidance proposal approved -> TECH_LEAD_ANALYSE")
+    return "approved"
+
+
 def tech_lead_analyse_node(state: GraphState) -> dict[str, Any]:
     """Tech lead analysis: formulate the task and produce high-level technical direction."""
 
@@ -947,17 +1089,10 @@ def tech_lead_analyse_node(state: GraphState) -> dict[str, Any]:
         state.get("research_source_summaries", []),
     )
 
-    project_guidance: tuple[str, ...] = ()
-    if settings.project_guidance_discovery_enabled:
-        project_guidance = discover_project_guidance(
-            state.get("bounded_request", "") or state["request"],
-            _soft_target_project_root(state, settings),
-        )
-        if project_guidance:
-            logger.info(
-                "[LEARN] Project guidance discovered: %d bounded note(s)",
-                len(project_guidance),
-            )
+    # Discovery and governance already ran in CHECK_PROJECT_GUIDANCE, once,
+    # before this node's first entry — reuse its result rather than
+    # re-running it on every later pass (research loop, approval revision).
+    project_guidance = list(state.get("project_guidance_notes", []))
 
     analysis = analyse_task(
         request=state.get("bounded_request", "") or state["request"],
@@ -966,7 +1101,7 @@ def tech_lead_analyse_node(state: GraphState) -> dict[str, Any]:
         research_evidence=research_evidence,
         settings=settings,
         code_recon_report=state.get("code_recon_report", ""),
-        project_guidance=list(project_guidance),
+        project_guidance=project_guidance,
     )
 
     logger.info(
@@ -1926,6 +2061,8 @@ def build_graph(
             state, progress_callback=coding_agent_progress_callback
         ),
     )
+    workflow.add_node(NodeName.CHECK_PROJECT_GUIDANCE, check_project_guidance_node)
+    workflow.add_node(NodeName.PROJECT_GUIDANCE_INTERRUPT, project_guidance_interrupt_node)
     workflow.add_node(NodeName.DISCOVER_RESEARCH_SOURCE, discover_research_source_node)
     workflow.add_node(NodeName.RESEARCH_INTERRUPT, research_interrupt_node)
     workflow.add_node(NodeName.COLLECT_RESEARCH_EVIDENCE, collect_research_evidence_node)
@@ -1988,10 +2125,26 @@ def build_graph(
         route_after_check_code_look_need,
         {
             "needed": NodeName.CODEX_READS_CODE,
-            "not needed": NodeName.TECH_LEAD_ANALYSE,
+            "not needed": NodeName.CHECK_PROJECT_GUIDANCE,
         },
     )
-    workflow.add_edge(NodeName.CODEX_READS_CODE, NodeName.TECH_LEAD_ANALYSE)
+    workflow.add_edge(NodeName.CODEX_READS_CODE, NodeName.CHECK_PROJECT_GUIDANCE)
+    workflow.add_conditional_edges(
+        NodeName.CHECK_PROJECT_GUIDANCE,
+        route_after_check_project_guidance,
+        {
+            "review needed": NodeName.PROJECT_GUIDANCE_INTERRUPT,
+            "no review needed": NodeName.TECH_LEAD_ANALYSE,
+        },
+    )
+    workflow.add_conditional_edges(
+        NodeName.PROJECT_GUIDANCE_INTERRUPT,
+        route_after_project_guidance_interrupt,
+        {
+            "approved": NodeName.TECH_LEAD_ANALYSE,
+            "rejected": NodeName.END_NODE,
+        },
+    )
     workflow.add_conditional_edges(
         NodeName.TECH_LEAD_ANALYSE,
         route_after_tech_lead_analyse,

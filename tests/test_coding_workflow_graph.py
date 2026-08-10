@@ -17,6 +17,7 @@ from ai_tech_lead.coding_workflow_graph import (
     build_graph,
     build_initial_graph_state,
     check_code_look_need_node,
+    check_project_guidance_node,
     check_research_node,
     codex_reads_code_node,
     collect_research_evidence_node,
@@ -29,7 +30,9 @@ from ai_tech_lead.coding_workflow_graph import (
     resolve_context_node,
     route_after_approval,
     route_after_check_code_look_need,
+    route_after_check_project_guidance,
     route_after_check_research,
+    route_after_project_guidance_interrupt,
     route_after_read_and_classify_request,
     route_after_research_interrupt,
     route_after_resolve_context,
@@ -42,6 +45,7 @@ from ai_tech_lead.coding_workflow_graph import (
 )
 from ai_tech_lead.completion_verifier import CompletionVerificationDecision
 from ai_tech_lead.plan_reviewer import PlanReviewDecision
+from ai_tech_lead.project_guidance_governance import GuidanceGovernanceDecision
 from ai_tech_lead.risk_reviewer import RiskReviewDecision
 from ai_tech_lead.target_project_context import (
     BacklogItemContext,
@@ -58,6 +62,22 @@ def _mock_verify_completion_complete(monkeypatch) -> None:
         "ai_tech_lead.coding_workflow_graph.verify_completion",
         lambda **_kwargs: CompletionVerificationDecision(
             status="complete", reason="Verified for test purposes.", correction=""
+        ),
+    )
+
+
+def _mock_project_guidance_sufficient(monkeypatch) -> None:
+    """Skip the real governance LLM call in tests that only exercise unrelated routing."""
+
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.review_project_guidance",
+        lambda *_args, **_kwargs: GuidanceGovernanceDecision(
+            status="sufficient",
+            requires_review=False,
+            summary="",
+            related_locations=[],
+            proposed_change="",
+            reason="",
         ),
     )
 
@@ -690,6 +710,7 @@ def test_graph_runs_to_disabled_coding_agent_result(monkeypatch) -> None:
         "ai_tech_lead.coding_workflow_graph.check_research_requirements",
         lambda _request, _settings, **_kwargs: _SimpleResearchResult(),
     )
+    _mock_project_guidance_sufficient(monkeypatch)
     app = build_graph(execute_coding_agent_override=False)
 
     result = app.invoke(graph_state())
@@ -756,6 +777,7 @@ def test_already_approved_subprocess_state_skips_approval_interrupt(monkeypatch)
         "ai_tech_lead.coding_workflow_graph.approval_interrupt_node",
         fail_if_approval_interrupt_called,
     )
+    _mock_project_guidance_sufficient(monkeypatch)
 
     app = build_graph(checkpointer_storage=MemorySaver(), execute_coding_agent_override=False)
     thread_config = {"configurable": {"thread_id": "test-already-approved-subprocess"}}
@@ -895,6 +917,7 @@ def test_rejected_graph_resumes_without_coding_agent_result_index_error(monkeypa
         "ai_tech_lead.coding_workflow_graph.check_research_requirements",
         lambda _request, _settings, **_kwargs: _SimpleResearchResult(),
     )
+    _mock_project_guidance_sufficient(monkeypatch)
 
     app = build_graph(checkpointer_storage=MemorySaver(), execute_coding_agent_override=False)
     thread_config = {"configurable": {"thread_id": "test-reject-path"}}
@@ -937,6 +960,7 @@ def test_rejected_research_interrupt_ends_graph(monkeypatch) -> None:
         "ai_tech_lead.coding_workflow_graph.check_research_requirements",
         fake_check_research_requirements,
     )
+    _mock_project_guidance_sufficient(monkeypatch)
     monkeypatch.setattr(
         "ai_tech_lead.coding_workflow_graph.review_task_risk",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
@@ -968,6 +992,7 @@ def test_context_clarification_interrupt_resumes_and_continues(monkeypatch) -> N
         "ai_tech_lead.coding_workflow_graph.check_research_requirements",
         lambda _request, _settings, **_kwargs: _research_result(has_gap=False),
     )
+    _mock_project_guidance_sufficient(monkeypatch)
     monkeypatch.setattr(
         "ai_tech_lead.coding_workflow_graph.review_task_risk",
         lambda _request: RiskReviewDecision(
@@ -1009,6 +1034,114 @@ def test_context_clarification_interrupt_resumes_and_continues(monkeypatch) -> N
     assert final_state.values["orchestrator_input_required"] is False
     assert final_state.values["context_clarification_retry_count"] == 1
     assert "Clarification for AF-052" in final_state.values["bounded_request"]
+
+
+def test_project_guidance_interrupt_approved_folds_proposal_into_notes(monkeypatch) -> None:
+    """A missing-and-required proposal, once approved, is used for this run only —
+    it's folded into the notes handed to Tech Lead Analysis, not written anywhere."""
+    settings = replace(parse_settings(valid_settings_dict()), orchestrator_ai_enabled=True)
+
+    monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.load_settings", lambda: settings)
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.check_research_requirements",
+        lambda _request, _settings, **_kwargs: _research_result(has_gap=False),
+    )
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.review_task_risk",
+        lambda _request: RiskReviewDecision(
+            needs_approval=True,
+            approval_reason="High-risk task needs explicit approval.",
+            risk_level="HIGH",
+        ),
+    )
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.review_project_guidance",
+        lambda *_args, **_kwargs: GuidanceGovernanceDecision(
+            status="missing",
+            requires_review=True,
+            summary="No rule covers database migrations.",
+            related_locations=[],
+            proposed_change="Add a bullet under AGENTS.md's Universal rules about migrations.",
+            reason="The task adds a schema migration and nothing discovered addresses this.",
+        ),
+    )
+    captured_analyse_kwargs: dict = {}
+
+    def fake_analyse_task(**kwargs):
+        captured_analyse_kwargs.update(kwargs)
+        return TechLeadAnalysis(task_statement="Add the migration.", tech_direction="")
+
+    monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.analyse_task", fake_analyse_task)
+
+    app = build_graph(checkpointer_storage=MemorySaver(), execute_coding_agent_override=False)
+    thread_config = {"configurable": {"thread_id": "test-guidance-approved"}}
+
+    app.invoke(graph_state(request="Add a database migration"), config=thread_config)
+    state_snapshot = app.get_state(thread_config)
+
+    assert state_snapshot.next == (NodeName.PROJECT_GUIDANCE_INTERRUPT,)
+    pending_interrupt = state_snapshot.tasks[0].interrupts[0].value
+    assert pending_interrupt["kind"] == "project_guidance_governance"
+    assert pending_interrupt["status"] == "missing"
+    assert "migration" in pending_interrupt["summary"]
+
+    app.invoke(Command(resume={"approved": True}), config=thread_config)
+
+    final_state = app.get_state(thread_config)
+    assert final_state.next == (NodeName.APPROVAL_INTERRUPT,)
+    assert final_state.values["project_guidance_rejected_summary"] == ""
+    assert any(
+        "Add a bullet under AGENTS.md" in note
+        for note in final_state.values["project_guidance_notes"]
+    )
+    assert any(
+        "Add a bullet under AGENTS.md" in note
+        for note in captured_analyse_kwargs.get("project_guidance", [])
+    )
+
+
+def test_project_guidance_interrupt_rejected_ends_run_clearly(monkeypatch) -> None:
+    """Rejecting a proposal that was flagged as required for safe work ends the
+    run clearly instead of silently proceeding on the admitted gap."""
+    settings = replace(parse_settings(valid_settings_dict()), orchestrator_ai_enabled=True)
+
+    monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.load_settings", lambda: settings)
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.check_research_requirements",
+        lambda _request, _settings, **_kwargs: _research_result(has_gap=False),
+    )
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.review_project_guidance",
+        lambda *_args, **_kwargs: GuidanceGovernanceDecision(
+            status="conflicting",
+            requires_review=True,
+            summary="AGENTS.md says use pytest; docs/INDEX.md says use unittest.",
+            related_locations=["AGENTS.md", "docs/INDEX.md"],
+            proposed_change="Reconcile the two testing-framework statements.",
+            reason="The task involves writing tests and the guidance disagrees.",
+        ),
+    )
+
+    def fail_if_analyse_task_called(**_kwargs):
+        raise AssertionError("Tech Lead Analysis must not run after a rejected proposal")
+
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.analyse_task", fail_if_analyse_task_called
+    )
+
+    app = build_graph(checkpointer_storage=MemorySaver(), execute_coding_agent_override=False)
+    thread_config = {"configurable": {"thread_id": "test-guidance-rejected"}}
+
+    app.invoke(graph_state(request="Write tests for the new module"), config=thread_config)
+    state_snapshot = app.get_state(thread_config)
+    assert state_snapshot.next == (NodeName.PROJECT_GUIDANCE_INTERRUPT,)
+
+    app.invoke(Command(resume={"approved": False}), config=thread_config)
+
+    final_state = app.get_state(thread_config)
+    assert final_state.next == ()
+    assert "conflicting" in final_state.values["project_guidance_rejected_summary"]
+    assert "pytest" in final_state.values["project_guidance_rejected_summary"]
 
 
 def test_context_clarification_fails_clearly_after_retry_limit() -> None:
@@ -1087,6 +1220,7 @@ def test_workflow_scenario_approval_interrupt_resumes_to_success(monkeypatch) ->
         "ai_tech_lead.coding_workflow_graph.check_research_requirements",
         lambda _request, _settings, **_kwargs: _research_result(has_gap=False),
     )
+    _mock_project_guidance_sufficient(monkeypatch)
     monkeypatch.setattr(
         "ai_tech_lead.coding_workflow_graph.review_task_risk",
         lambda _request: RiskReviewDecision(
@@ -1190,6 +1324,7 @@ def _patch_common_approval_loop_mocks(monkeypatch, settings, *, analyse_task_fn=
         "ai_tech_lead.coding_workflow_graph.check_research_requirements",
         lambda _request, _settings, **_kwargs: _research_result(has_gap=False),
     )
+    _mock_project_guidance_sufficient(monkeypatch)
     monkeypatch.setattr(
         "ai_tech_lead.coding_workflow_graph.review_task_risk",
         lambda _request: RiskReviewDecision(
@@ -1387,6 +1522,7 @@ def test_workflow_scenario_research_interrupt_resumes_to_success(monkeypatch) ->
     research_evidence_seen: list[list[str]] = []
 
     monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.load_settings", lambda: settings)
+    _mock_project_guidance_sufficient(monkeypatch)
     monkeypatch.setattr(
         "ai_tech_lead.coding_workflow_graph.check_research_requirements",
         lambda _request, _settings, **_kwargs: _research_result(
@@ -1516,6 +1652,7 @@ def test_workflow_scenario_plan_guidance_resume_feeds_next_plan_attempt(monkeypa
         "ai_tech_lead.coding_workflow_graph.check_research_requirements",
         lambda _request, _settings, **_kwargs: _research_result(has_gap=False),
     )
+    _mock_project_guidance_sufficient(monkeypatch)
     monkeypatch.setattr(
         "ai_tech_lead.coding_workflow_graph.review_task_risk",
         lambda _request: RiskReviewDecision(False, "Safe local docs/test work.", "LOW"),
@@ -1604,6 +1741,7 @@ def test_workflow_scenario_failure_guidance_resume_retries_to_success(monkeypatc
         "ai_tech_lead.coding_workflow_graph.check_research_requirements",
         lambda _request, _settings, **_kwargs: _research_result(has_gap=False),
     )
+    _mock_project_guidance_sufficient(monkeypatch)
     monkeypatch.setattr(
         "ai_tech_lead.coding_workflow_graph.review_task_risk",
         lambda _request: RiskReviewDecision(False, "Safe local tests-only work.", "LOW"),
@@ -1684,6 +1822,7 @@ def _patch_common_success_path_mocks(monkeypatch, settings) -> None:
         "ai_tech_lead.coding_workflow_graph.check_research_requirements",
         lambda _request, _settings, **_kwargs: _research_result(has_gap=False),
     )
+    _mock_project_guidance_sufficient(monkeypatch)
     monkeypatch.setattr(
         "ai_tech_lead.coding_workflow_graph.review_task_risk",
         lambda _request: RiskReviewDecision(False, "Safe local tests-only work.", "LOW"),
@@ -1930,16 +2069,27 @@ def test_tech_lead_analyse_runs_before_check_research() -> None:
     assert NodeName.REVIEW_RISK in targets_from_tech_lead_analyse
 
 
-def test_check_code_look_need_routes_to_codex_or_straight_to_analyse() -> None:
-    """Confirms the code-look step sits between context resolution and analysis."""
+def test_check_code_look_need_routes_to_codex_or_straight_to_guidance_check() -> None:
+    """Confirms the code-look step sits between context resolution and the
+    project-guidance check, which in turn sits before analysis."""
     app = build_graph()
     edges = [(e.source, e.target) for e in app.get_graph().edges]
     targets_from_check = [t for s, t in edges if s == NodeName.CHECK_CODE_LOOK_NEED]
     assert NodeName.CODEX_READS_CODE in targets_from_check
-    assert NodeName.TECH_LEAD_ANALYSE in targets_from_check
+    assert NodeName.CHECK_PROJECT_GUIDANCE in targets_from_check
 
     targets_from_codex_read = [t for s, t in edges if s == NodeName.CODEX_READS_CODE]
-    assert targets_from_codex_read == [NodeName.TECH_LEAD_ANALYSE]
+    assert targets_from_codex_read == [NodeName.CHECK_PROJECT_GUIDANCE]
+
+    targets_from_guidance_check = [t for s, t in edges if s == NodeName.CHECK_PROJECT_GUIDANCE]
+    assert NodeName.TECH_LEAD_ANALYSE in targets_from_guidance_check
+    assert NodeName.PROJECT_GUIDANCE_INTERRUPT in targets_from_guidance_check
+
+    targets_from_guidance_interrupt = [
+        t for s, t in edges if s == NodeName.PROJECT_GUIDANCE_INTERRUPT
+    ]
+    assert NodeName.TECH_LEAD_ANALYSE in targets_from_guidance_interrupt
+    assert NodeName.END_NODE in targets_from_guidance_interrupt
 
 
 def test_route_after_check_code_look_need() -> None:
@@ -1947,12 +2097,63 @@ def test_route_after_check_code_look_need() -> None:
     assert route_after_check_code_look_need(graph_state(code_look_needed=False)) == "not needed"
 
 
+def test_route_after_check_project_guidance() -> None:
+    assert (
+        route_after_check_project_guidance(graph_state(project_guidance_requires_review=True))
+        == "review needed"
+    )
+    assert (
+        route_after_check_project_guidance(graph_state(project_guidance_requires_review=False))
+        == "no review needed"
+    )
+
+
+def test_route_after_project_guidance_interrupt() -> None:
+    assert (
+        route_after_project_guidance_interrupt(graph_state(project_guidance_rejected_summary=""))
+        == "approved"
+    )
+    assert (
+        route_after_project_guidance_interrupt(
+            graph_state(project_guidance_rejected_summary="rejected: no good reason given")
+        )
+        == "rejected"
+    )
+
+
+def test_missing_guidance_not_required_continues_without_blocking(monkeypatch) -> None:
+    """A missing-but-not-required verdict must not route to the interrupt at all —
+    the caller never even sees a question."""
+    settings = replace(parse_settings(valid_settings_dict()), project_guidance_discovery_enabled=True)
+    monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.load_settings", lambda: settings)
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.review_project_guidance",
+        lambda *_args, **_kwargs: GuidanceGovernanceDecision(
+            status="missing",
+            requires_review=False,
+            summary="No dedicated rule, but this trivial task doesn't need one.",
+            related_locations=[],
+            proposed_change="",
+            reason="A one-line typo fix does not depend on any project-specific rule.",
+        ),
+    )
+
+    state = graph_state(request="Fix a typo in a comment")
+    result = check_project_guidance_node(state)
+    state.update(result)
+
+    assert result["project_guidance_status"] == "missing"
+    assert route_after_check_project_guidance(state) == "no review needed"
+
+
 # ---------------------------------------------------------------------------
 # Bounded project-guidance discovery, threaded into Tech Lead Analysis.
 # ---------------------------------------------------------------------------
 
 
-def test_tech_lead_analyse_node_passes_discovered_project_guidance(tmp_path, monkeypatch) -> None:
+def test_check_project_guidance_node_discovers_and_passes_through_notes(
+    tmp_path, monkeypatch
+) -> None:
     (tmp_path / "AGENTS.md").write_text(
         "# AGENTS.md\n\nRoute everything through docs/INDEX.md.", encoding="utf-8"
     )
@@ -1961,30 +2162,129 @@ def test_tech_lead_analyse_node_passes_discovered_project_guidance(tmp_path, mon
         project_guidance_discovery_enabled=True,
     )
     monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.load_settings", lambda: settings)
-    captured: dict = {}
-
-    def fake_analyse_task(**kwargs):
-        captured.update(kwargs)
-        return TechLeadAnalysis(task_statement="Build it", tech_direction="")
-
-    monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.analyse_task", fake_analyse_task)
+    _mock_project_guidance_sufficient(monkeypatch)
 
     state = graph_state(
         request="Build the feature",
         target_project_context=TargetProjectContext(project_root=str(tmp_path)).to_payload(),
     )
-    tech_lead_analyse_node(state)
+    result = check_project_guidance_node(state)
 
-    assert any("AGENTS.md" in note for note in captured["project_guidance"])
+    assert any("AGENTS.md" in note for note in result["project_guidance_notes"])
+    assert result["project_guidance_requires_review"] is False
 
 
-def test_tech_lead_analyse_node_skips_discovery_when_disabled(tmp_path, monkeypatch) -> None:
+def test_check_project_guidance_node_skips_discovery_when_disabled(tmp_path, monkeypatch) -> None:
     (tmp_path / "AGENTS.md").write_text("# AGENTS.md\n\nSome guidance.", encoding="utf-8")
     settings = replace(
         parse_settings(valid_settings_dict()),
         project_guidance_discovery_enabled=False,
     )
     monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.load_settings", lambda: settings)
+
+    def fail_if_called(*_args, **_kwargs):
+        raise AssertionError("governance review should not run when discovery is disabled")
+
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.review_project_guidance", fail_if_called
+    )
+
+    state = graph_state(
+        request="Build the feature",
+        target_project_context=TargetProjectContext(project_root=str(tmp_path)).to_payload(),
+    )
+    result = check_project_guidance_node(state)
+
+    assert result["project_guidance_notes"] == []
+    assert result["project_guidance_requires_review"] is False
+
+
+def test_check_project_guidance_node_degrades_gracefully_with_no_project_pack(
+    tmp_path, monkeypatch
+) -> None:
+    """No AGENTS.md/.skills/docs anywhere resolvable: discovery yields nothing —
+    not a failure — and the governance check can still decide "sufficient"."""
+    settings = replace(
+        parse_settings(valid_settings_dict()),
+        project_root=str(tmp_path),
+        project_guidance_discovery_enabled=True,
+    )
+    monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.load_settings", lambda: settings)
+    _mock_project_guidance_sufficient(monkeypatch)
+
+    state = graph_state(request="Build the feature", target_project_context=None)
+    result = check_project_guidance_node(state)
+
+    assert result["project_guidance_notes"] == []
+    assert result["project_guidance_requires_review"] is False
+
+
+def test_cross_project_guidance_discovery_is_isolated(tmp_path, monkeypatch) -> None:
+    """Two different target projects, checked back-to-back in the same process,
+    must never leak each other's guidance content — into discovery's notes or
+    into what governance is asked to review."""
+    project_a = tmp_path / "project-a"
+    project_a.mkdir()
+    (project_a / "AGENTS.md").write_text(
+        "# AGENTS.md\n\nProject Alpha rule: always run `make check-alpha`.", encoding="utf-8"
+    )
+
+    project_b = tmp_path / "project-b"
+    project_b.mkdir()
+    (project_b / "AGENTS.md").write_text(
+        "# AGENTS.md\n\nProject Beta rule: always run `make check-beta`.", encoding="utf-8"
+    )
+
+    settings = replace(
+        parse_settings(valid_settings_dict()), project_guidance_discovery_enabled=True
+    )
+    monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.load_settings", lambda: settings)
+
+    governance_calls: list[list[str]] = []
+
+    def fake_review(_request, notes, _settings):
+        governance_calls.append(list(notes))
+        return GuidanceGovernanceDecision(
+            status="sufficient",
+            requires_review=False,
+            summary="",
+            related_locations=[],
+            proposed_change="",
+            reason="",
+        )
+
+    monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.review_project_guidance", fake_review)
+
+    state_a = graph_state(
+        request="Work on project alpha",
+        target_project_context=TargetProjectContext(project_root=str(project_a)).to_payload(),
+    )
+    result_a = check_project_guidance_node(state_a)
+
+    state_b = graph_state(
+        request="Work on project beta",
+        target_project_context=TargetProjectContext(project_root=str(project_b)).to_payload(),
+    )
+    result_b = check_project_guidance_node(state_b)
+
+    assert any("check-alpha" in note for note in result_a["project_guidance_notes"])
+    assert not any("check-beta" in note for note in result_a["project_guidance_notes"])
+
+    assert any("check-beta" in note for note in result_b["project_guidance_notes"])
+    assert not any("check-alpha" in note for note in result_b["project_guidance_notes"])
+
+    assert len(governance_calls) == 2
+    assert any("check-alpha" in note for note in governance_calls[0])
+    assert not any("check-beta" in note for note in governance_calls[0])
+    assert any("check-beta" in note for note in governance_calls[1])
+    assert not any("check-alpha" in note for note in governance_calls[1])
+
+
+def test_tech_lead_analyse_node_passes_through_project_guidance_notes(monkeypatch) -> None:
+    """tech_lead_analyse_node no longer runs discovery itself — it just forwards
+    whatever CHECK_PROJECT_GUIDANCE already put into state."""
+    settings = parse_settings(valid_settings_dict())
+    monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.load_settings", lambda: settings)
     captured: dict = {}
 
     def fake_analyse_task(**kwargs):
@@ -1995,37 +2295,11 @@ def test_tech_lead_analyse_node_skips_discovery_when_disabled(tmp_path, monkeypa
 
     state = graph_state(
         request="Build the feature",
-        target_project_context=TargetProjectContext(project_root=str(tmp_path)).to_payload(),
+        project_guidance_notes=["AGENTS.md: pre-discovered note."],
     )
     tech_lead_analyse_node(state)
 
-    assert captured["project_guidance"] == []
-
-
-def test_tech_lead_analyse_node_degrades_gracefully_with_no_project_pack(
-    tmp_path, monkeypatch
-) -> None:
-    """No AGENTS.md/.skills/docs anywhere resolvable: analysis still runs cleanly
-    on AI Tech Lead's own core guidance, not a failure."""
-    settings = replace(
-        parse_settings(valid_settings_dict()),
-        project_root=str(tmp_path),
-        project_guidance_discovery_enabled=True,
-    )
-    monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.load_settings", lambda: settings)
-    captured: dict = {}
-
-    def fake_analyse_task(**kwargs):
-        captured.update(kwargs)
-        return TechLeadAnalysis(task_statement="Build it", tech_direction="")
-
-    monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.analyse_task", fake_analyse_task)
-
-    state = graph_state(request="Build the feature", target_project_context=None)
-    result = tech_lead_analyse_node(state)
-
-    assert captured["project_guidance"] == []
-    assert result["formulated_task"] == "Build it"
+    assert captured["project_guidance"] == ["AGENTS.md: pre-discovered note."]
 
 
 def test_review_risk_connects_to_approval_routing_not_tech_lead_analyse() -> None:
