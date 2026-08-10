@@ -15,6 +15,7 @@ import logging
 from langchain_core.runnables import RunnableConfig
 
 from .backlog_loader import backlog_item_to_graph_state, load_backlog_item_by_id
+from .backlog_sheets_repository import BacklogSourceUnavailableError
 from .checkpointer_store import get_checkpointer
 from .coding_workflow_graph import build_graph
 from .logging_setup import LOGGER_NAME
@@ -28,17 +29,17 @@ def run_backlog_graph(
 ) -> None:
     """Run one explicit backlog task through the local graph."""
 
+    try:
+        backlog_item = load_backlog_item_by_id(task_id)
+    except (ValueError, BacklogSourceUnavailableError) as error:
+        logger.error("%s", error)
+        return
+    backlog_input = backlog_item_to_graph_state(backlog_item)
+
     app = build_graph(
         checkpointer_storage=get_checkpointer(),
         execute_coding_agent_override=execute_coding_agent_override,
     )
-
-    try:
-        backlog_item = load_backlog_item_by_id(task_id)
-    except ValueError as error:
-        logger.error("%s", error)
-        return
-    backlog_input = backlog_item_to_graph_state(backlog_item)
 
     logger.info("Selected backlog item: %s - %s", backlog_item.item_id, backlog_item.title)
 

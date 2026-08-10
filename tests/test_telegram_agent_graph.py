@@ -4,10 +4,13 @@ import logging
 from pathlib import Path
 
 from helpers import valid_settings_dict
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, ToolMessage
+from langgraph.checkpoint.memory import MemorySaver
 
+from ai_tech_lead import telegram_agent_graph
 from ai_tech_lead.app_settings import parse_settings
 from ai_tech_lead.backlog_repository import MarkdownBacklogRepository
+from ai_tech_lead.backlog_sheets_repository import BacklogSourceUnavailableError
 from ai_tech_lead.telegram_agent_graph import (
     TelegramAgentReply,
     _build_backlog_tools,
@@ -319,6 +322,131 @@ def test_read_backlog_item_tool_returns_selected_item_details(
     assert result.startswith("ATL-001 - Active item")
     assert "Status: In Progress" in result
     assert "Do the thing." in result
+
+
+def test_read_backlog_item_tool_returns_controlled_not_found_result(
+    tmp_path: Path, monkeypatch, caplog
+) -> None:
+    backlog_path = tmp_path / "BACKLOG.md"
+    backlog_path.write_text(
+        "# Backlog\n\n## ATL-001 - Active item\n\nGoal:\nDo the thing.\n",
+        encoding="utf-8",
+    )
+    raw_settings = valid_settings_dict()
+    raw_settings["backlog_path"] = str(backlog_path)
+    settings = parse_settings(raw_settings)
+    _patch_markdown_backlog(monkeypatch, backlog_path)
+    tools = _build_backlog_tools(settings)
+    read_tool = next(tool for tool in tools if tool.name == "read_backlog_item")
+
+    caplog.set_level(logging.WARNING)
+    result = read_tool.invoke({"item_id": "ATL-999"})
+
+    assert "ATL-999" in result
+    assert "was not found" in result
+    assert "Telegram backlog read failed" in caplog.text
+
+
+def test_read_backlog_item_tool_returns_controlled_source_unavailable_result(
+    monkeypatch, caplog
+) -> None:
+    class _UnavailableRepository:
+        def get_item(self, item_id: str):
+            raise BacklogSourceUnavailableError(f"backlog unavailable for {item_id}")
+
+    settings = parse_settings(valid_settings_dict())
+    monkeypatch.setattr(
+        "ai_tech_lead.telegram_agent_graph.repository_from_settings",
+        lambda _settings: _UnavailableRepository(),
+    )
+    tools = _build_backlog_tools(settings)
+    read_tool = next(tool for tool in tools if tool.name == "read_backlog_item")
+
+    caplog.set_level(logging.WARNING)
+    result = read_tool.invoke({"item_id": "ATL-001"})
+
+    assert "ATL-001" in result
+    assert "backlog unavailable" in result
+    assert "Telegram backlog read failed" in caplog.text
+
+
+def test_count_and_list_backlog_tools_return_controlled_source_errors(monkeypatch, caplog) -> None:
+    class _UnavailableRepository:
+        def list_open_items(self):
+            raise BacklogSourceUnavailableError("backlog unavailable")
+
+        def list_open_items_sorted(self):
+            raise BacklogSourceUnavailableError("backlog unavailable")
+
+    settings = parse_settings(valid_settings_dict())
+    monkeypatch.setattr(
+        "ai_tech_lead.telegram_agent_graph.repository_from_settings",
+        lambda _settings: _UnavailableRepository(),
+    )
+    tools = _build_backlog_tools(settings)
+    count_tool = next(tool for tool in tools if tool.name == "count_backlog_items")
+    list_tool = next(tool for tool in tools if tool.name == "list_backlog_items")
+
+    caplog.set_level(logging.WARNING)
+    count_result = count_tool.invoke({})
+    list_result = list_tool.invoke({})
+
+    assert "Could not count backlog items" in count_result
+    assert "Could not list backlog items" in list_result
+    assert caplog.text.count("Telegram backlog tool failed") == 2
+
+
+def test_telegram_agent_graph_survives_unexpected_tool_error(monkeypatch, caplog) -> None:
+    class _BrokenRepository:
+        def list_open_items(self):
+            raise RuntimeError("simulated programming failure")
+
+    class _FakeToolCallingLLM:
+        def bind_tools(self, tools):
+            return self
+
+        def invoke(self, messages):
+            if isinstance(messages[-1], ToolMessage):
+                assert messages[-1].status == "error"
+                assert "failed unexpectedly" in messages[-1].content
+                return AIMessage(
+                    content="The backlog tool failed, but the conversation is still available."
+                )
+            return AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "count_backlog_items",
+                        "args": {},
+                        "id": "call-count-backlog",
+                        "type": "tool_call",
+                    }
+                ],
+            )
+
+    settings = parse_settings(valid_settings_dict())
+    monkeypatch.setattr(
+        "ai_tech_lead.telegram_agent_graph.repository_from_settings",
+        lambda _settings: _BrokenRepository(),
+    )
+    monkeypatch.setattr(telegram_agent_graph, "ChatOpenAI", lambda **_kwargs: _FakeToolCallingLLM())
+    caplog.set_level(logging.ERROR)
+
+    app = telegram_agent_graph.build_telegram_agent_graph(
+        settings=settings,
+        checkpointer=MemorySaver(),
+    )
+    reply = run_telegram_agent_message(app=app, thread_id="thread-tool-error", text="count items")
+
+    assert "conversation is still available" in reply.text
+    assert "Unexpected Telegram tool exception" in caplog.text
+    assert "count_backlog_items" in caplog.text
+    assert "simulated programming failure" in caplog.text
+    assert any(
+        record.exc_info
+        for record in caplog.records
+        if "Unexpected Telegram tool exception" in record.message
+    )
 
 
 def test_set_backlog_item_status_tool_updates_repository(tmp_path: Path, monkeypatch) -> None:

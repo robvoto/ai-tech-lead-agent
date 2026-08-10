@@ -7,6 +7,7 @@ stands in for the real one, injected via the module's client cache.
 from __future__ import annotations
 
 import pytest
+from requests.exceptions import ConnectionError as RequestsConnectionError
 
 import ai_tech_lead.backlog_sheets_repository as sheets_mod
 from ai_tech_lead.backlog_reference import BacklogReference
@@ -92,6 +93,28 @@ class FakeWorksheet:
 class RaisingWorksheet:
     def get_all_values(self):
         raise RuntimeError("simulated Sheets API outage")
+
+
+class FlakyWorksheet(FakeWorksheet):
+    def __init__(self, values, failures=1):
+        super().__init__(values)
+        self.failures = failures
+        self.read_calls = 0
+
+    def get_all_values(self):
+        self.read_calls += 1
+        if self.read_calls <= self.failures:
+            raise RequestsConnectionError("simulated transient Sheets outage")
+        return super().get_all_values()
+
+
+class PermissionDeniedWorksheet:
+    def __init__(self):
+        self.read_calls = 0
+
+    def get_all_values(self):
+        self.read_calls += 1
+        raise PermissionError("simulated permission denied")
 
 
 class FakeSpreadsheet:
@@ -198,6 +221,41 @@ def test_access_failure_raises_source_unavailable_with_no_fallback(monkeypatch):
 
     with pytest.raises(BacklogSourceUnavailableError, match="simulated Sheets API outage"):
         repo.get_item("ATL-001")
+
+
+def test_transient_read_failure_retries_once_then_succeeds(monkeypatch, caplog):
+    worksheet = FlakyWorksheet([HEADER, _row("ATL-001", "First item")])
+    repo = _repository(monkeypatch, worksheet)
+    monkeypatch.setattr(sheets_mod.time, "sleep", lambda _seconds: None)
+
+    record = repo.get_item_with_source("ATL-001")
+
+    assert record.item.item_id == "ATL-001"
+    assert worksheet.read_calls == 2
+    assert "retrying" in caplog.text
+
+
+def test_repeated_transient_read_failure_stops_after_bounded_retry(monkeypatch, caplog):
+    worksheet = FlakyWorksheet([HEADER, _row("ATL-001", "First item")], failures=5)
+    repo = _repository(monkeypatch, worksheet)
+    monkeypatch.setattr(sheets_mod.time, "sleep", lambda _seconds: None)
+
+    with pytest.raises(BacklogSourceUnavailableError, match="simulated transient Sheets outage"):
+        repo.get_item_with_source("ATL-001")
+
+    assert worksheet.read_calls == 2
+    assert "Google Sheets backlog read failed" in caplog.text
+
+
+def test_permanent_read_failure_does_not_retry(monkeypatch, caplog):
+    worksheet = PermissionDeniedWorksheet()
+    repo = _repository(monkeypatch, worksheet)
+
+    with pytest.raises(BacklogSourceUnavailableError, match="permission denied"):
+        repo.get_item_with_source("ATL-001")
+
+    assert worksheet.read_calls == 1
+    assert "attempt=1/2" in caplog.text
 
 
 def test_unreachable_spreadsheet_raises_source_unavailable(monkeypatch):

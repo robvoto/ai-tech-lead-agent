@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -25,7 +26,7 @@ from langgraph.graph import START, MessagesState, StateGraph
 from langgraph.prebuilt import ToolNode, tools_condition
 
 from ai_tech_lead.app_settings import AppSettings
-from ai_tech_lead.backlog_repository import format_backlog_list_item
+from ai_tech_lead.backlog_repository import BacklogValidationError, format_backlog_list_item
 from ai_tech_lead.backlog_sheets_repository import (
     BacklogSourceUnavailableError,
     repository_from_settings,
@@ -35,10 +36,19 @@ from ai_tech_lead.env_loader import load_local_env
 from ai_tech_lead.prompt_loader import TELEGRAM_AGENT_SYSTEM_PROMPT_KEY, load_prompt
 
 logger = logging.getLogger(__name__)
+_EXPECTED_BACKLOG_TOOL_ERRORS = (
+    ValueError,
+    FileNotFoundError,
+    BacklogValidationError,
+    BacklogSourceUnavailableError,
+)
 
 _LLM_PRICING_PATH = PROJECT_ROOT / "config" / "llm_pricing.json"
 # Cached after first load — pricing file is read once per process.
 _pricing_cache: dict[str, tuple[float, float]] | None = None
+_active_telegram_tool_context: ContextVar[tuple[str, str] | None] = ContextVar(
+    "active_telegram_tool_context", default=None
+)
 
 
 @dataclass(frozen=True)
@@ -123,7 +133,14 @@ def build_telegram_agent_graph(*, settings: AppSettings, checkpointer: Any):
 
     builder = StateGraph(MessagesState)
     builder.add_node("assistant", assistant)
-    builder.add_node("tools", ToolNode(tools))
+    builder.add_node(
+        "tools",
+        ToolNode(
+            tools,
+            handle_tool_errors=_handle_unexpected_telegram_tool_error,
+            wrap_tool_call=_log_unexpected_telegram_tool_call,
+        ),
+    )
     builder.add_edge(START, "assistant")
     builder.add_conditional_edges("assistant", tools_condition)
     builder.add_edge("tools", "assistant")
@@ -192,7 +209,11 @@ def _build_backlog_tools(settings: AppSettings):
         """Return the number of backlog items."""
 
         logger.info("[LEARN] Backlog tool is counting backlog items.")
-        items = repository.list_open_items()
+        try:
+            items = repository.list_open_items()
+        except _EXPECTED_BACKLOG_TOOL_ERRORS as error:
+            logger.warning("Telegram backlog tool failed tool=count_backlog_items: %s", error)
+            return f"Could not count backlog items: {error}"
         if not items:
             return "No open backlog items."
         item_word = "item" if len(items) == 1 else "items"
@@ -204,7 +225,11 @@ def _build_backlog_tools(settings: AppSettings):
 
         logger.info("[LEARN] Backlog tool is listing backlog items.")
         safe_limit = min(max(limit, 1), 20)
-        items = repository.list_open_items_sorted()[:safe_limit]
+        try:
+            items = repository.list_open_items_sorted()[:safe_limit]
+        except _EXPECTED_BACKLOG_TOOL_ERRORS as error:
+            logger.warning("Telegram backlog tool failed tool=list_backlog_items: %s", error)
+            return f"Could not list backlog items: {error}"
         if not items:
             return "No open backlog items."
         lines = [format_backlog_list_item(item) for item in items]
@@ -215,7 +240,15 @@ def _build_backlog_tools(settings: AppSettings):
         """Read one backlog item by ID, such as ATL-001."""
 
         logger.info("[LEARN] Backlog tool is reading one backlog item.")
-        item = repository.get_item(item_id)
+        try:
+            item = repository.get_item(item_id)
+        except _EXPECTED_BACKLOG_TOOL_ERRORS as error:
+            logger.warning(
+                "Telegram backlog read failed tool=read_backlog_item item_id=%s: %s",
+                item_id,
+                error,
+            )
+            return f"Could not read backlog item '{item_id}': {error}"
         body = _truncate_text(_backlog_body_without_status(item.body), 1600)
         lines = [f"{item.item_id} - {item.title}", f"Status: {item.status.value}"]
         if body:
@@ -275,6 +308,35 @@ def _build_backlog_tools(settings: AppSettings):
         set_backlog_item_status,
         read_project_file,
     ]
+
+
+def _log_unexpected_telegram_tool_call(request: Any, execute: Any) -> Any:
+    """Keep tool context available while ToolNode handles an execution failure."""
+
+    tool_call = request.tool_call
+    context_token = _active_telegram_tool_context.set(
+        (
+            str(tool_call.get("name", "unknown")),
+            str(tool_call.get("id", "unknown")),
+        )
+    )
+    try:
+        return execute(request)
+    finally:
+        _active_telegram_tool_context.reset(context_token)
+
+
+def _handle_unexpected_telegram_tool_error(_error: Exception) -> str:
+    """Keep an unexpected tool failure inside the Telegram conversation."""
+
+    tool_name, tool_call_id = _active_telegram_tool_context.get() or ("unknown", "unknown")
+    logger.exception(
+        "Unexpected Telegram tool exception tool=%s tool_call_id=%s",
+        tool_name,
+        tool_call_id,
+    )
+    # Convert the failure into a ToolMessage so the assistant can give a normal reply.
+    return "The requested tool failed unexpectedly. Please try again or check the logs."
 
 
 def _backlog_body_without_status(body: str) -> str:

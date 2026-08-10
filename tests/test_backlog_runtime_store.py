@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 from test_backlog_sheets_repository import (
     CREDENTIALS_PATH,
     HEADER,
@@ -22,6 +24,11 @@ from ai_tech_lead.backlog_runtime_store import (
     recover_pending_backlog_updates,
 )
 from ai_tech_lead.backlog_sheets_repository import SheetsBacklogRepository
+
+
+class FailingUpdateWorksheet(FakeWorksheet):
+    def update_cell(self, row, col, value):
+        raise RuntimeError("simulated Sheets write outage")
 
 
 def _sheets_repository(monkeypatch, worksheet, *, spreadsheet_id=SPREADSHEET_ID):
@@ -124,6 +131,31 @@ def test_enqueue_and_flush_leaves_pending_on_transient_failure(monkeypatch):
     assert len(pending) == 1
     assert pending[0].attempt_count == 1
     assert pending[0].last_error
+
+
+def test_post_work_update_failure_remains_pending_for_recovery(monkeypatch, caplog):
+    worksheet = FailingUpdateWorksheet([HEADER, _row("ATL-001", "First item")])
+    repo = _sheets_repository(monkeypatch, worksheet)
+    store = BacklogRuntimeStore()
+    record = repo.get_item_with_source("ATL-001")
+    caplog.set_level(logging.WARNING)
+
+    status = enqueue_and_flush_update(
+        runtime_store=store,
+        sheets_repository=repo,
+        request_id="req-post-work-failure",
+        item_id="ATL-001",
+        update_fields={"Status": "Done"},
+        expected_row_hash=record.row_hash,
+        max_attempts=3,
+    )
+
+    assert status == "pending"
+    pending = store.list_pending_updates(status="pending")
+    assert len(pending) == 1
+    assert pending[0].attempt_count == 1
+    assert "simulated Sheets write outage" in pending[0].last_error
+    assert "Pending backlog update flush failed" in caplog.text
 
 
 def test_recover_pending_updates_is_bounded_and_abandons_after_max_attempts(monkeypatch):

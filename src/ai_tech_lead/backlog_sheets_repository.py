@@ -14,10 +14,15 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
+import socket
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
 import gspread
+from gspread.exceptions import APIError
+from requests.exceptions import ConnectionError as RequestsConnectionError
+from requests.exceptions import Timeout as RequestsTimeout
 
 from .backlog_reference import BacklogReference, local_backlog_reference
 from .backlog_repository import (
@@ -97,10 +102,16 @@ class BacklogSheetLayout:
 DEFAULT_SHEETS_LAYOUT = BacklogSheetLayout()
 
 _client_cache: dict[str, gspread.Client] = {}
+_SHEETS_READ_MAX_ATTEMPTS = 2
+_SHEETS_READ_RETRY_DELAY_SECONDS = 0.05
 
 
 class BacklogSourceUnavailableError(RuntimeError):
     """Raised when the Google Sheet cannot be reached, opened, or read."""
+
+    def __init__(self, message: str, *, retryable: bool = False) -> None:
+        super().__init__(message)
+        self.retryable = retryable
 
 
 @dataclass(frozen=True)
@@ -120,6 +131,23 @@ def compute_row_hash(row_values: list[str]) -> str:
     return hashlib.sha256("\x1f".join(row_values).encode("utf-8")).hexdigest()
 
 
+def _is_transient_sheet_exception(error: Exception) -> bool:
+    """Return whether a Sheets failure is safe for one bounded read retry."""
+
+    if isinstance(error, (FileNotFoundError, PermissionError, ValueError, KeyError)):
+        return False
+    if isinstance(error, (RequestsConnectionError, RequestsTimeout, TimeoutError, socket.timeout)):
+        return True
+    if isinstance(error, APIError):
+        status_code = getattr(getattr(error, "response", None), "status_code", None)
+        try:
+            status_code = int(status_code)
+        except (TypeError, ValueError):
+            return False
+        return status_code in {408, 429} or 500 <= status_code <= 599
+    return False
+
+
 def _get_client(credentials_path: str) -> gspread.Client:
     client = _client_cache.get(credentials_path)
     if client is not None:
@@ -129,7 +157,8 @@ def _get_client(credentials_path: str) -> gspread.Client:
     except Exception as exc:
         raise BacklogSourceUnavailableError(
             f"Could not authenticate to Google Sheets using credentials at "
-            f"'{credentials_path}': {exc}"
+            f"'{credentials_path}': {exc}",
+            retryable=_is_transient_sheet_exception(exc),
         ) from exc
     _client_cache[credentials_path] = client
     return client
@@ -163,26 +192,54 @@ class SheetsBacklogRepository:
         except Exception as exc:
             raise BacklogSourceUnavailableError(
                 f"Could not open spreadsheet '{self._reference.spreadsheet_id}' "
-                f"sheet '{self._reference.sheet_name}': {exc}"
+                f"sheet '{self._reference.sheet_name}': {exc}",
+                retryable=_is_transient_sheet_exception(exc),
             ) from exc
 
     def _all_rows(self) -> tuple[list[str], list[list[str]]]:
-        worksheet = self._worksheet()
-        try:
-            values = worksheet.get_all_values()
-        except BacklogSourceUnavailableError:
-            raise
-        except Exception as exc:
-            raise BacklogSourceUnavailableError(
-                f"Could not read rows from spreadsheet '{self._reference.spreadsheet_id}' "
-                f"sheet '{self._reference.sheet_name}': {exc}"
-            ) from exc
-        if not values:
-            raise BacklogSourceUnavailableError(
-                f"Sheet '{self._reference.sheet_name}' in spreadsheet "
-                f"'{self._reference.spreadsheet_id}' is empty (no header row)."
-            )
-        return values[0], values[1:]
+        for attempt in range(1, _SHEETS_READ_MAX_ATTEMPTS + 1):
+            try:
+                worksheet = self._worksheet()
+                try:
+                    values = worksheet.get_all_values()
+                except BacklogSourceUnavailableError:
+                    raise
+                except Exception as exc:
+                    raise BacklogSourceUnavailableError(
+                        f"Could not read rows from spreadsheet '{self._reference.spreadsheet_id}' "
+                        f"sheet '{self._reference.sheet_name}': {exc}",
+                        retryable=_is_transient_sheet_exception(exc),
+                    ) from exc
+                if not values:
+                    raise BacklogSourceUnavailableError(
+                        f"Sheet '{self._reference.sheet_name}' in spreadsheet "
+                        f"'{self._reference.spreadsheet_id}' is empty (no header row)."
+                    )
+                return values[0], values[1:]
+            except BacklogSourceUnavailableError as exc:
+                if not exc.retryable or attempt >= _SHEETS_READ_MAX_ATTEMPTS:
+                    logger.error(
+                        "Google Sheets backlog read failed spreadsheet=%s sheet=%s "
+                        "attempt=%s/%s: %s",
+                        self._reference.spreadsheet_id,
+                        self._reference.sheet_name,
+                        attempt,
+                        _SHEETS_READ_MAX_ATTEMPTS,
+                        exc,
+                    )
+                    raise
+                logger.warning(
+                    "Transient Google Sheets backlog read failure spreadsheet=%s sheet=%s "
+                    "attempt=%s/%s; retrying: %s",
+                    self._reference.spreadsheet_id,
+                    self._reference.sheet_name,
+                    attempt,
+                    _SHEETS_READ_MAX_ATTEMPTS,
+                    exc,
+                )
+                time.sleep(_SHEETS_READ_RETRY_DELAY_SECONDS)
+
+        raise AssertionError("unreachable bounded Google Sheets read retry loop")
 
     def _header_index(self, header: list[str]) -> dict[str, int]:
         return {name.strip(): idx for idx, name in enumerate(header) if name.strip()}
