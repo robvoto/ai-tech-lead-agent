@@ -2,7 +2,35 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ai_tech_lead.project_guidance_discovery import discover_project_guidance
+from ai_tech_lead.project_guidance_discovery import (
+    _SKILL_INDEX_ENTRY_PATTERN,
+    discover_project_guidance,
+)
+
+
+def test_skill_index_entry_pattern_accepts_both_real_bullet_shapes() -> None:
+    backtick = _SKILL_INDEX_ENTRY_PATTERN.match(
+        "- `code-change/SKILL.md` - code, runtime, test, or integration changes."
+    )
+    colon = _SKILL_INDEX_ENTRY_PATTERN.match(
+        "- code-change/SKILL.md: code, tests, validation, or runtime changes."
+    )
+    assert backtick is not None
+    assert colon is not None
+    assert (backtick.group("backtick_path"), backtick.group("colon_path")) == (
+        "code-change/SKILL.md",
+        None,
+    )
+    assert (colon.group("colon_path"), colon.group("backtick_path")) == (
+        "code-change/SKILL.md",
+        None,
+    )
+
+
+def test_skill_index_entry_pattern_rejects_headings_and_prose() -> None:
+    assert _SKILL_INDEX_ENTRY_PATTERN.match("## Skills") is None
+    assert _SKILL_INDEX_ENTRY_PATTERN.match("Platform skills, pick one:") is None
+    assert _SKILL_INDEX_ENTRY_PATTERN.match("") is None
 
 
 def test_no_project_pack_returns_empty(tmp_path: Path) -> None:
@@ -109,3 +137,144 @@ def test_content_is_bounded_even_for_a_very_long_file(tmp_path: Path) -> None:
 
     assert len(notes) == 1
     assert len(notes[0]) < 1_000
+
+
+# ---------------------------------------------------------------------------
+# Real-project-shape regression fixtures.
+#
+# These mirror three real repos this discovery mechanism was proven against
+# during ATL-077's cross-project proof (Job Hunter, Agent Factory, and a
+# genuinely instruction-light real repo) — not the real repos themselves,
+# since a test referencing an absolute path on one machine isn't portable to
+# CI or another developer's checkout. The shapes (not the project names or
+# content) are what matter and are reproduced here:
+#   - AGENTS.md + docs/INDEX.md, no .skills/INDEX.md at all.
+#   - AGENTS.md + docs/INDEX.md + .skills/INDEX.md using a plain
+#     "- path.md: summary" bullet shape (no backticks) — discovered live
+#     against Agent Factory's real `.skills/INDEX.md`, which the original
+#     backtick-only parser could not read at all.
+#   - No project pack whatsoever.
+# ---------------------------------------------------------------------------
+
+
+def _write_project_context_only_fixture(root: Path) -> None:
+    """Shape: AGENTS.md + docs/INDEX.md, no skills index (e.g. Job Hunter)."""
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "AGENTS.md").write_text(
+        "# Agent Instructions\n\nAlways-loaded agent loader. Keep this file small.\n"
+        "Load the relevant skill from `.skills/`.",
+        encoding="utf-8",
+    )
+    docs_dir = root / "docs"
+    docs_dir.mkdir(exist_ok=True)
+    (docs_dir / "INDEX.md").write_text(
+        "# Documentation Index\n\n"
+        "- [ARCHITECTURE.md](ARCHITECTURE.md) — runtime layers and module ownership.\n",
+        encoding="utf-8",
+    )
+
+
+def _write_colon_skills_index_fixture(root: Path) -> None:
+    """Shape: full project pack, but .skills/INDEX.md uses a plain colon bullet
+    (no backticks) — e.g. Agent Factory's real `.skills/INDEX.md`."""
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "AGENTS.md").write_text(
+        "# AGENTS.md\n\nMinimal always-loaded routing instructions.", encoding="utf-8"
+    )
+    docs_dir = root / "docs"
+    docs_dir.mkdir(exist_ok=True)
+    (docs_dir / "INDEX.md").write_text("# Documentation Index\n\nRoute here first.", encoding="utf-8")
+    skills_dir = root / ".skills"
+    (skills_dir / "code-change").mkdir(parents=True)
+    (skills_dir / "code-change" / "SKILL.md").write_text(
+        "# Code Change Skill\n\nFor code changes: change only files required by the task.",
+        encoding="utf-8",
+    )
+    (skills_dir / "agent-authoring").mkdir(parents=True)
+    (skills_dir / "agent-authoring" / "SKILL.md").write_text(
+        "# Agent Authoring Skill\n\nDesign and stage agent packages for registry discovery.",
+        encoding="utf-8",
+    )
+    (skills_dir / "INDEX.md").write_text(
+        "# Skills Index\n\n"
+        "- code-change/SKILL.md: code, tests, validation, or runtime changes.\n"
+        "- agent-authoring/SKILL.md: design and stage agent packages; registry discovery fields.\n",
+        encoding="utf-8",
+    )
+
+
+def test_colon_style_skills_index_is_parsed_like_the_backtick_style(tmp_path: Path) -> None:
+    """Regression for the real Agent Factory shape: a `.skills/INDEX.md` using
+    `- path.md: summary` bullets (no backticks) must still drive selection."""
+    root = tmp_path / "colon-shape-project"
+    _write_colon_skills_index_fixture(root)
+
+    notes = discover_project_guidance("Fix a typo in a code comment", str(root))
+
+    assert any("code-change/SKILL.md" in note for note in notes)
+    assert any("change only files required by the task" in note for note in notes)
+    assert not any("agent-authoring" in note and "Design and stage" in note for note in notes)
+
+
+def test_colon_style_skills_index_selects_a_different_skill_for_a_different_task(
+    tmp_path: Path,
+) -> None:
+    """Same project, same skills index, a different task — proves selection is
+    re-evaluated per request rather than fixed once discovered."""
+    root = tmp_path / "colon-shape-project"
+    _write_colon_skills_index_fixture(root)
+
+    notes = discover_project_guidance(
+        "Stage a new agent package and register it for discovery", str(root)
+    )
+
+    assert any("agent-authoring/SKILL.md" in note for note in notes)
+    assert any("Design and stage agent packages" in note for note in notes)
+    assert not any("code-change/SKILL.md" in note and "change only files" in note for note in notes)
+
+
+def test_project_context_only_shape_never_drills_into_a_skill(tmp_path: Path) -> None:
+    """Regression for the real Job Hunter shape: AGENTS.md + docs/INDEX.md with
+    no .skills/INDEX.md must include only those two, never fabricate a skill."""
+    root = tmp_path / "context-only-project"
+    _write_project_context_only_fixture(root)
+
+    notes = discover_project_guidance("Update the CSS spacing on the dashboard", str(root))
+
+    assert len(notes) == 2
+    assert any(note.startswith("AGENTS.md:") for note in notes)
+    assert any(note.startswith("docs/INDEX.md:") for note in notes)
+
+
+def test_instruction_light_real_shape_yields_nothing_and_does_not_block(tmp_path: Path) -> None:
+    """Regression for a genuinely instruction-light real repo: no AGENTS.md, no
+    docs index, no skills index — must degrade to nothing, not an error."""
+    root = tmp_path / "instruction-light-project"
+    root.mkdir()
+    (root / "README.md").write_text("Just a README, nothing else.", encoding="utf-8")
+
+    notes = discover_project_guidance("Fix a typo in a code comment", str(root))
+
+    assert notes == ()
+
+
+def test_cross_project_isolation_across_the_three_real_shapes(tmp_path: Path) -> None:
+    """The three real shapes proven live (project-context-only, colon-style
+    skills index, instruction-light), checked back-to-back, must never leak
+    into each other."""
+    context_only_root = tmp_path / "context-only"
+    colon_skills_root = tmp_path / "colon-skills"
+    instruction_light_root = tmp_path / "instruction-light"
+
+    _write_project_context_only_fixture(context_only_root)
+    _write_colon_skills_index_fixture(colon_skills_root)
+    instruction_light_root.mkdir()
+
+    request = "Fix a typo in a code comment"
+    context_only_notes = discover_project_guidance(request, str(context_only_root))
+    colon_skills_notes = discover_project_guidance(request, str(colon_skills_root))
+    instruction_light_notes = discover_project_guidance(request, str(instruction_light_root))
+
+    assert not any("code-change" in note for note in context_only_notes)
+    assert not any("Always-loaded agent loader" in note for note in colon_skills_notes)
+    assert instruction_light_notes == ()

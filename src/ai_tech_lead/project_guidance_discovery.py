@@ -26,17 +26,24 @@ under 3,000 characters (~750 tokens).
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
-from .research_sources import (
-    _DOC_INDEX_ENTRY_PATTERN,
-    _request_terms,
-    _score_text,
-    _truncate_text,
-)
+from .research_sources import _request_terms, _score_text, _truncate_text
 
 _ENTRY_MAX_CHARS = 700
 _SKILL_DETAIL_MAX_CHARS = 900
+
+# Two bullet shapes observed across real project skills indexes: this repo's own
+# `` - `path` - summary `` convention, and a plain `- path.md: summary` convention
+# (e.g. Agent Factory's `.skills/INDEX.md`). Kept local to this module rather than
+# widening research_sources.py's shared `_DOC_INDEX_ENTRY_PATTERN`, which other
+# code (local research-doc scoring) already depends on matching only the first
+# shape. Both alternatives are generic line shapes, not tied to any project name.
+_SKILL_INDEX_ENTRY_PATTERN = re.compile(
+    r"^-\s+(?:`(?P<backtick_path>[^`]+)`\s*-\s*(?P<backtick_summary>.+)"
+    r"|(?P<colon_path>\S+\.md)\s*:\s*(?P<colon_summary>.+))$"
+)
 
 
 def discover_project_guidance(request: str, project_root: str) -> tuple[str, ...]:
@@ -94,11 +101,12 @@ def _best_matching_skill(
     best_score = 0
     best: tuple[str, str, str] | None = None
     for line in index_text.splitlines():
-        match = _DOC_INDEX_ENTRY_PATTERN.match(line.strip())
+        match = _SKILL_INDEX_ENTRY_PATTERN.match(line.strip())
         if not match:
             continue
-        relative_path = match.group("path").strip()
-        summary = match.group("summary").strip()
+        groups = match.groupdict()
+        relative_path = (groups["backtick_path"] or groups["colon_path"]).strip()
+        summary = (groups["backtick_summary"] or groups["colon_summary"]).strip()
         skill_path = (index_path.parent / relative_path).resolve()
         if not skill_path.is_file():
             continue
