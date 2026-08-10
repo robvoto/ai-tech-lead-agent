@@ -1,5 +1,9 @@
 from ai_tech_lead.request_context import resolve_request_context, understand_request
-from ai_tech_lead.target_project_context import BacklogItemContext, TargetProjectContext
+from ai_tech_lead.target_project_context import (
+    BacklogItemContext,
+    BacklogProjectContext,
+    TargetProjectContext,
+)
 
 
 def test_unresolved_reference_is_not_guessed():
@@ -57,6 +61,42 @@ def test_clarification_answer_resolves_only_the_asked_reference():
     assert result["clarification_question"] == ""
     assert any("AF-052 clarified by human" in note for note in result["context_resolution_evidence"])
     assert "Clarification for AF-052" in result["bounded_request"]
+
+
+def test_known_backlog_location_offers_fetch_instead_of_clarification():
+    result = resolve_request_context(
+        "Code ATL-999 next",
+        target_project_context=TargetProjectContext(
+            backlog_project=BacklogProjectContext(
+                project_key="ai-tech-lead",
+                spreadsheet_id="spreadsheet-a",
+                sheet_name="Backlog",
+            ),
+        ),
+    )
+
+    assert result["backlog_fetch_candidate"] == "ATL-999"
+    assert result["clarification_question"] == ""
+    assert result["unresolved_references"] == ["ATL-999"]
+
+
+def test_disallowed_backlog_fetch_falls_back_to_clarification():
+    result = resolve_request_context(
+        "Code ATL-999 next",
+        target_project_context=TargetProjectContext(
+            backlog_project=BacklogProjectContext(
+                project_key="ai-tech-lead",
+                spreadsheet_id="spreadsheet-a",
+                sheet_name="Backlog",
+            ),
+        ),
+        allow_backlog_fetch=False,
+    )
+
+    assert result["backlog_fetch_candidate"] == ""
+    assert result["clarification_question"] == (
+        "What does ATL-999 refer to, and where should I retrieve it from?"
+    )
 
 
 def test_empty_clarification_answer_leaves_reference_unresolved():

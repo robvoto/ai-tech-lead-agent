@@ -15,6 +15,7 @@ from typing import Any
 
 import pytest
 from helpers import valid_settings_dict
+from requests.exceptions import ConnectionError as RequestsConnectionError
 from test_backlog_sheets_repository import (
     CREDENTIALS_PATH,
     HEADER,
@@ -37,6 +38,7 @@ from ai_tech_lead.agent_task_runner import (
     _map_decision_to_resume_payload,
     _map_state_to_output,
     _parse_decision,
+    _resolve_backlog_project,
     _validate_project_root,
     run_agent_task,
 )
@@ -47,7 +49,12 @@ from ai_tech_lead.config import PROJECT_ROOT
 from ai_tech_lead.progress_events import ProgressReporter, StdoutJsonlProgressSink
 from ai_tech_lead.request_context import resolve_request_context
 from ai_tech_lead.runtime_lock import RuntimeLockBusyError
-from ai_tech_lead.target_project_context import BacklogColumnContext, BacklogProjectContext
+from ai_tech_lead.target_project_context import (
+    BacklogColumnContext,
+    BacklogItemContext,
+    BacklogProjectContext,
+    TargetProjectContext,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -118,13 +125,15 @@ def _make_fake_workflow(monkeypatch: pytest.MonkeyPatch, output: dict[str, Any])
     """Stub _execute_workflow to return a fixed output dict without running LangGraph.
 
     ``output`` must be a properly structured output dict (what the real _execute_workflow
-    returns after calling _map_state_to_output), not raw graph state.
+    returns after calling _map_state_to_output), not raw graph state. The stubbed "final"
+    target_project_context is just whatever the caller passed in — good enough for tests
+    that aren't exercising in-graph backlog resolution.
     """
     calls: list[dict] = []
 
-    def fake_execute(**kwargs: Any) -> dict[str, Any]:
+    def fake_execute(**kwargs: Any) -> tuple[dict[str, Any], Any]:
         calls.append(kwargs)
-        return output
+        return output, kwargs.get("target_project_context")
 
     monkeypatch.setattr("ai_tech_lead.agent_task_runner._execute_workflow", fake_execute)
     return calls
@@ -176,6 +185,68 @@ def _install_fake_sheets_client(monkeypatch: pytest.MonkeyPatch, spreadsheet_id:
     worksheet = FakeWorksheet([HEADER, row])
     client = FakeClient({spreadsheet_id: FakeSpreadsheet({SHEET_NAME: worksheet})})
     monkeypatch.setattr(sheets_mod, "_client_cache", {CREDENTIALS_PATH: client})
+
+
+def _execution_failed_output(summary: str = "Coding agent failed after retries.") -> dict[str, Any]:
+    """Minimal output dict for a real execution attempt that ultimately failed."""
+    return {
+        "request_id": "",
+        "status": STATUS_FAILED,
+        "summary": summary,
+        "formulated_task": "",
+        "brief": "",
+        "coding_agent_instruction": "implement it",
+        "backend_used": "codex",
+        "execution_performed": True,
+        "logs": [],
+        "evidence": [],
+        "next_action": "Needs direct human review.",
+        "result_kind": "terminal_failure",
+        "pending_decision": None,
+    }
+
+
+def _make_fake_workflow_with_final_context(
+    monkeypatch: pytest.MonkeyPatch,
+    output: dict[str, Any],
+    final_target_project_context: TargetProjectContext | None,
+) -> list[dict]:
+    """Like _make_fake_workflow, but the "final" context differs from the input.
+
+    Simulates a backlog item the graph resolved mid-run (the known-backlog-
+    resolution path in coding_workflow_graph.py) rather than one supplied up
+    front — the scenario completion sync must now also handle.
+    """
+    calls: list[dict] = []
+
+    def fake_execute(**kwargs: Any) -> tuple[dict[str, Any], TargetProjectContext | None]:
+        calls.append(kwargs)
+        return output, final_target_project_context
+
+    monkeypatch.setattr("ai_tech_lead.agent_task_runner._execute_workflow", fake_execute)
+    return calls
+
+
+def _known_backlog_target_project_context(row_hash: str) -> TargetProjectContext:
+    """A target_project_context as it would look right after the graph's
+    known-backlog-resolution path fetched ATL-001 mid-run."""
+    return TargetProjectContext(
+        project_key="ai-tech-lead",
+        backlog_project=BacklogProjectContext(
+            project_key="ai-tech-lead",
+            spreadsheet_id="spreadsheet-a",
+            sheet_name=SHEET_NAME,
+        ),
+        backlog_item=BacklogItemContext(
+            project_key="ai-tech-lead",
+            spreadsheet_id="spreadsheet-a",
+            sheet_name=SHEET_NAME,
+            item_id="ATL-001",
+            title="Existing item",
+            row_hash=row_hash,
+            fetched_at="2026-08-10T00:00:00+00:00",
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1359,7 +1430,7 @@ def test_execute_workflow_translates_existing_graph_progress_callbacks(
 
     monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.build_graph", fake_build_graph)
 
-    result = _execute_workflow(
+    result, _final_target_project_context = _execute_workflow(
         request_id="req-graph-progress",
         task="Implement the change",
         execute_coding_agent=False,
@@ -1428,6 +1499,46 @@ def test_backlog_reference_unknown_item_id_is_rejected_clearly(
     exit_code = run_agent_task(input_file, output_file)
 
     assert exit_code == 1
+    result = _read_output(output_file)
+    assert result["status"] == STATUS_FAILED
+    assert "backlog_reference could not be resolved" in result["summary"]
+
+
+def test_repeated_backlog_read_failure_stops_before_work_starts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = _make_fake_workflow(monkeypatch, _execution_success_output())
+    _stub_settings(monkeypatch)
+
+    class _AlwaysUnavailableWorksheet:
+        def __init__(self):
+            self.read_calls = 0
+
+        def get_all_values(self):
+            self.read_calls += 1
+            raise RequestsConnectionError("simulated transient Sheets outage")
+
+    worksheet = _AlwaysUnavailableWorksheet()
+    client = FakeClient({"spreadsheet-a": FakeSpreadsheet({SHEET_NAME: worksheet})})
+    monkeypatch.setattr(sheets_mod, "_client_cache", {CREDENTIALS_PATH: client})
+    monkeypatch.setattr("ai_tech_lead.backlog_sheets_repository.time.sleep", lambda _seconds: None)
+    input_file, output_file = _write_input(
+        tmp_path,
+        {
+            "task": "do the thing",
+            "backlog_reference": {
+                "spreadsheet_id": "spreadsheet-a",
+                "sheet_name": SHEET_NAME,
+                "item_id": "ATL-001",
+            },
+        },
+    )
+
+    exit_code = run_agent_task(input_file, output_file)
+
+    assert exit_code == 1
+    assert worksheet.read_calls == 2
+    assert calls == []
     result = _read_output(output_file)
     assert result["status"] == STATUS_FAILED
     assert "backlog_reference could not be resolved" in result["summary"]
@@ -1541,6 +1652,248 @@ def test_backlog_reference_supports_dynamic_second_spreadsheet(
     assert result["backlog_sync_status"] == "synced"
 
 
+# ---------------------------------------------------------------------------
+# backlog_reference + project_reference.backlog supplied together: must agree
+# on the same resource, and share one column layout — never silently pick one.
+# ---------------------------------------------------------------------------
+
+
+def test_matching_backlog_reference_and_project_backlog_use_shared_custom_layout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Same resource named both ways: the custom column layout from
+    project_reference.backlog is used consistently for the initial fetch and
+    for completion sync — not the default layout for one and custom for the
+    other."""
+    _stub_settings(monkeypatch)
+    custom_header = ["Work ID", "Work Title", "Work Status", "Work Evidence"]
+    worksheet = FakeWorksheet([custom_header, ["ATL-001", "Existing item", "Backlog", ""]])
+    client = FakeClient({"spreadsheet-a": FakeSpreadsheet({SHEET_NAME: worksheet})})
+    monkeypatch.setattr(sheets_mod, "_client_cache", {CREDENTIALS_PATH: client})
+    _make_fake_workflow(monkeypatch, _execution_success_output("Implemented the change."))
+
+    input_file, output_file = _write_input(
+        tmp_path,
+        {
+            "request_id": "req-matching-layout-1",
+            "task": "do the thing",
+            "backlog_reference": {
+                "spreadsheet_id": "spreadsheet-a",
+                "sheet_name": SHEET_NAME,
+                "item_id": "ATL-001",
+            },
+            "project_reference": {
+                "backlog": {
+                    "project_key": "ai-tech-lead",
+                    "spreadsheet_id": "spreadsheet-a",
+                    "sheet_name": SHEET_NAME,
+                    "columns": {
+                        "item_id": "Work ID",
+                        "title": "Work Title",
+                        "status": "Work Status",
+                        "evidence_validation": "Work Evidence",
+                    },
+                },
+            },
+        },
+    )
+
+    exit_code = run_agent_task(input_file, output_file)
+
+    assert exit_code == 0
+    result = _read_output(output_file)
+    assert result["status"] == STATUS_SUCCESS
+    # If the initial fetch had used the default "ID"/"Status" column names instead of
+    # the custom ones, it would never have found the row at all (no "ID" column exists
+    # in this sheet) and the request would have failed before execution ever ran.
+    assert result["backlog_sync_status"] == "synced"
+
+    written_row = worksheet.get_all_values()[1]
+    assert written_row[2] == "Done"  # "Work Status"
+    assert "req-matching-layout-1" in written_row[3]  # "Work Evidence"
+
+
+def test_conflicting_backlog_reference_and_project_backlog_fail_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two different backlog resources named for the same request must not be
+    silently reconciled by picking one — and no Sheets work may happen before
+    the conflict is caught."""
+    _stub_settings(monkeypatch)
+    calls = _make_fake_workflow(monkeypatch, _execution_success_output())
+
+    class _ExplodingClient:
+        def open_by_key(self, spreadsheet_id: str) -> Any:
+            raise AssertionError("must not touch Sheets when backlog resources conflict")
+
+    monkeypatch.setattr(sheets_mod, "_client_cache", {CREDENTIALS_PATH: _ExplodingClient()})
+
+    input_file, output_file = _write_input(
+        tmp_path,
+        {
+            "request_id": "req-conflict-1",
+            "task": "do the thing",
+            "backlog_reference": {
+                "spreadsheet_id": "spreadsheet-a",
+                "sheet_name": SHEET_NAME,
+                "item_id": "ATL-001",
+            },
+            "project_reference": {
+                "backlog": {
+                    "project_key": "ai-tech-lead",
+                    "spreadsheet_id": "spreadsheet-b",
+                    "sheet_name": SHEET_NAME,
+                },
+            },
+        },
+    )
+
+    exit_code = run_agent_task(input_file, output_file)
+
+    assert exit_code == 1
+    result = _read_output(output_file)
+    assert result["status"] == STATUS_FAILED
+    assert "different backlog resources" in result["summary"]
+    assert "spreadsheet-a" in result["summary"]
+    assert "spreadsheet-b" in result["summary"]
+    assert calls == []  # the workflow itself must never have run
+
+
+# ---------------------------------------------------------------------------
+# Completion sync for a backlog item resolved mid-graph (known-backlog path),
+# not just one supplied up front via the top-level backlog_reference field.
+# ---------------------------------------------------------------------------
+
+
+def test_known_backlog_item_syncs_on_real_execution_success(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A backlog item the graph resolved mid-run still writes back on success."""
+    from ai_tech_lead.backlog_reference import BacklogReference
+    from ai_tech_lead.backlog_sheets_repository import SheetsBacklogRepository, compute_row_hash
+
+    _stub_settings(monkeypatch)
+    row = _row("ATL-001", "Existing item", status="Backlog")
+    _install_fake_sheets_client(monkeypatch, "spreadsheet-a", row)
+    context = _known_backlog_target_project_context(compute_row_hash(row))
+    _make_fake_workflow_with_final_context(
+        monkeypatch, _execution_success_output("Implemented the change."), context
+    )
+    input_file, output_file = _write_input(
+        tmp_path,
+        {"request_id": "req-known-backlog-1", "task": "Code ATL-001 next"},
+    )
+
+    exit_code = run_agent_task(input_file, output_file)
+
+    assert exit_code == 0
+    result = _read_output(output_file)
+    assert result["status"] == STATUS_SUCCESS
+    assert result["backlog_sync_status"] == "synced"
+
+    repository = SheetsBacklogRepository(
+        BacklogReference("ai-tech-lead", "spreadsheet-a", SHEET_NAME, ""),
+        credentials_path=CREDENTIALS_PATH,
+    )
+    assert repository.get_item("ATL-001").status.value == "Done"
+
+
+def test_known_backlog_item_not_synced_for_instruction_only_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An instruction_package (no real execution) must not touch the Sheet."""
+    from ai_tech_lead.backlog_reference import BacklogReference
+    from ai_tech_lead.backlog_sheets_repository import SheetsBacklogRepository, compute_row_hash
+
+    _stub_settings(monkeypatch)
+    row = _row("ATL-001", "Existing item", status="Backlog")
+    _install_fake_sheets_client(monkeypatch, "spreadsheet-a", row)
+    context = _known_backlog_target_project_context(compute_row_hash(row))
+    _make_fake_workflow_with_final_context(monkeypatch, _success_output(), context)
+    input_file, output_file = _write_input(
+        tmp_path,
+        {"request_id": "req-known-backlog-2", "task": "Code ATL-001 next"},
+    )
+
+    exit_code = run_agent_task(input_file, output_file)
+
+    assert exit_code == 0
+    result = _read_output(output_file)
+    assert result["backlog_sync_status"] == "not_applicable"
+
+    repository = SheetsBacklogRepository(
+        BacklogReference("ai-tech-lead", "spreadsheet-a", SHEET_NAME, ""),
+        credentials_path=CREDENTIALS_PATH,
+    )
+    assert repository.get_item("ATL-001").status.value == "Backlog"
+
+
+def test_known_backlog_item_not_synced_for_failed_execution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A real execution attempt that ultimately failed must not mark Done."""
+    from ai_tech_lead.backlog_reference import BacklogReference
+    from ai_tech_lead.backlog_sheets_repository import SheetsBacklogRepository, compute_row_hash
+
+    _stub_settings(monkeypatch)
+    row = _row("ATL-001", "Existing item", status="Backlog")
+    _install_fake_sheets_client(monkeypatch, "spreadsheet-a", row)
+    context = _known_backlog_target_project_context(compute_row_hash(row))
+    _make_fake_workflow_with_final_context(monkeypatch, _execution_failed_output(), context)
+    input_file, output_file = _write_input(
+        tmp_path,
+        {"request_id": "req-known-backlog-3", "task": "Code ATL-001 next"},
+    )
+
+    exit_code = run_agent_task(input_file, output_file)
+
+    assert exit_code == 1
+    result = _read_output(output_file)
+    assert result["status"] == STATUS_FAILED
+    assert result["backlog_sync_status"] == "not_applicable"
+
+    repository = SheetsBacklogRepository(
+        BacklogReference("ai-tech-lead", "spreadsheet-a", SHEET_NAME, ""),
+        credentials_path=CREDENTIALS_PATH,
+    )
+    assert repository.get_item("ATL-001").status.value == "Backlog"
+
+
+def test_known_backlog_item_conflict_when_row_changed_since_fetch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The row changed after the mid-graph fetch — nothing gets overwritten."""
+    from ai_tech_lead.backlog_reference import BacklogReference
+    from ai_tech_lead.backlog_sheets_repository import SheetsBacklogRepository, compute_row_hash
+
+    _stub_settings(monkeypatch)
+    stale_row = _row("ATL-001", "Existing item", status="Backlog")
+    stale_row_hash = compute_row_hash(stale_row)
+    # By completion time, someone edited the row in the Sheet directly.
+    current_row = _row("ATL-001", "Existing item", status="In Progress")
+    _install_fake_sheets_client(monkeypatch, "spreadsheet-a", current_row)
+    context = _known_backlog_target_project_context(stale_row_hash)
+    _make_fake_workflow_with_final_context(
+        monkeypatch, _execution_success_output("Implemented the change."), context
+    )
+    input_file, output_file = _write_input(
+        tmp_path,
+        {"request_id": "req-known-backlog-4", "task": "Code ATL-001 next"},
+    )
+
+    exit_code = run_agent_task(input_file, output_file)
+
+    assert exit_code == 0
+    result = _read_output(output_file)
+    assert result["backlog_sync_status"] == "conflict"
+
+    repository = SheetsBacklogRepository(
+        BacklogReference("ai-tech-lead", "spreadsheet-a", SHEET_NAME, ""),
+        credentials_path=CREDENTIALS_PATH,
+    )
+    assert repository.get_item("ATL-001").status.value == "In Progress"
+
+
 def test_backlog_reference_reuses_existing_snapshot_on_resubmission(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1591,6 +1944,7 @@ def test_hub_references_are_normalized_into_resource_references() -> None:
         settings=settings,
         backlog_reference=None,
         source_record=None,
+        backlog_project=None,
     )
 
     assert [item.item_id for item in context.resource_references] == [
@@ -1609,6 +1963,7 @@ def test_legacy_resource_references_still_work_alongside_hub_references() -> Non
         settings=settings,
         backlog_reference=None,
         source_record=None,
+        backlog_project=None,
     )
 
     # The legacy dict for AF-052 is kept as-is (not overwritten by Hub's bare string);
@@ -1629,6 +1984,7 @@ def test_hub_style_references_reach_the_existing_context_resolver() -> None:
         settings=settings,
         backlog_reference=None,
         source_record=None,
+        backlog_project=None,
     )
 
     result = resolve_request_context(
@@ -1649,6 +2005,7 @@ def test_hub_reference_not_matching_request_text_stays_unresolved() -> None:
         settings=settings,
         backlog_reference=None,
         source_record=None,
+        backlog_project=None,
     )
 
     result = resolve_request_context(
@@ -1673,6 +2030,7 @@ def test_project_reference_project_root_is_accepted_when_allowlisted() -> None:
         settings=settings,
         backlog_reference=None,
         source_record=None,
+        backlog_project=None,
     )
 
     assert context.project_key == "agent-factory"
@@ -1693,6 +2051,7 @@ def test_mismatched_top_level_and_project_reference_roots_are_rejected() -> None
             settings=settings,
             backlog_reference=None,
             source_record=None,
+            backlog_project=None,
         )
 
 
@@ -1709,6 +2068,7 @@ def test_project_context_valid_envelope_is_accepted() -> None:
         settings=settings,
         backlog_reference=None,
         source_record=None,
+        backlog_project=None,
     )
 
     assert context.project_root == settings.project_root
@@ -1724,6 +2084,7 @@ def test_project_context_unsupported_schema_version_is_rejected() -> None:
             settings=settings,
             backlog_reference=None,
             source_record=None,
+            backlog_project=None,
         )
 
 
@@ -1737,6 +2098,7 @@ def test_project_context_missing_project_root_leaves_context_empty() -> None:
         settings=settings,
         backlog_reference=None,
         source_record=None,
+        backlog_project=None,
     )
 
     assert context.project_root == ""
@@ -1751,6 +2113,7 @@ def test_project_context_references_map_into_resource_references() -> None:
         settings=settings,
         backlog_reference=None,
         source_record=None,
+        backlog_project=None,
     )
 
     assert [item.item_id for item in context.resource_references] == ["AF-052", "AH-010"]
@@ -1768,6 +2131,7 @@ def test_project_context_conflicting_top_level_project_root_is_rejected() -> Non
             settings=settings,
             backlog_reference=None,
             source_record=None,
+            backlog_project=None,
         )
 
 
@@ -1780,6 +2144,7 @@ def test_legacy_flat_project_root_and_references_still_work_without_project_cont
         settings=settings,
         backlog_reference=None,
         source_record=None,
+        backlog_project=None,
     )
 
     assert context.project_root == settings.project_root
@@ -1791,24 +2156,26 @@ def test_backlog_project_context_stays_separate_from_project_context_envelope() 
     extension carried through project_reference.backlog — it must not be affected by, or
     leak into, the universal project_context envelope."""
     settings = parse_settings(valid_settings_dict())
-    context = _build_target_project_context(
-        task_input={
-            "project_context": {
-                "schema_version": 1,
-                "project_root": settings.project_root,
-                "references": ["AF-052"],
-            },
-            "project_reference": {
-                "backlog": {
-                    "spreadsheet_id": "sheet-123",
-                    "sheet_name": "Backlog",
-                    "item_id_prefix": "AF",
-                }
-            },
+    task_input = {
+        "project_context": {
+            "schema_version": 1,
+            "project_root": settings.project_root,
+            "references": ["AF-052"],
         },
+        "project_reference": {
+            "backlog": {
+                "spreadsheet_id": "sheet-123",
+                "sheet_name": "Backlog",
+                "item_id_prefix": "AF",
+            }
+        },
+    }
+    context = _build_target_project_context(
+        task_input=task_input,
         settings=settings,
         backlog_reference=None,
         source_record=None,
+        backlog_project=_resolve_backlog_project(task_input),
     )
 
     assert context.project_root == settings.project_root
@@ -2081,25 +2448,27 @@ def test_hub_backlog_refinement_approval_writes_item(
 
 def test_build_target_project_context_parses_backlog_project_configuration() -> None:
     settings = parse_settings(valid_settings_dict())
+    task_input = {
+        "project_reference": {
+            "backlog": {
+                "project_key": "agent-hub",
+                "spreadsheet_id": "spreadsheet-hub",
+                "sheet_name": "Hub Backlog",
+                "item_id_prefix": "HUB",
+                "columns": {
+                    "item_id": "Work ID",
+                    "title": "Work Title",
+                },
+            }
+        }
+    }
 
     context = _build_target_project_context(
-        task_input={
-            "project_reference": {
-                "backlog": {
-                    "project_key": "agent-hub",
-                    "spreadsheet_id": "spreadsheet-hub",
-                    "sheet_name": "Hub Backlog",
-                    "item_id_prefix": "HUB",
-                    "columns": {
-                        "item_id": "Work ID",
-                        "title": "Work Title",
-                    },
-                }
-            }
-        },
+        task_input=task_input,
         settings=settings,
         backlog_reference=None,
         source_record=None,
+        backlog_project=_resolve_backlog_project(task_input),
     )
 
     assert context.backlog_project == BacklogProjectContext(

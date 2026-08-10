@@ -189,7 +189,15 @@ class ResourceReferenceContext:
 
 @dataclass(frozen=True)
 class BacklogItemContext:
-    """Bounded backlog identity and fetched item details for this run."""
+    """Bounded backlog identity and fetched item details for this run.
+
+    ``row_hash``/``fetched_at`` capture the exact source row at fetch time —
+    whichever fetch path populated this (an explicit ``backlog_reference`` up
+    front, or an in-graph lookup against an already-known backlog location).
+    Completion sync (``_sync_backlog_completion`` in agent_task_runner.py)
+    reuses ``row_hash`` as the optimistic-concurrency baseline regardless of
+    which path produced it, so there is exactly one sync mechanism.
+    """
 
     project_key: str
     spreadsheet_id: str
@@ -197,6 +205,8 @@ class BacklogItemContext:
     item_id: str
     title: str = ""
     body: str = ""
+    row_hash: str = ""
+    fetched_at: str = ""
 
     def to_payload(self) -> dict[str, str]:
         payload = {
@@ -209,6 +219,10 @@ class BacklogItemContext:
             payload["title"] = self.title
         if self.body:
             payload["body"] = self.body
+        if self.row_hash:
+            payload["row_hash"] = self.row_hash
+        if self.fetched_at:
+            payload["fetched_at"] = self.fetched_at
         return payload
 
     @classmethod
@@ -225,6 +239,8 @@ class BacklogItemContext:
             item_id=item_id,
             title=str(payload.get("title", "")).strip(),
             body=str(payload.get("body", "")).strip(),
+            row_hash=str(payload.get("row_hash", "")).strip(),
+            fetched_at=str(payload.get("fetched_at", "")).strip(),
         )
 
 

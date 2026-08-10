@@ -117,13 +117,37 @@ required only when that option is marked `needs_text`.
   options. If duplicate, obsolete, completed-equivalent, or conflicting-scope
   matches are found, the response ends as `needs_clarification` and does not queue
   a writable draft.
-- When `backlog_reference` is supplied and the run actually executes code
-  successfully, AI Tech Lead writes the item's `Status`/`Evidence / Validation`
-  columns back to the Sheet and reports the outcome in the response field
-  `backlog_sync_status`: `not_applicable` (no reference, or only an instruction
-  was produced), `synced`, `pending` (Sheet call failed, queued for recovery),
-  `conflict` (the source row changed since it was fetched — nothing was
-  overwritten), or `abandoned` (recovery attempts exhausted).
+- If `project_reference.backlog` names the project's backlog location but the
+  request only references an item by ID (e.g. `ATL-999`) without an explicit
+  `backlog_reference`, AI Tech Lead fetches that item from the known location
+  itself instead of pausing to ask where to find it. A row that isn't there is
+  a definite answer, not a question for a human — the request ends clearly as
+  `failed` rather than `needs_clarification`.
+- If the backlog location isn't supplied at all but `project_reference.project_key`
+  is, AI Tech Lead checks the local `settings.backlog_projects` registry for that
+  key before asking a human — the same bounded registry `backlog_reference.project_key`
+  already resolves against. A verified match is used exactly like an
+  explicitly-supplied backlog location (above); no match, or no `project_key`
+  at all, falls back to the clarification interrupt as before. This never
+  guesses an item ID prefix, scans the filesystem, or touches another
+  repository — only the already-loaded local settings.
+- If both `backlog_reference` and `project_reference.backlog` are supplied,
+  they must name the same spreadsheet/sheet. AI Tech Lead never silently
+  picks one when they disagree — a mismatch fails the request clearly, before
+  any Sheet is read. When they agree (or only one is supplied), the column
+  layout from `project_reference.backlog.columns` (default column names
+  otherwise) is used consistently for the initial fetch and for completion
+  sync — never the default layout for one and a custom layout for the other.
+- When a backlog item is resolved — either via an explicit `backlog_reference`
+  up front, or via the known-backlog lookup above — and the run actually
+  executes code successfully, AI Tech Lead writes the item's status/evidence
+  columns (default `Status`/`Evidence / Validation`, or the project's custom
+  names) back to the Sheet and reports the outcome in the response field
+  `backlog_sync_status`: `not_applicable` (no item resolved, or only an
+  instruction was produced), `synced`, `pending` (Sheet call failed, queued
+  for recovery), `conflict` (the source row changed since it was fetched —
+  nothing was overwritten), or `abandoned` (recovery attempts exhausted).
+  Both resolution paths feed the same sync mechanism.
 
 - When `run_id` is supplied, stdout is reserved for one structured progress JSON object per line. Runtime and coding-agent logs remain on stderr. The final result still goes only to `--output-json`.
 - When `run_id` is omitted, the subprocess contract emits no progress lines to stdout.

@@ -16,6 +16,13 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
 from .app_settings import load_settings
+from .backlog_repository import BacklogValidationError
+from .backlog_runtime_store import BacklogRuntimeStore
+from .backlog_sheets_repository import (
+    BacklogSheetLayout,
+    BacklogSourceUnavailableError,
+    repository_for,
+)
 from .code_look_checker import check_code_look_need
 from .coding_agent_runner import CodingAgentCancellationToken, run_coding_agent
 from .completion_verifier import CompletionVerificationUnavailable, verify_completion
@@ -37,7 +44,7 @@ from .research_discovery import discover_official_source
 from .research_policy import select_research_policy
 from .research_sources import collect_online_research_sources
 from .risk_reviewer import review_task_risk
-from .target_project_context import TargetProjectContext
+from .target_project_context import BacklogItemContext, BacklogProjectContext, TargetProjectContext
 from .tech_lead_analyst import analyse_task
 
 APPROVAL_MAX_REVISION_CYCLES = 5
@@ -79,6 +86,7 @@ class NodeName(StrEnum):
 class GraphState(TypedDict):
     """State carried through the brief-generation workflow."""
 
+    request_id: str
     request: str
     bounded_request: str
     target_project_context: dict[str, Any] | None
@@ -90,6 +98,7 @@ class GraphState(TypedDict):
     resolved_resource_references: list[str]
     unresolved_references: list[str]
     context_resolution_evidence: list[str]
+    backlog_item_not_found_reason: str
     context_clarification_answer: str
     context_clarification_retry_count: int
     context_clarification_exhausted: bool
@@ -151,6 +160,7 @@ class GraphState(TypedDict):
 def build_initial_graph_state(
     request: str,
     *,
+    request_id: str = "",
     force_approval: bool = False,
     approved: bool = False,
     approved_by: str = "",
@@ -162,6 +172,7 @@ def build_initial_graph_state(
     """Return one canonical initial state for the coding workflow graph."""
 
     return {
+        "request_id": request_id,
         "request": request,
         "bounded_request": request,
         "target_project_context": (
@@ -175,6 +186,7 @@ def build_initial_graph_state(
         "resolved_resource_references": [],
         "unresolved_references": [],
         "context_resolution_evidence": [],
+        "backlog_item_not_found_reason": "",
         "context_clarification_answer": "",
         "context_clarification_retry_count": 0,
         "context_clarification_exhausted": False,
@@ -262,9 +274,11 @@ def read_and_classify_request_node(state: GraphState) -> dict[str, Any]:
 def route_after_read_and_classify_request(state: GraphState) -> str:
     """Route to the normal path, or end early if this isn't ATL's job at all."""
 
+    _log_decision_start("1", "ROUTE_AFTER_READ_AND_CLASSIFY", "Route after request classification")
     if not state.get("atl_relevant", True):
-        logger.info("Decision: request is not ATL-relevant -> END_NODE")
+        logger.info("Decision: not relevant -> END_NODE")
         return "not relevant"
+    logger.info("Decision: relevant -> PROJECT_SCOPE_DECISION")
     return "relevant"
 
 
@@ -280,15 +294,164 @@ def project_scope_decision_node(state: GraphState) -> dict[str, Any]:
     return {"project_scope": "existing"}
 
 
+def _fetch_known_backlog_item(
+    context: TargetProjectContext, item_id: str, request_id: str
+) -> TargetProjectContext:
+    """Fetch one item from the project's already-known backlog resource.
+
+    Reuses the same SheetsBacklogRepository/layout construction as backlog
+    refinement (`_backlog_refinement_repository` in agent_task_runner.py) —
+    the resource is already fully identified by `backlog_project`, so there is
+    nothing project- or provider-specific here, and no prefix is assumed.
+    Raises ValueError/BacklogValidationError (row not found / not unique) or
+    BacklogSourceUnavailableError (sheet unreachable); the caller decides how
+    to report that clearly and stop.
+
+    Snapshots the fetched row the same way the pre-graph explicit
+    `backlog_reference` path does (agent_task_runner.py), and stores the row
+    hash on the returned `BacklogItemContext` so completion sync
+    (`_sync_backlog_completion`) can use it later as the optimistic-
+    concurrency baseline — one sync mechanism, fed by either fetch path.
+    """
+
+    backlog_project = context.backlog_project
+    assert backlog_project is not None  # narrowed by the caller before invoking
+    settings = load_settings()
+    repository = repository_for(
+        backlog_project.spreadsheet_id,
+        backlog_project.sheet_name,
+        credentials_path=settings.backlog_google_credentials_path,
+        layout=BacklogSheetLayout(columns=backlog_project.columns),
+    )
+    source_record = repository.get_item_with_source(item_id)
+    if request_id:
+        BacklogRuntimeStore().save_snapshot(
+            request_id=request_id,
+            project_key=backlog_project.project_key,
+            spreadsheet_id=backlog_project.spreadsheet_id,
+            sheet_name=backlog_project.sheet_name,
+            item_id=item_id,
+            row_data=source_record.row_values,
+            row_hash=source_record.row_hash,
+            fetched_at=source_record.fetched_at,
+        )
+    else:
+        logger.warning(
+            "Backlog item '%s' fetched with no request_id in graph state — "
+            "skipping snapshot; completion sync for this item will not have "
+            "an audit-trail row (conflict detection still works).",
+            item_id,
+        )
+    backlog_item = BacklogItemContext(
+        project_key=backlog_project.project_key,
+        spreadsheet_id=backlog_project.spreadsheet_id,
+        sheet_name=backlog_project.sheet_name,
+        item_id=item_id,
+        title=source_record.item.title,
+        body=source_record.item.body,
+        row_hash=source_record.row_hash,
+        fetched_at=source_record.fetched_at,
+    )
+    return replace(context, backlog_item=backlog_item)
+
+
+def _discover_backlog_project(project_key: str) -> BacklogProjectContext | None:
+    """Bounded backlog-location discovery for a known project.
+
+    Checks exactly one authoritative, already-loaded local source —
+    ``settings.backlog_projects[project_key]`` — the same registry
+    ``resolve_backlog_reference`` already trusts for its own project_key path
+    (backlog_reference.py). Returns None (never raises) when the project_key
+    isn't registered there, or is registered without both a spreadsheet_id and
+    a sheet_name: "not verified" and "not resolvable" are the same outcome
+    here, since a partial entry can't be trusted either.
+
+    Deliberately does not: infer or guess an item ID prefix, look at the
+    filesystem or any other repository, call any network service, or write
+    anything back to Hub or elsewhere. Discovery only reads local settings
+    already resident in memory.
+    """
+
+    settings = load_settings()
+    entry = (settings.backlog_projects or {}).get(project_key)
+    if entry is None:
+        return None
+    spreadsheet_id = str(entry.get("spreadsheet_id", "")).strip()
+    sheet_name = str(entry.get("sheet_name", "")).strip()
+    if not spreadsheet_id or not sheet_name:
+        return None
+    return BacklogProjectContext(
+        project_key=project_key,
+        spreadsheet_id=spreadsheet_id,
+        sheet_name=sheet_name,
+    )
+
+
 def resolve_context_node(state: GraphState) -> dict[str, Any]:
     """Resolve references from explicit supplied context; never infer prefix meaning."""
 
     _log_node_start("1b", "RESOLVE_CONTEXT", "Resolve project and resource context")
+    context = _target_project_context_from_state(state)
     result = resolve_request_context(
         state["request"],
-        target_project_context=_target_project_context_from_state(state),
+        target_project_context=context,
         clarification_answer=state.get("context_clarification_answer", ""),
     )
+
+    # The project is known but its backlog resource isn't: try bounded discovery
+    # before falling back to asking a human. If discovery finds a verified
+    # location, re-resolve with it attached so the existing known-backlog fetch
+    # path below runs exactly as it would if the caller had supplied it.
+    if (
+        context is not None
+        and context.backlog_project is None
+        and context.project_key
+        and result.get("unresolved_references")
+    ):
+        discovered_backlog_project = _discover_backlog_project(context.project_key)
+        if discovered_backlog_project is not None:
+            logger.info(
+                "Backlog location discovered for project_key=%s: spreadsheet=%s sheet=%s",
+                context.project_key,
+                discovered_backlog_project.spreadsheet_id,
+                discovered_backlog_project.sheet_name,
+            )
+            context = replace(context, backlog_project=discovered_backlog_project)
+            result = resolve_request_context(
+                state["request"],
+                target_project_context=context,
+                clarification_answer=state.get("context_clarification_answer", ""),
+            )
+
+    fetch_candidate = str(result.pop("backlog_fetch_candidate", "")).strip()
+    if fetch_candidate and context is not None and context.backlog_project is not None:
+        try:
+            context = _fetch_known_backlog_item(
+                context, fetch_candidate, state.get("request_id", "")
+            )
+        except (ValueError, BacklogValidationError, BacklogSourceUnavailableError) as exc:
+            logger.info(
+                "Backlog item '%s' could not be fetched from the known backlog "
+                "resource: %s",
+                fetch_candidate,
+                exc,
+            )
+            return {
+                "backlog_item_not_found_reason": (
+                    f"Backlog item '{fetch_candidate}' could not be retrieved from "
+                    f"the known backlog: {exc}"
+                ),
+                "orchestrator_input_required": False,
+            }
+        result = resolve_request_context(
+            state["request"],
+            target_project_context=context,
+            clarification_answer=state.get("context_clarification_answer", ""),
+            allow_backlog_fetch=False,
+        )
+        result.pop("backlog_fetch_candidate", None)
+        result["target_project_context"] = context.to_payload()
+
     question = str(result.pop("clarification_question", "")).strip()
     if question:
         result.update({
@@ -306,16 +469,33 @@ def resolve_context_node(state: GraphState) -> dict[str, Any]:
 def route_after_resolve_context(state: GraphState) -> str:
     """Route according to whether the requested project context was resolved safely."""
 
+    _log_decision_start(
+        "1b",
+        "ROUTE_AFTER_RESOLVE_CONTEXT",
+        "Route after project context resolution",
+    )
+    if state.get("backlog_item_not_found_reason"):
+        logger.info(
+            "Decision: known backlog item could not be fetched -> END_NODE (%s)",
+            state.get("backlog_item_not_found_reason"),
+        )
+        return "backlog item not found"
     if state.get("orchestrator_input_required"):
         retry_count = int(state.get("context_clarification_retry_count", 0))
         if retry_count >= CONTEXT_CLARIFICATION_MAX_RETRIES:
             logger.info(
-                "Decision: clarification retry limit reached (%d/%d) -> END_NODE",
+                "Decision: clarification limit reached (%d/%d) -> END_NODE",
                 retry_count,
                 CONTEXT_CLARIFICATION_MAX_RETRIES,
             )
             return "clarification limit reached"
+        logger.info(
+            "Decision: clarification needed (%d/%d used) -> CONTEXT_CLARIFICATION_INTERRUPT",
+            retry_count,
+            CONTEXT_CLARIFICATION_MAX_RETRIES,
+        )
         return "clarification needed"
+    logger.info("Decision: context found -> CHECK_CODE_LOOK_NEED")
     return "context found"
 
 
@@ -513,7 +693,7 @@ def route_after_check_research(state: GraphState) -> str:
         logger.info("Decision: research interrupt needed -> DISCOVER_RESEARCH_SOURCE")
         return "research needed"
 
-    logger.info("Decision: no research interrupt -> REVIEW_RISK")
+    logger.info("Decision: no research needed -> TECH_LEAD_ANALYSE")
     return "no research needed"
 
 
@@ -521,7 +701,7 @@ def route_after_research_interrupt(state: GraphState) -> str:
     """Route after the human answers the research approval question."""
 
     _log_decision_start(
-        "1c",
+        "2a",
         "ROUTE_AFTER_RESEARCH_INTERRUPT",
         "Route after research approval",
     )
@@ -701,6 +881,7 @@ def check_code_look_need_node(state: GraphState) -> dict[str, Any]:
 def route_after_check_code_look_need(state: GraphState) -> str:
     """Route to Codex's read-only look, or straight to analysis if not needed."""
 
+    _log_decision_start("1c", "ROUTE_AFTER_CHECK_CODE_LOOK_NEED", "Route after code-look decision")
     if state.get("code_look_needed"):
         logger.info("Decision: code look needed -> CODEX_READS_CODE")
         return "needed"
@@ -1558,7 +1739,8 @@ def verify_completion_node(state: GraphState) -> dict[str, Any]:
         and attempt_count >= COMPLETION_VERIFICATION_MAX_CORRECTIONS
     ):
         logger.info(
-            "Decision: correction limit reached (%d) -> failed", COMPLETION_VERIFICATION_MAX_CORRECTIONS
+            "Decision: correction limit reached (%d) -> failed",
+            COMPLETION_VERIFICATION_MAX_CORRECTIONS,
         )
         return {
             "verification_status": "failed",
@@ -1601,7 +1783,9 @@ def completion_verification_interrupt_node(state: GraphState) -> dict[str, Any]:
             "verification_reason": "Confirmed complete by human verification.",
         }
 
-    rejection_text = str(result.get("text", "")).strip() if isinstance(result, dict) else str(result)
+    rejection_text = (
+        str(result.get("text", "")).strip() if isinstance(result, dict) else str(result)
+    )
     logger.info(
         "Completion verification interrupt resumed: rejected, reason=%s", rejection_text[:120]
     )
@@ -1658,7 +1842,10 @@ def end_node(state: GraphState) -> dict[str, Any]:
 
     context_clarification_exhausted = bool(
         state.get("orchestrator_input_required")
-    ) and int(state.get("context_clarification_retry_count", 0)) >= CONTEXT_CLARIFICATION_MAX_RETRIES
+    ) and (
+        int(state.get("context_clarification_retry_count", 0))
+        >= CONTEXT_CLARIFICATION_MAX_RETRIES
+    )
 
     return {
         "restart_required": state.get("restart_required", False),
@@ -1763,6 +1950,7 @@ def build_graph(
             "context found": NodeName.CHECK_CODE_LOOK_NEED,
             "clarification needed": NodeName.CONTEXT_CLARIFICATION_INTERRUPT,
             "clarification limit reached": NodeName.END_NODE,
+            "backlog item not found": NodeName.END_NODE,
         },
     )
     workflow.add_edge(NodeName.CONTEXT_CLARIFICATION_INTERRUPT, NodeName.RESOLVE_CONTEXT)

@@ -57,6 +57,7 @@ def resolve_request_context(
     *,
     target_project_context: TargetProjectContext | None = None,
     clarification_answer: str = "",
+    allow_backlog_fetch: bool = True,
 ) -> dict[str, Any]:
     """Resolve detected references only from explicit caller-supplied context.
 
@@ -66,6 +67,15 @@ def resolve_request_context(
     resolves only that single reference and is recorded verbatim as evidence; it is
     never parsed or used to guess meaning, the same trust level already given to
     ``target_project_context``.
+
+    When the caller already told us where the project's backlog lives
+    (``target_project_context.backlog_project``) but the request names an item this
+    function hasn't seen yet, that item is a ``backlog_fetch_candidate`` rather than
+    a ``clarification_question`` — the caller (the graph node) can look it up
+    deterministically instead of asking a human where to find something we already
+    know the location of. Set ``allow_backlog_fetch=False`` after already attempting
+    that lookup once, so a second unresolved reference falls back to asking instead
+    of triggering another fetch in the same pass.
     """
 
     understanding = understand_request(request)
@@ -122,10 +132,16 @@ def resolve_request_context(
     if context_lines:
         bounded = f"{bounded}\n\nResolved context:\n" + "\n".join(context_lines)
 
+    backlog_project = target_project_context.backlog_project if target_project_context else None
+
     question = ""
+    backlog_fetch_candidate = ""
     if unresolved:
         first = unresolved[0]
-        question = f"What does {first} refer to, and where should I retrieve it from?"
+        if allow_backlog_fetch and backlog_project is not None:
+            backlog_fetch_candidate = first
+        else:
+            question = f"What does {first} refer to, and where should I retrieve it from?"
 
     return {
         "bounded_request": bounded,
@@ -138,4 +154,5 @@ def resolve_request_context(
         "unresolved_references": list(unresolved),
         "context_resolution_evidence": evidence,
         "clarification_question": question,
+        "backlog_fetch_candidate": backlog_fetch_candidate,
     }

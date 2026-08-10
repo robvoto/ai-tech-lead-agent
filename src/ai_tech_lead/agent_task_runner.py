@@ -69,6 +69,7 @@ from .progress_events import (
 )
 from .runtime_lock import RuntimeLockBusyError, acquire_request_run_lock
 from .target_project_context import (
+    BacklogColumnContext,
     BacklogItemContext,
     BacklogProjectContext,
     ResourceReferenceContext,
@@ -209,6 +210,15 @@ def run_agent_task(input_path: str | Path, output_path: str | Path) -> int:
         return 1
 
     try:
+        # backlog_project (project_reference.backlog) is resolved first, and unlike
+        # backlog_reference it never triggers Sheets work by itself — this is a safe
+        # place to fail closed before anything else has happened.
+        try:
+            backlog_project = _resolve_backlog_project(task_input)
+        except ValueError as exc:
+            _write_error_output(output_file, progress_reporter, request_id, str(exc), settings=settings)
+            return 1
+
         # Backlog reference: an explicit, caller-supplied pointer to one row in one
         # Google Sheet. Resolved and snapshotted before execution; never a hidden
         # or discovered selection. No reference means no backlog side-effects.
@@ -219,17 +229,49 @@ def run_agent_task(input_path: str | Path, output_path: str | Path) -> int:
         if raw_backlog_reference is not None:
             try:
                 backlog_reference = resolve_backlog_reference(raw_backlog_reference, settings)
+            except BacklogReferenceError as exc:
+                _write_error_output(
+                    output_file,
+                    progress_reporter,
+                    request_id,
+                    f"backlog_reference could not be resolved: {exc}",
+                    settings=settings,
+                )
+                return 1
+
+            if backlog_project is not None and (
+                backlog_project.spreadsheet_id != backlog_reference.spreadsheet_id
+                or backlog_project.sheet_name != backlog_reference.sheet_name
+            ):
+                _write_error_output(
+                    output_file,
+                    progress_reporter,
+                    request_id,
+                    "backlog_reference and project_reference.backlog identify different "
+                    f"backlog resources: backlog_reference points to spreadsheet "
+                    f"'{backlog_reference.spreadsheet_id}' sheet '{backlog_reference.sheet_name}', "
+                    f"but project_reference.backlog points to spreadsheet "
+                    f"'{backlog_project.spreadsheet_id}' sheet '{backlog_project.sheet_name}'. "
+                    "Supply matching resources, or only one of the two.",
+                    settings=settings,
+                )
+                return 1
+
+            # Once validated as the same resource (or backlog_project is absent), the
+            # two paths must agree on column layout too — never silently pick one.
+            layout = (
+                BacklogSheetLayout(columns=backlog_project.columns)
+                if backlog_project is not None
+                else None
+            )
+            try:
                 sheets_repository = SheetsBacklogRepository(
                     backlog_reference,
                     credentials_path=settings.backlog_google_credentials_path,
+                    layout=layout,
                 )
                 source_record = sheets_repository.get_item_with_source(backlog_reference.item_id)
-            except (
-                BacklogReferenceError,
-                ValueError,
-                BacklogValidationError,
-                BacklogSourceUnavailableError,
-            ) as exc:
+            except (ValueError, BacklogValidationError, BacklogSourceUnavailableError) as exc:
                 _write_error_output(
                     output_file,
                     progress_reporter,
@@ -255,6 +297,7 @@ def run_agent_task(input_path: str | Path, output_path: str | Path) -> int:
                 settings=settings,
                 backlog_reference=backlog_reference,
                 source_record=source_record,
+                backlog_project=backlog_project,
             )
         except ValueError as exc:
             _write_error_output(
@@ -286,8 +329,11 @@ def run_agent_task(input_path: str | Path, output_path: str | Path) -> int:
                         target_project_context=target_project_context,
                         settings=settings,
                     )
+                    # No graph runs for refinement, so nothing can resolve a backlog
+                    # item beyond what the caller already supplied up front.
+                    final_target_project_context = target_project_context
                 else:
-                    result = _execute_workflow(
+                    result, final_target_project_context = _execute_workflow(
                         request_id=request_id,
                         task=task_text,
                         execute_coding_agent=execute_coding_agent,
@@ -319,12 +365,13 @@ def run_agent_task(input_path: str | Path, output_path: str | Path) -> int:
             )
             return 1
 
-        if target_project_context.backlog_item is not None:
+        if (
+            final_target_project_context is not None
+            and final_target_project_context.backlog_item is not None
+        ):
             result["backlog_sync_status"] = _sync_backlog_completion(
                 request_id=request_id,
-                target_project_context=target_project_context,
-                sheets_repository=sheets_repository,
-                source_row_hash=source_record.row_hash,
+                target_project_context=final_target_project_context,
                 result=result,
                 settings=settings,
             )
@@ -395,12 +442,32 @@ def _merge_resource_references(
     return list(merged.values())
 
 
+def _resolve_backlog_project(task_input: dict[str, Any]) -> BacklogProjectContext | None:
+    """Parse project_reference.backlog (or legacy backlog_project) up front.
+
+    Resolved once, early, so it can be checked against an explicit
+    backlog_reference for the same resource before any Sheets work starts —
+    and reused unchanged for the initial fetch layout, _build_target_project_context,
+    and (later) completion sync, instead of three independent derivations.
+    """
+    raw_project_reference = task_input.get("project_reference")
+    if raw_project_reference is None:
+        return None
+    if not isinstance(raw_project_reference, dict):
+        raise ValueError("project_reference must be a JSON object when supplied.")
+    raw_backlog_project = raw_project_reference.get("backlog")
+    if raw_backlog_project is None:
+        raw_backlog_project = raw_project_reference.get("backlog_project")
+    return BacklogProjectContext.from_payload(raw_backlog_project)
+
+
 def _build_target_project_context(
     *,
     task_input: dict[str, Any],
     settings: Any,
     backlog_reference: Any | None,
     source_record: Any | None,
+    backlog_project: BacklogProjectContext | None,
 ) -> TargetProjectContext:
     raw_project_reference = task_input.get("project_reference")
     if raw_project_reference is None:
@@ -444,12 +511,9 @@ def _build_target_project_context(
             item_id=backlog_reference.item_id,
             title=source_record.item.title,
             body=source_record.item.body,
+            row_hash=source_record.row_hash,
+            fetched_at=source_record.fetched_at,
         )
-
-    raw_backlog_project = project_reference.get("backlog")
-    if raw_backlog_project is None:
-        raw_backlog_project = project_reference.get("backlog_project")
-    backlog_project = BacklogProjectContext.from_payload(raw_backlog_project)
 
     return TargetProjectContext(
         project_root=project_root or "",
@@ -669,7 +733,14 @@ def _execute_workflow(
     decision: _Decision | None = None,
     progress_reporter: ProgressReporter | None = None,
     target_project_context: TargetProjectContext | None = None,
-) -> dict[str, Any]:
+) -> tuple[dict[str, Any], TargetProjectContext | None]:
+    """Run the graph and return (output, final target_project_context).
+
+    The final context may carry a `backlog_item` the graph itself resolved
+    mid-run (the known-backlog-resolution path in coding_workflow_graph.py),
+    not just one supplied up front — callers doing completion sync must read
+    it from here, not from the pre-graph `target_project_context` argument.
+    """
     from .coding_workflow_graph import build_graph, build_initial_graph_state
 
     reporter = progress_reporter or ProgressReporter()
@@ -714,6 +785,7 @@ def _execute_workflow(
     else:
         initial_state: dict[str, Any] = build_initial_graph_state(
             task,
+            request_id=request_id,
             force_approval=False,
             target_project_context=target_project_context,
         )
@@ -721,13 +793,17 @@ def _execute_workflow(
 
     state_snapshot = graph.get_state(config)
     reporter.phase("finalising", "Preparing the structured result.")
-    return _map_state_to_output(
+    result = _map_state_to_output(
         request_id,
         final_state,
         execute_coding_agent,
         state_snapshot=state_snapshot,
         thread_id=thread_id,
     )
+    final_target_project_context = TargetProjectContext.from_payload(
+        final_state.get("target_project_context")
+    )
+    return result, final_target_project_context
 
 
 def _map_decision_to_resume_payload(kind: str, decision: _Decision) -> Any:
@@ -840,12 +916,16 @@ def _sync_backlog_completion(
     *,
     request_id: str,
     target_project_context: TargetProjectContext,
-    sheets_repository: SheetsBacklogRepository,
-    source_row_hash: str,
     result: dict[str, Any],
     settings: Any,
 ) -> str:
     """Write the backlog item's Status/Evidence back only on real execution success.
+
+    `target_project_context` must be the *final* context — the one read back
+    after the graph finished — since `backlog_item` may have been resolved
+    mid-run (known-backlog-resolution path) rather than supplied up front.
+    Both paths populate `backlog_item.row_hash` at fetch time, so this is the
+    single sync mechanism regardless of which one resolved the item.
 
     Returns the sync status: "not_applicable" (no execution happened this
     run), "synced", "pending" (Sheets call failed, queued for recovery),
@@ -860,6 +940,19 @@ def _sync_backlog_completion(
     backlog_item = target_project_context.backlog_item
     if backlog_item is None:
         return "not_applicable"
+    assert backlog_item.row_hash, (
+        f"backlog_item '{backlog_item.item_id}' was resolved without a captured "
+        "row_hash; both fetch paths must populate it."
+    )
+
+    backlog_project = target_project_context.backlog_project
+    columns = backlog_project.columns if backlog_project is not None else BacklogColumnContext()
+    sheets_repository = repository_for(
+        backlog_item.spreadsheet_id,
+        backlog_item.sheet_name,
+        credentials_path=settings.backlog_google_credentials_path,
+        layout=BacklogSheetLayout(columns=columns),
+    )
 
     validation_note = f"Completed via Agent Hub request {request_id}. {result.get('summary', '')}"
     runtime_store = BacklogRuntimeStore()
@@ -869,10 +962,10 @@ def _sync_backlog_completion(
         request_id=request_id,
         item_id=backlog_item.item_id,
         update_fields={
-            "Status": "Done",
-            "Evidence / Validation": validation_note.strip(),
+            columns.status: "Done",
+            columns.evidence_validation: validation_note.strip(),
         },
-        expected_row_hash=source_row_hash,
+        expected_row_hash=backlog_item.row_hash,
         max_attempts=settings.backlog_pending_update_max_attempts,
     )
     runtime_store.mark_snapshot_status(
@@ -921,6 +1014,14 @@ def _map_state_to_output(
         option_names = ", ".join(opt["name"] for opt in pending_decision["options"])
         next_action = f"Resubmit request_id with a decision. Options: {option_names}."
         result_kind = RESULT_KIND_DECISION_REQUIRED
+    elif state.get("backlog_item_not_found_reason"):
+        # The project's backlog location was already known, so this is a definite
+        # answer (the row isn't there), not something a human needs to interpret —
+        # stop clearly instead of asking a clarification question we don't need.
+        status = STATUS_FAILED
+        summary = str(state.get("backlog_item_not_found_reason", ""))
+        next_action = "Verify the item ID and resubmit — do not resubmit unchanged."
+        result_kind = RESULT_KIND_TERMINAL_FAILURE
     elif state.get("context_clarification_exhausted"):
         # Context clarification was asked once and resumed, but the reference is
         # still unresolved. This must not invite another automated retry loop

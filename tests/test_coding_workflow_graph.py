@@ -42,7 +42,11 @@ from ai_tech_lead.coding_workflow_graph import (
 from ai_tech_lead.completion_verifier import CompletionVerificationDecision
 from ai_tech_lead.plan_reviewer import PlanReviewDecision
 from ai_tech_lead.risk_reviewer import RiskReviewDecision
-from ai_tech_lead.target_project_context import BacklogItemContext, TargetProjectContext
+from ai_tech_lead.target_project_context import (
+    BacklogItemContext,
+    BacklogProjectContext,
+    TargetProjectContext,
+)
 from ai_tech_lead.tech_lead_analyst import TechLeadAnalysis
 
 
@@ -2077,6 +2081,239 @@ def test_unresolved_reference_routes_to_clarification_before_research() -> None:
     assert state["orchestrator_input_required"] is True
     assert state["orchestrator_input_question"] == (
         "What does AF-052 refer to, and where should I retrieve it from?"
+    )
+
+
+def _known_backlog_target_project_context() -> TargetProjectContext:
+    return TargetProjectContext(
+        project_key="ai-tech-lead",
+        backlog_project=BacklogProjectContext(
+            project_key="ai-tech-lead",
+            spreadsheet_id="spreadsheet-a",
+            sheet_name="Backlog",
+        ),
+    )
+
+
+def test_known_backlog_resolves_referenced_item_without_clarification(monkeypatch) -> None:
+    class _FakeItem:
+        title = "Ship the widget"
+        body = "Acceptance Criteria: widget ships."
+
+    class _FakeSourceRecord:
+        item = _FakeItem()
+        row_values = ["ATL-999", "Ship the widget"]
+        row_hash = "hash-abc"
+        fetched_at = "2026-08-10T00:00:00+00:00"
+
+    class _FakeRepo:
+        def get_item_with_source(self, item_id: str) -> _FakeSourceRecord:
+            assert item_id == "ATL-999"
+            return _FakeSourceRecord()
+
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.load_settings",
+        lambda: parse_settings(valid_settings_dict()),
+    )
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.repository_for", lambda *a, **k: _FakeRepo()
+    )
+
+    state = graph_state(
+        request="Code ATL-999 next",
+        target_project_context=_known_backlog_target_project_context().to_payload(),
+    )
+    state.update(resolve_context_node(state))
+
+    assert route_after_resolve_context(state) == "context found"
+    assert state["orchestrator_input_required"] is False
+    assert state["unresolved_references"] == []
+    assert state.get("backlog_item_not_found_reason", "") == ""
+    assert "Ship the widget" in state["bounded_request"]
+    assert state["target_project_context"]["backlog_item"]["item_id"] == "ATL-999"
+    assert state["target_project_context"]["backlog_item"]["row_hash"] == "hash-abc"
+
+
+def test_known_backlog_fetch_snapshots_the_row_when_request_id_present(monkeypatch) -> None:
+    """The in-graph fetch reuses the same snapshot mechanism as the pre-graph path."""
+    from ai_tech_lead.backlog_runtime_store import BacklogRuntimeStore
+
+    class _FakeItem:
+        title = "Ship the widget"
+        body = "Acceptance Criteria: widget ships."
+
+    class _FakeSourceRecord:
+        item = _FakeItem()
+        row_values = ["ATL-999", "Ship the widget"]
+        row_hash = "hash-abc"
+        fetched_at = "2026-08-10T00:00:00+00:00"
+
+    class _FakeRepo:
+        def get_item_with_source(self, item_id: str) -> _FakeSourceRecord:
+            return _FakeSourceRecord()
+
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.load_settings",
+        lambda: parse_settings(valid_settings_dict()),
+    )
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.repository_for", lambda *a, **k: _FakeRepo()
+    )
+
+    state = graph_state(
+        request_id="req-snapshot-1",
+        request="Code ATL-999 next",
+        target_project_context=_known_backlog_target_project_context().to_payload(),
+    )
+    state.update(resolve_context_node(state))
+
+    snapshot = BacklogRuntimeStore().get_snapshot("req-snapshot-1")
+    assert snapshot is not None
+    assert snapshot.item_id == "ATL-999"
+    assert snapshot.row_hash == "hash-abc"
+    assert snapshot.spreadsheet_id == "spreadsheet-a"
+
+
+# ---------------------------------------------------------------------------
+# Bounded backlog-location discovery: the project is known (project_key) but
+# its backlog resource isn't — check settings.backlog_projects before asking.
+# ---------------------------------------------------------------------------
+
+
+def test_backlog_location_discovered_from_settings_registry_resolves_item(monkeypatch) -> None:
+    """A registered project_key with no caller-supplied backlog_project still
+    resolves the referenced item, via the same known-backlog fetch path."""
+
+    class _FakeItem:
+        title = "Ship the widget"
+        body = "Acceptance Criteria: widget ships."
+
+    class _FakeSourceRecord:
+        item = _FakeItem()
+        row_values = ["ATL-999", "Ship the widget"]
+        row_hash = "hash-discovered"
+        fetched_at = "2026-08-10T00:00:00+00:00"
+
+    class _FakeRepo:
+        def get_item_with_source(self, item_id: str) -> _FakeSourceRecord:
+            assert item_id == "ATL-999"
+            return _FakeSourceRecord()
+
+    settings = replace(
+        parse_settings(valid_settings_dict()),
+        backlog_projects={
+            "ai-tech-lead": {"spreadsheet_id": "spreadsheet-a", "sheet_name": "Backlog"}
+        },
+    )
+    monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.load_settings", lambda: settings)
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.repository_for", lambda *a, **k: _FakeRepo()
+    )
+
+    state = graph_state(
+        request="Code ATL-999 next",
+        target_project_context=TargetProjectContext(project_key="ai-tech-lead").to_payload(),
+    )
+    state.update(resolve_context_node(state))
+
+    assert route_after_resolve_context(state) == "context found"
+    assert state["orchestrator_input_required"] is False
+    assert state["unresolved_references"] == []
+    assert state["target_project_context"]["backlog_project"]["spreadsheet_id"] == "spreadsheet-a"
+    assert state["target_project_context"]["backlog_item"]["item_id"] == "ATL-999"
+
+
+def test_backlog_location_not_registered_falls_back_to_clarification(monkeypatch) -> None:
+    """A project_key that isn't in settings.backlog_projects is not verified —
+    discovery must not guess, and Sheets must never be touched."""
+
+    def _unexpected_call(*args: object, **kwargs: object) -> None:
+        raise AssertionError("repository_for should not be called when discovery finds nothing")
+
+    settings = replace(parse_settings(valid_settings_dict()), backlog_projects={})
+    monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.load_settings", lambda: settings)
+    monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.repository_for", _unexpected_call)
+
+    state = graph_state(
+        request="Code ATL-999 next",
+        target_project_context=TargetProjectContext(project_key="unregistered-project").to_payload(),
+    )
+    state.update(resolve_context_node(state))
+
+    assert route_after_resolve_context(state) == "clarification needed"
+    assert state["orchestrator_input_question"] == (
+        "What does ATL-999 refer to, and where should I retrieve it from?"
+    )
+    assert state.get("backlog_item_not_found_reason", "") == ""
+
+
+def test_backlog_location_discovery_skipped_without_project_key(monkeypatch) -> None:
+    """No project_key means nothing to look up — discovery must not fire, and
+    must not attempt to guess a location from project_root or anything else."""
+
+    def _unexpected_call(*args: object, **kwargs: object) -> None:
+        raise AssertionError("repository_for should not be called with no project_key")
+
+    settings = replace(
+        parse_settings(valid_settings_dict()),
+        backlog_projects={
+            "ai-tech-lead": {"spreadsheet_id": "spreadsheet-a", "sheet_name": "Backlog"}
+        },
+    )
+    monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.load_settings", lambda: settings)
+    monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.repository_for", _unexpected_call)
+
+    state = graph_state(
+        request="Code ATL-999 next",
+        target_project_context=TargetProjectContext(project_root="/some/project").to_payload(),
+    )
+    state.update(resolve_context_node(state))
+
+    assert route_after_resolve_context(state) == "clarification needed"
+
+
+def test_known_backlog_missing_item_fails_clearly_without_asking(monkeypatch) -> None:
+    class _FakeRepo:
+        def get_item_with_source(self, item_id: str) -> None:
+            raise ValueError(f"Backlog item '{item_id}' was not found in spreadsheet 'spreadsheet-a'.")
+
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.load_settings",
+        lambda: parse_settings(valid_settings_dict()),
+    )
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.repository_for", lambda *a, **k: _FakeRepo()
+    )
+
+    state = graph_state(
+        request="Code ATL-999 next",
+        target_project_context=_known_backlog_target_project_context().to_payload(),
+    )
+    state.update(resolve_context_node(state))
+
+    assert route_after_resolve_context(state) == "backlog item not found"
+    assert state["orchestrator_input_required"] is False
+    assert "ATL-999" in state["backlog_item_not_found_reason"]
+    assert "was not found" in state["backlog_item_not_found_reason"]
+
+
+def test_no_known_backlog_still_asks_for_clarification(monkeypatch) -> None:
+    def _unexpected_call(*args: object, **kwargs: object) -> None:
+        raise AssertionError("repository_for should not be called with no known backlog")
+
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.repository_for", _unexpected_call
+    )
+
+    state = graph_state(
+        request="Code ATL-999 next",
+        target_project_context=TargetProjectContext().to_payload(),
+    )
+    state.update(resolve_context_node(state))
+
+    assert route_after_resolve_context(state) == "clarification needed"
+    assert state["orchestrator_input_question"] == (
+        "What does ATL-999 refer to, and where should I retrieve it from?"
     )
 
 
