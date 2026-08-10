@@ -105,3 +105,39 @@ def test_review_plan_routes_to_human_after_retry_exhausted(monkeypatch) -> None:
 
     with pytest.raises(PlanReviewUnavailable, match="invalid response"):
         review_plan("Build the feature", "1. Do the thing.", settings)
+
+
+def test_project_guidance_is_included_in_the_plan_review_prompt_when_present(monkeypatch) -> None:
+    settings = replace(parse_settings(valid_settings_dict()), orchestrator_ai_enabled=True)
+    captured: dict = {}
+
+    def fake_call(**kwargs):
+        captured["prompt"] = kwargs["prompt"]
+        return OrchestratorLlmResult(text='{"approved": true, "reason": "Looks good."}')
+
+    monkeypatch.setattr("ai_tech_lead.llm_json.call_orchestrator_llm", fake_call)
+
+    review_plan(
+        "Build the feature",
+        "1. Do the thing.",
+        settings,
+        project_guidance=["AGENTS.md: run `make test` before reporting done."],
+    )
+
+    assert "Target project's own guidance" in captured["prompt"]
+    assert "run `make test` before reporting done" in captured["prompt"]
+
+
+def test_project_guidance_omitted_from_plan_review_prompt_when_empty(monkeypatch) -> None:
+    settings = replace(parse_settings(valid_settings_dict()), orchestrator_ai_enabled=True)
+    captured: dict = {}
+
+    def fake_call(**kwargs):
+        captured["prompt"] = kwargs["prompt"]
+        return OrchestratorLlmResult(text='{"approved": true, "reason": "Looks good."}')
+
+    monkeypatch.setattr("ai_tech_lead.llm_json.call_orchestrator_llm", fake_call)
+
+    review_plan("Build the feature", "1. Do the thing.", settings)
+
+    assert "Target project's own guidance" not in captured["prompt"]

@@ -1268,11 +1268,18 @@ def request_plan_node(
     feedback_section = (
         f"\nTask feedback for this attempt:\n{_format_bullets(feedback)}" if feedback else ""
     )
+    project_guidance = list(state.get("project_guidance_notes", []))
+    guidance_section = (
+        "\nTarget project's own guidance:\n" + _format_bullets(project_guidance)
+        if project_guidance
+        else ""
+    )
     instruction = render_prompt(
         PLAN_REQUEST_INSTRUCTION_PROMPT_KEY,
         formulated_task=state.get("formulated_task", "") or state["request"],
         task_feedback=feedback_section,
         correction_feedback=correction_section,
+        project_guidance=guidance_section,
     )
     target_project_root = _target_project_root(state, settings)
     result = run_coding_agent(
@@ -1335,6 +1342,7 @@ def review_plan_node(
             plan_text=plan_text,
             agent_error=plan_agent_stderr,
             settings=settings,
+            project_guidance=list(state.get("project_guidance_notes", [])),
         )
     except PlanReviewUnavailable as exc:
         logger.warning("Plan reviewer unavailable: %s — routing to human interrupt.", exc)

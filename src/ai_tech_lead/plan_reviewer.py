@@ -34,8 +34,18 @@ def review_plan(
     plan_text: str,
     settings: AppSettings,
     agent_error: str = "",
+    project_guidance: list[str] | None = None,
 ) -> PlanReviewDecision:
-    """Decide whether the coding agent's plan correctly addresses the task."""
+    """Decide whether the coding agent's plan correctly addresses the task.
+
+    ``project_guidance`` is the same bounded, already-selected notes Tech Lead
+    Analysis used (see project_guidance_discovery.py) — not re-selected here.
+    The reviewer checks the plan against it (implementation ownership, required
+    validation, established patterns) in addition to the core small/specific/
+    testable criteria; guidance may add or narrow project-local expectations
+    but must never be treated as a reason to approve a plan that skips core
+    safety, approval, evidence, or stop rules.
+    """
 
     if not settings.orchestrator_ai_enabled:
         logger.info("Plan review: AI disabled, routing to human approval.")
@@ -64,7 +74,7 @@ def review_plan(
         )
 
     try:
-        return _llm_review_plan(formulated_task, plan_text, settings)
+        return _llm_review_plan(formulated_task, plan_text, settings, project_guidance or [])
     except OrchestratorLlmError as error:
         logger.warning("Plan review LLM call failed: %s — routing to human approval.", error)
         raise PlanReviewUnavailable(f"Plan review LLM unavailable: {error}") from error
@@ -79,11 +89,18 @@ def _llm_review_plan(
     formulated_task: str,
     plan_text: str,
     settings: AppSettings,
+    project_guidance: list[str],
 ) -> PlanReviewDecision:
+    guidance_text = (
+        "Target project's own guidance:\n" + "\n".join(f"- {g}" for g in project_guidance)
+        if project_guidance
+        else ""
+    )
     prompt = render_prompt(
         PLAN_REVIEW_PROMPT_KEY,
         formulated_task=formulated_task,
         plan_text=plan_text,
+        project_guidance=guidance_text,
     )
     config = OrchestratorLlmConfig(
         model=settings.orchestrator_ai_model,

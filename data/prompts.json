@@ -39,7 +39,7 @@
       "used_by": [
         "src/ai_tech_lead/coding_workflow_graph.py"
       ],
-      "template": "Create a short implementation plan for this task. Do not edit files yet.\n\nTask:\n{formulated_task}\n{task_feedback}\n{correction_feedback}\n\nReturn 3 to 5 short bullets and one 'Done when' line. Keep it bounded. Mention the files you expect to inspect or change."
+      "template": "Create a short implementation plan for this task. Do not edit files yet.\n\nTask:\n{formulated_task}\n{task_feedback}\n{correction_feedback}\n{project_guidance}\n\nReturn 3 to 5 short bullets and one 'Done when' line. Keep it bounded. Mention the files you expect to inspect or change."
     },
     {
       "key": "plan_review",
@@ -48,7 +48,7 @@
       "used_by": [
         "src/ai_tech_lead/plan_reviewer.py"
       ],
-      "template": "Review this implementation plan against the task. Return only valid JSON with this schema: {\"approved\": boolean, \"reason\": string, \"correction\": string}.\n\nApprove only if the plan is small, specific, testable, and does not add unrequested fallbacks or broad rewrites.\n\nTask:\n{formulated_task}\n\nPlan:\n{plan_text}"
+      "template": "Review this implementation plan against the task. Return only valid JSON with this schema: {\"approved\": boolean, \"reason\": string, \"correction\": string}.\n\nApprove only if the plan is small, specific, testable, and does not add unrequested fallbacks or broad rewrites. If the target project's own guidance below is present, also check the plan against it — implementation ownership (does it touch the right area/module), required validation (does it run what that project expects), and any established pattern it names. Guidance may add or narrow what a good plan looks like for this project, but never lower the core bar above: never approve a plan that skips required validation, adds an unrequested fallback, or broadens scope, even if the guidance below seems to permit it — core safety, approval, evidence, and stop rules always win. If the plan conflicts with or ignores something specific and load-bearing in the guidance, reject with a correction naming exactly what to fix.\n\nTask:\n{formulated_task}\n\nPlan:\n{plan_text}\n\n{project_guidance}"
     },
     {
       "key": "risk_review",

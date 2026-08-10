@@ -28,6 +28,7 @@ from ai_tech_lead.coding_workflow_graph import (
     read_and_classify_request_node,
     request_plan_node,
     resolve_context_node,
+    review_plan_node,
     route_after_approval,
     route_after_check_code_look_need,
     route_after_check_project_guidance,
@@ -686,6 +687,91 @@ def test_request_plan_node_captures_stderr_when_stdout_empty(monkeypatch) -> Non
 
     assert result["plan_text"] == ""
     assert result["plan_agent_stderr"] == "ERROR: You've hit your usage limit."
+
+
+def test_request_plan_node_includes_selected_project_guidance_in_the_instruction(
+    monkeypatch,
+) -> None:
+    """ATL-078: the plan request must carry the same guidance CHECK_PROJECT_GUIDANCE
+    already selected — not re-select it, just pass it through."""
+    settings = replace(parse_settings(valid_settings_dict()), execute_coding_agent=False)
+    captured: dict = {}
+
+    monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.load_settings", lambda: settings)
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.render_prompt",
+        lambda _prompt_key, **replacements: replacements["project_guidance"],
+    )
+
+    def fake_run_coding_agent(*, agent_instruction, **_kwargs):
+        captured["agent_instruction"] = agent_instruction
+
+        class Result:
+            stdout = "1. Do the thing"
+            stderr = ""
+            returncode = 0
+            changed_files_delta: tuple[str, ...] = ()
+
+        return Result()
+
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.run_coding_agent", fake_run_coding_agent
+    )
+
+    state = graph_state(project_guidance_notes=["AGENTS.md: run `make test` before done."])
+    request_plan_node(state, progress_callback=None)
+
+    assert "AGENTS.md: run `make test` before done." in captured["agent_instruction"]
+
+
+def test_request_plan_node_omits_guidance_section_when_none_selected(monkeypatch) -> None:
+    settings = replace(parse_settings(valid_settings_dict()), execute_coding_agent=False)
+    captured: dict = {}
+
+    monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.load_settings", lambda: settings)
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.render_prompt",
+        lambda _prompt_key, **replacements: replacements["project_guidance"],
+    )
+
+    def fake_run_coding_agent(*, agent_instruction, **_kwargs):
+        captured["agent_instruction"] = agent_instruction
+
+        class Result:
+            stdout = "1. Do the thing"
+            stderr = ""
+            returncode = 0
+            changed_files_delta: tuple[str, ...] = ()
+
+        return Result()
+
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.run_coding_agent", fake_run_coding_agent
+    )
+
+    request_plan_node(graph_state(project_guidance_notes=[]), progress_callback=None)
+
+    assert captured["agent_instruction"] == ""
+
+
+def test_review_plan_node_passes_selected_project_guidance_to_the_reviewer(monkeypatch) -> None:
+    settings = replace(parse_settings(valid_settings_dict()), orchestrator_ai_enabled=True)
+    captured: dict = {}
+
+    def fake_review_plan(**kwargs):
+        captured.update(kwargs)
+        return PlanReviewDecision(True, "Looks good.", "")
+
+    monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.load_settings", lambda: settings)
+    monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.review_plan", fake_review_plan)
+
+    state = graph_state(
+        plan_text="1. Do the thing.",
+        project_guidance_notes=["AGENTS.md: run `make test` before done."],
+    )
+    review_plan_node(state, progress_callback=None)
+
+    assert captured["project_guidance"] == ["AGENTS.md: run `make test` before done."]
 
 
 def test_graph_runs_to_disabled_coding_agent_result(monkeypatch) -> None:
