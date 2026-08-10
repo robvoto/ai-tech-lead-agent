@@ -106,6 +106,42 @@ def test_assembled_instruction_does_not_dump_irrelevant_skills() -> None:
     assert "## instruction-maintenance" not in instruction
 
 
+def test_assembled_instruction_includes_selected_project_guidance_when_present() -> None:
+    """ATL-078: the coding-agent handoff must carry the same selected guidance
+    Tech Lead Analysis and plan review used."""
+    settings = parse_settings(valid_settings_dict())
+
+    instruction = build_agent_instruction(
+        request="Fix Telegram graph runtime test",
+        brief="Small runtime fix only.",
+        formulated_task="",
+        task_feedback=[],
+        needs_approval=False,
+        approved=False,
+        settings=settings,
+        project_guidance=["AGENTS.md: run `make test` before reporting done."],
+    )
+
+    assert "## Selected project guidance (same as Tech Lead Analysis and plan review)" in instruction
+    assert "run `make test` before reporting done" in instruction
+
+
+def test_assembled_instruction_omits_project_guidance_section_when_none_selected() -> None:
+    settings = parse_settings(valid_settings_dict())
+
+    instruction = build_agent_instruction(
+        request="Fix Telegram graph runtime test",
+        brief="Small runtime fix only.",
+        formulated_task="",
+        task_feedback=[],
+        needs_approval=False,
+        approved=False,
+        settings=settings,
+    )
+
+    assert "Selected project guidance" not in instruction
+
+
 def test_assembled_instruction_includes_backlog_ownership_rules_from_prompt_file() -> None:
     settings = parse_settings(valid_settings_dict())
 

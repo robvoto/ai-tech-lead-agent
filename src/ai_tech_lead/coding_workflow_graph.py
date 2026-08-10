@@ -4,8 +4,10 @@ This module stays focused on the graph itself so LangGraph Studio can import it
 without the local CLI runner getting in the way.
 """
 
+import hashlib
 import logging
 import operator
+import re
 from collections.abc import Callable
 from dataclasses import replace
 from enum import StrEnum
@@ -118,6 +120,9 @@ class GraphState(TypedDict):
     project_guidance_proposed_change: str
     project_guidance_reason: str
     project_guidance_rejected_summary: str
+    project_guidance_paths: list[str]
+    project_guidance_hash: str
+    project_guidance_changed_on_resume: bool
     brief: str
     force_approval: bool
     orchestrator_input_required: bool
@@ -214,6 +219,9 @@ def build_initial_graph_state(
         "project_guidance_proposed_change": "",
         "project_guidance_reason": "",
         "project_guidance_rejected_summary": "",
+        "project_guidance_paths": [],
+        "project_guidance_hash": "",
+        "project_guidance_changed_on_resume": False,
         "brief": "",
         "force_approval": force_approval,
         "orchestrator_input_required": False,
@@ -952,6 +960,26 @@ def codex_reads_code_node(
     return {"code_recon_report": report}
 
 
+_GUIDANCE_NOTE_PATH_PATTERN = re.compile(r"^([^\s:(]+\.md)")
+
+
+def _guidance_paths_and_hash(notes: list[str]) -> tuple[list[str], str]:
+    """Derive the file paths behind the selected notes and one compact content
+    hash — metadata extracted from what discover_project_guidance already
+    returned, not a new discovery pass or a new persistence store. Ready for
+    ATL-038's audit/replay record to pick up once that ticket exists; this
+    does not build that record itself.
+    """
+
+    paths: list[str] = []
+    for note in notes:
+        match = _GUIDANCE_NOTE_PATH_PATTERN.match(note)
+        if match and match.group(1) not in paths:
+            paths.append(match.group(1))
+    combined_hash = hashlib.sha256("\x1f".join(notes).encode("utf-8")).hexdigest() if notes else ""
+    return paths, combined_hash
+
+
 def check_project_guidance_node(state: GraphState) -> dict[str, Any]:
     """Bounded discovery, then a governed check for missing/conflicting guidance.
 
@@ -969,16 +997,23 @@ def check_project_guidance_node(state: GraphState) -> dict[str, Any]:
             "project_guidance_notes": [],
             "project_guidance_status": "",
             "project_guidance_requires_review": False,
+            "project_guidance_paths": [],
+            "project_guidance_hash": "",
+            "project_guidance_changed_on_resume": False,
         }
 
     request_text = state.get("bounded_request", "") or state["request"]
     notes = discover_project_guidance(request_text, _soft_target_project_root(state, settings))
     decision = review_project_guidance(request_text, list(notes), settings)
+    paths, guidance_hash = _guidance_paths_and_hash(list(notes))
 
     logger.info(
         "[LEARN] Project guidance governance: status=%s requires_review=%s",
         decision.status,
         decision.requires_review,
+    )
+    logger.info(
+        "[LEARN] Project guidance selected: paths=%s hash=%s", paths, guidance_hash[:12]
     )
 
     return {
@@ -989,6 +1024,9 @@ def check_project_guidance_node(state: GraphState) -> dict[str, Any]:
         "project_guidance_related_locations": decision.related_locations,
         "project_guidance_proposed_change": decision.proposed_change,
         "project_guidance_reason": decision.reason,
+        "project_guidance_paths": paths,
+        "project_guidance_hash": guidance_hash,
+        "project_guidance_changed_on_resume": False,
     }
 
 
@@ -1193,6 +1231,13 @@ def route_after_approval(state: GraphState) -> str:
         )
         return "changes requested"
 
+    if state.get("project_guidance_changed_on_resume"):
+        logger.info(
+            "Decision: action=approve but selected project guidance changed since "
+            "checkpointing -> CHECK_PROJECT_GUIDANCE (re-planning required)"
+        )
+        return "guidance changed"
+
     logger.info("Decision: action=approve -> REQUEST_PLAN")
     return "approved"
 
@@ -1316,6 +1361,27 @@ def request_plan_node(
     }
 
 
+def _recheck_project_guidance_for_proposed_files(
+    state: GraphState, settings: Any, plan_text: str
+) -> tuple[list[str], bool]:
+    """ATL-078: after the coding agent's plan names files/areas, recheck whether
+    additional project guidance is now relevant — reuses discover_project_guidance
+    unchanged, just with plan-enriched request text, so it's still bounded to the
+    same three canonical files plus one skill and never scans the repository.
+    """
+
+    existing = list(state.get("project_guidance_notes", []))
+    if not settings.project_guidance_discovery_enabled:
+        return existing, False
+    request_text = state.get("bounded_request", "") or state["request"]
+    project_root = _soft_target_project_root(state, settings)
+    refreshed = list(discover_project_guidance(f"{request_text}\n{plan_text}", project_root))
+    if not refreshed:
+        return existing, False
+    merged = list(dict.fromkeys(existing + refreshed))
+    return merged, merged != existing
+
+
 def review_plan_node(
     state: GraphState,
     progress_callback: Callable[[str], None] | None = None,
@@ -1336,13 +1402,26 @@ def review_plan_node(
     logger.info("Reviewing plan (rejection_count=%d):", rejection_count)
     logger.info("Plan text:\n%s", plan_text or "<empty>")
 
+    project_guidance, guidance_changed = _recheck_project_guidance_for_proposed_files(
+        state, settings, plan_text
+    )
+    guidance_updates: dict[str, Any] = {}
+    if guidance_changed:
+        logger.info(
+            "[LEARN] Project guidance recheck after plan found additional relevant "
+            "guidance: %d -> %d note(s)",
+            len(state.get("project_guidance_notes", [])),
+            len(project_guidance),
+        )
+        guidance_updates["project_guidance_notes"] = project_guidance
+
     try:
         decision = review_plan(
             formulated_task=formulated_task,
             plan_text=plan_text,
             agent_error=plan_agent_stderr,
             settings=settings,
-            project_guidance=list(state.get("project_guidance_notes", [])),
+            project_guidance=project_guidance,
         )
     except PlanReviewUnavailable as exc:
         logger.warning("Plan reviewer unavailable: %s — routing to human interrupt.", exc)
@@ -1351,6 +1430,7 @@ def review_plan_node(
             "plan_review_reason": str(exc),
             "plan_correction": "",
             "plan_needs_human_review": True,
+            **guidance_updates,
         }
 
     logger.info("Plan review decision: approved=%s reason=%s", decision.approved, decision.reason)
@@ -1366,6 +1446,7 @@ def review_plan_node(
             "plan_correction": decision.correction,
             "plan_needs_human_review": False,
             "plan_rejection_count": new_rejection_count,
+            **guidance_updates,
         }
 
     logger.info("Plan approved.")
@@ -1376,6 +1457,7 @@ def review_plan_node(
         "plan_review_reason": decision.reason,
         "plan_correction": "",
         "plan_needs_human_review": False,
+        **guidance_updates,
     }
 
 
@@ -1456,6 +1538,35 @@ def _extract_resume_field(result: Any, key: str) -> str:
     return ""
 
 
+def _check_project_guidance_changed_on_resume(state: GraphState) -> dict[str, Any]:
+    """ATL-078: an approval can sit paused for a long time. Compare the current
+    selected-guidance hash against what was checkpointed when it was first
+    selected (1d_check_project_guidance); if it changed, flag it so
+    route_after_approval sends the run back through CHECK_PROJECT_GUIDANCE —
+    the same discovery+governance step already used, not a new mechanism —
+    instead of silently proceeding to plan/execute on stale guidance.
+    """
+
+    settings = load_settings()
+    checkpointed_hash = str(state.get("project_guidance_hash", "")).strip()
+    if not settings.project_guidance_discovery_enabled or not checkpointed_hash:
+        return {"project_guidance_changed_on_resume": False}
+
+    request_text = state.get("bounded_request", "") or state["request"]
+    project_root = _soft_target_project_root(state, settings)
+    fresh_notes = discover_project_guidance(request_text, project_root)
+    _, fresh_hash = _guidance_paths_and_hash(list(fresh_notes))
+    changed = bool(fresh_hash) and fresh_hash != checkpointed_hash
+    if changed:
+        logger.warning(
+            "[LEARN] Project guidance changed since selection (hash %s -> %s) — "
+            "re-planning against current guidance instead of proceeding.",
+            checkpointed_hash[:12],
+            fresh_hash[:12],
+        )
+    return {"project_guidance_changed_on_resume": changed}
+
+
 def approval_interrupt_node(state: GraphState) -> dict[str, Any]:
     """Pause for human approval, and handle request-changes/ask-question/cancel.
 
@@ -1489,13 +1600,21 @@ def approval_interrupt_node(state: GraphState) -> dict[str, Any]:
     if action == "approve":
         approved_by = _extract_resume_field(result, "approved_by")
         logger.info("Approval interrupt resumed: action=approve approved_by=%s", approved_by)
-        return {
+        updates: dict[str, Any] = {
             "approved": True,
             "approved_by": approved_by,
             "approval_action": "approve",
             "approval_last_question": "",
             "approval_last_answer": "",
         }
+        guidance_updates = _check_project_guidance_changed_on_resume(state)
+        if guidance_updates.get("project_guidance_changed_on_resume"):
+            # Don't let route_after_review_risk's "already approved" shortcut
+            # reuse an approval that was granted against stale guidance — the
+            # re-planning pass must earn a fresh approval decision.
+            updates["approved"] = False
+        updates.update(guidance_updates)
+        return updates
 
     if action == "cancel":
         logger.info("Approval interrupt resumed: action=cancel")
@@ -1593,6 +1712,7 @@ def create_agent_instruction_node(state: GraphState) -> dict[str, Any]:
         project_root=_target_project_root(state, settings),
         research_evidence=research_evidence,
         agent_correction=correction,
+        project_guidance=list(state.get("project_guidance_notes", [])),
     )
 
     logger.info(
@@ -1890,6 +2010,7 @@ def verify_completion_node(state: GraphState) -> dict[str, Any]:
             target_project_context=target_project_context,
             settings=settings,
             prior_correction=prior_correction,
+            project_guidance=list(state.get("project_guidance_notes", [])),
         )
     except CompletionVerificationUnavailable as error:
         logger.warning("Completion verification unavailable: %s", error)
@@ -2197,6 +2318,7 @@ def build_graph(
             "question asked": NodeName.APPROVAL_INTERRUPT,
             "cancelled": NodeName.END_NODE,
             "revision limit reached": NodeName.END_NODE,
+            "guidance changed": NodeName.CHECK_PROJECT_GUIDANCE,
         },
     )
     workflow.add_edge(NodeName.REQUEST_PLAN, NodeName.REVIEW_PLAN)

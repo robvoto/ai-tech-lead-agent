@@ -142,6 +142,47 @@ def test_verify_completion_raises_on_invalid_status(monkeypatch) -> None:
         _call()
 
 
+def test_project_guidance_is_included_in_the_completion_verification_prompt(monkeypatch) -> None:
+    captured: dict = {}
+
+    def fake_call(**kwargs):
+        captured["prompt"] = kwargs["prompt"]
+        return OrchestratorLlmResult(
+            text=json.dumps({"status": "complete", "reason": "Looks good.", "correction": ""}),
+            tokens_in=1,
+            tokens_out=1,
+            cost_usd=0.0,
+        )
+
+    monkeypatch.setattr("ai_tech_lead.completion_verifier.call_orchestrator_llm", fake_call)
+
+    _call(project_guidance=["AGENTS.md: run `make test` before reporting done."])
+
+    assert "Target project's own guidance" in captured["prompt"]
+    assert "run `make test` before reporting done" in captured["prompt"]
+
+
+def test_project_guidance_omitted_from_completion_verification_prompt_when_empty(
+    monkeypatch,
+) -> None:
+    captured: dict = {}
+
+    def fake_call(**kwargs):
+        captured["prompt"] = kwargs["prompt"]
+        return OrchestratorLlmResult(
+            text=json.dumps({"status": "complete", "reason": "Looks good.", "correction": ""}),
+            tokens_in=1,
+            tokens_out=1,
+            cost_usd=0.0,
+        )
+
+    monkeypatch.setattr("ai_tech_lead.completion_verifier.call_orchestrator_llm", fake_call)
+
+    _call()
+
+    assert "Target project's own guidance" not in captured["prompt"]
+
+
 def test_verify_completion_raises_when_correction_required_has_empty_correction(monkeypatch) -> None:
     result = OrchestratorLlmResult(
         text=json.dumps(

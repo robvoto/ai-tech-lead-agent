@@ -14,6 +14,9 @@ from ai_tech_lead.app_settings import parse_settings
 from ai_tech_lead.coding_workflow_graph import (
     CONTEXT_CLARIFICATION_MAX_RETRIES,
     NodeName,
+    _check_project_guidance_changed_on_resume,
+    _guidance_paths_and_hash,
+    approval_interrupt_node,
     build_graph,
     build_initial_graph_state,
     check_code_look_need_node,
@@ -43,6 +46,7 @@ from ai_tech_lead.coding_workflow_graph import (
     route_after_verify_completion,
     run_coding_agent_node,
     tech_lead_analyse_node,
+    verify_completion_node,
 )
 from ai_tech_lead.completion_verifier import CompletionVerificationDecision
 from ai_tech_lead.plan_reviewer import PlanReviewDecision
@@ -755,7 +759,13 @@ def test_request_plan_node_omits_guidance_section_when_none_selected(monkeypatch
 
 
 def test_review_plan_node_passes_selected_project_guidance_to_the_reviewer(monkeypatch) -> None:
-    settings = replace(parse_settings(valid_settings_dict()), orchestrator_ai_enabled=True)
+    # Recheck (ATL-078) disabled here so this test proves plain pass-through;
+    # the recheck itself is covered by its own dedicated tests below.
+    settings = replace(
+        parse_settings(valid_settings_dict()),
+        orchestrator_ai_enabled=True,
+        project_guidance_discovery_enabled=False,
+    )
     captured: dict = {}
 
     def fake_review_plan(**kwargs):
@@ -2386,6 +2396,389 @@ def test_tech_lead_analyse_node_passes_through_project_guidance_notes(monkeypatc
     tech_lead_analyse_node(state)
 
     assert captured["project_guidance"] == ["AGENTS.md: pre-discovered note."]
+
+
+def test_create_agent_instruction_node_passes_through_project_guidance_notes(monkeypatch) -> None:
+    """ATL-078: the Codex/Claude handoff must carry the same selected guidance."""
+    settings = replace(parse_settings(valid_settings_dict()), execute_coding_agent=False)
+    monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.load_settings", lambda: settings)
+    captured: dict = {}
+
+    def fake_build_agent_instruction(**kwargs):
+        captured.update(kwargs)
+        return "instruction"
+
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.build_agent_instruction",
+        fake_build_agent_instruction,
+    )
+
+    state = graph_state(
+        needs_approval=False,
+        approved=True,
+        brief="Brief",
+        project_guidance_notes=["AGENTS.md: pre-selected note."],
+    )
+    create_agent_instruction_node(state)
+
+    assert captured["project_guidance"] == ["AGENTS.md: pre-selected note."]
+
+
+def test_verify_completion_node_passes_through_project_guidance_notes(monkeypatch) -> None:
+    """ATL-078: completion review must check the diff/validation against the
+    same selected guidance."""
+    settings = replace(parse_settings(valid_settings_dict()), orchestrator_ai_enabled=True)
+    monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.load_settings", lambda: settings)
+    captured: dict = {}
+
+    def fake_verify_completion(**kwargs):
+        captured.update(kwargs)
+        return CompletionVerificationDecision(status="complete", reason="Looks good.")
+
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.verify_completion", fake_verify_completion
+    )
+
+    state = graph_state(project_guidance_notes=["AGENTS.md: pre-selected note."])
+    verify_completion_node(state)
+
+    assert captured["project_guidance"] == ["AGENTS.md: pre-selected note."]
+
+
+def test_guidance_paths_and_hash_extracts_paths_and_is_stable() -> None:
+    notes = [
+        "AGENTS.md: some guidance text.",
+        "docs/INDEX.md: some index text.",
+        ".skills/INDEX.md: some skills index text.",
+        ".skills/code-change/SKILL.md (code changes): skill detail text.",
+    ]
+
+    paths, guidance_hash = _guidance_paths_and_hash(notes)
+
+    assert paths == ["AGENTS.md", "docs/INDEX.md", ".skills/INDEX.md", ".skills/code-change/SKILL.md"]
+    assert guidance_hash
+    # Same notes -> same hash; deterministic, not time- or order-of-call dependent.
+    _, repeat_hash = _guidance_paths_and_hash(notes)
+    assert repeat_hash == guidance_hash
+
+
+def test_guidance_paths_and_hash_empty_notes_yields_no_paths_and_no_hash() -> None:
+    paths, guidance_hash = _guidance_paths_and_hash([])
+
+    assert paths == []
+    assert guidance_hash == ""
+
+
+def test_check_project_guidance_node_records_paths_and_hash(tmp_path, monkeypatch) -> None:
+    (tmp_path / "AGENTS.md").write_text("# AGENTS.md\n\nSome guidance.", encoding="utf-8")
+    settings = replace(
+        parse_settings(valid_settings_dict()), project_guidance_discovery_enabled=True
+    )
+    monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.load_settings", lambda: settings)
+    _mock_project_guidance_sufficient(monkeypatch)
+
+    state = graph_state(
+        request="Build the feature",
+        target_project_context=TargetProjectContext(project_root=str(tmp_path)).to_payload(),
+    )
+    result = check_project_guidance_node(state)
+
+    assert result["project_guidance_paths"] == ["AGENTS.md"]
+    assert result["project_guidance_hash"]
+    assert result["project_guidance_changed_on_resume"] is False
+
+
+def test_route_after_approval_routes_to_check_project_guidance_when_changed() -> None:
+    state = graph_state(
+        approval_action="approve", project_guidance_changed_on_resume=True
+    )
+    assert route_after_approval(state) == "guidance changed"
+
+
+def test_route_after_approval_proceeds_normally_when_guidance_unchanged() -> None:
+    state = graph_state(
+        approval_action="approve", project_guidance_changed_on_resume=False
+    )
+    assert route_after_approval(state) == "approved"
+
+
+def test_approval_interrupt_node_detects_guidance_changed_since_selection(
+    tmp_path, monkeypatch
+) -> None:
+    """ATL-078: the approval interrupt can pause for a long time. If the target
+    project's guidance changed since it was first selected, resuming with
+    approve must not silently proceed on the stale selection."""
+    (tmp_path / "AGENTS.md").write_text("# AGENTS.md\n\nOriginal guidance.", encoding="utf-8")
+    settings = replace(
+        parse_settings(valid_settings_dict()), project_guidance_discovery_enabled=True
+    )
+    monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.load_settings", lambda: settings)
+
+    state = graph_state(
+        request="Build the feature",
+        target_project_context=TargetProjectContext(project_root=str(tmp_path)).to_payload(),
+        project_guidance_hash="stale-hash-from-before-the-file-changed",
+    )
+    result = _check_project_guidance_changed_on_resume(state)
+
+    assert result["project_guidance_changed_on_resume"] is True
+
+
+def test_approval_interrupt_node_no_change_when_guidance_hash_matches(tmp_path, monkeypatch) -> None:
+    (tmp_path / "AGENTS.md").write_text("# AGENTS.md\n\nStable guidance.", encoding="utf-8")
+    settings = replace(
+        parse_settings(valid_settings_dict()), project_guidance_discovery_enabled=True
+    )
+    monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.load_settings", lambda: settings)
+
+    target_project_context = TargetProjectContext(project_root=str(tmp_path)).to_payload()
+    baseline_state = graph_state(
+        request="Build the feature", target_project_context=target_project_context
+    )
+    baseline = check_project_guidance_node(baseline_state)
+
+    state = graph_state(
+        request="Build the feature",
+        target_project_context=target_project_context,
+        project_guidance_hash=baseline["project_guidance_hash"],
+    )
+    result = _check_project_guidance_changed_on_resume(state)
+
+    assert result["project_guidance_changed_on_resume"] is False
+
+
+def test_review_plan_node_recheck_merges_additional_relevant_guidance(tmp_path, monkeypatch) -> None:
+    """ATL-078: after the plan names files/areas, the recheck may surface a
+    more specific skill than pre-plan discovery found — bounded to the same
+    discover_project_guidance mechanism, not a new one."""
+    skills_dir = tmp_path / ".skills"
+    (skills_dir / "database-migrations").mkdir(parents=True)
+    (skills_dir / "database-migrations" / "SKILL.md").write_text(
+        "Run `make migrate` after adding a migration.", encoding="utf-8"
+    )
+    (skills_dir / "INDEX.md").write_text(
+        "# Skills Index\n\n## Skills\n\n"
+        "- `database-migrations/SKILL.md` - database migrations, schema changes.\n",
+        encoding="utf-8",
+    )
+    settings = replace(
+        parse_settings(valid_settings_dict()),
+        orchestrator_ai_enabled=True,
+        project_guidance_discovery_enabled=True,
+    )
+    monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.load_settings", lambda: settings)
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.review_plan",
+        lambda **kwargs: PlanReviewDecision(True, "Looks good.", ""),
+    )
+
+    state = graph_state(
+        request="Fix a typo in a comment",
+        target_project_context=TargetProjectContext(project_root=str(tmp_path)).to_payload(),
+        project_guidance_notes=[],
+        plan_text="1. Add a database migration for the new column.\n2. Run make migrate.",
+    )
+    result = review_plan_node(state, progress_callback=None)
+
+    assert any("database-migrations" in note for note in result["project_guidance_notes"])
+
+
+def test_review_plan_node_recheck_leaves_notes_unchanged_when_nothing_new(
+    tmp_path, monkeypatch
+) -> None:
+    (tmp_path / "AGENTS.md").write_text("# AGENTS.md\n\nSome guidance.", encoding="utf-8")
+    settings = replace(
+        parse_settings(valid_settings_dict()),
+        orchestrator_ai_enabled=True,
+        project_guidance_discovery_enabled=True,
+    )
+    monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.load_settings", lambda: settings)
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.review_plan",
+        lambda **kwargs: PlanReviewDecision(True, "Looks good.", ""),
+    )
+
+    context = TargetProjectContext(project_root=str(tmp_path)).to_payload()
+    baseline = check_project_guidance_node(
+        graph_state(request="Fix a typo", target_project_context=context)
+    )
+
+    state = graph_state(
+        request="Fix a typo",
+        target_project_context=context,
+        project_guidance_notes=baseline["project_guidance_notes"],
+        plan_text="1. Fix the typo.\n2. Done.",
+    )
+    result = review_plan_node(state, progress_callback=None)
+
+    assert "project_guidance_notes" not in result
+
+
+def test_minimal_context_selection_holds_through_full_pipeline_for_a_simple_task(
+    tmp_path, monkeypatch
+) -> None:
+    """ATL-078: a genuinely simple task (one CSS colour change) must never pull
+    in an unrelated skill anywhere along the pipeline — discovery, the plan
+    request, or the coding-agent handoff."""
+    skills_dir = tmp_path / ".skills"
+    (skills_dir / "css-design-system").mkdir(parents=True)
+    (skills_dir / "css-design-system" / "SKILL.md").write_text(
+        "CSS design system detail: use theme tokens, never hardcode colour values.",
+        encoding="utf-8",
+    )
+    (skills_dir / "database-migrations").mkdir(parents=True)
+    (skills_dir / "database-migrations" / "SKILL.md").write_text(
+        "Database migrations detail: never run destructive migrations without a backup.",
+        encoding="utf-8",
+    )
+    (skills_dir / "INDEX.md").write_text(
+        "# Skills Index\n\n## Skills\n\n"
+        "- `css-design-system/SKILL.md` - CSS, spacing, layout, theme tokens.\n"
+        "- `database-migrations/SKILL.md` - database migrations, schema changes.\n",
+        encoding="utf-8",
+    )
+    settings = replace(
+        parse_settings(valid_settings_dict()),
+        execute_coding_agent=False,
+        project_guidance_discovery_enabled=True,
+    )
+    monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.load_settings", lambda: settings)
+    _mock_project_guidance_sufficient(monkeypatch)
+
+    context = TargetProjectContext(project_root=str(tmp_path)).to_payload()
+    request = "Update the submit button colour using an existing theme token"
+
+    # 1. Discovery selects only the relevant skill.
+    guidance_state = check_project_guidance_node(
+        graph_state(request=request, target_project_context=context)
+    )
+    notes = guidance_state["project_guidance_notes"]
+    assert any("css-design-system" in note for note in notes)
+    # The raw .skills/INDEX.md dump legitimately lists both skills — that's
+    # the index, not a drill-down. The actual skill *content* opened must be
+    # only the relevant one.
+    assert any("use theme tokens" in note for note in notes)
+    assert not any("never run destructive migrations" in note for note in notes)
+
+    # 2. The plan-request instruction carries the same restricted set.
+    captured_plan: dict = {}
+
+    def fake_render_prompt(_prompt_key, **replacements):
+        captured_plan.update(replacements)
+        return "instruction"
+
+    def fake_run_coding_agent(*, agent_instruction, **_kwargs):
+        class Result:
+            stdout = "1. Change the colour token\nDone when the button uses the theme token."
+            stderr = ""
+            returncode = 0
+            changed_files_delta: tuple[str, ...] = ()
+
+        return Result()
+
+    monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.render_prompt", fake_render_prompt)
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.run_coding_agent", fake_run_coding_agent
+    )
+    plan_state = graph_state(
+        request=request, target_project_context=context, project_guidance_notes=notes
+    )
+    request_plan_node(plan_state, progress_callback=None)
+
+    assert "use theme tokens" in captured_plan["project_guidance"]
+    assert "never run destructive migrations" not in captured_plan["project_guidance"]
+
+    # 3. The coding-agent handoff carries the same restricted set.
+    captured_handoff: dict = {}
+
+    def fake_build_agent_instruction(**kwargs):
+        captured_handoff.update(kwargs)
+        return "instruction"
+
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.build_agent_instruction",
+        fake_build_agent_instruction,
+    )
+    handoff_state = graph_state(
+        needs_approval=False,
+        approved=True,
+        brief="Change one colour token.",
+        project_guidance_notes=notes,
+    )
+    create_agent_instruction_node(handoff_state)
+
+    assert any("use theme tokens" in g for g in captured_handoff["project_guidance"])
+    assert not any(
+        "never run destructive migrations" in g for g in captured_handoff["project_guidance"]
+    )
+
+
+def test_approval_resume_with_changed_guidance_requires_reapproval_not_silent_proceed(
+    monkeypatch,
+) -> None:
+    """ATL-078: end-to-end proof that a long-paused approval whose target
+    project's guidance changed underneath it does not silently proceed to
+    REQUEST_PLAN on the stale selection — it re-plans and re-asks."""
+    settings = replace(parse_settings(valid_settings_dict()), orchestrator_ai_enabled=True)
+
+    monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.load_settings", lambda: settings)
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.check_research_requirements",
+        lambda _request, _settings, **_kwargs: _research_result(has_gap=False),
+    )
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.review_task_risk",
+        lambda _request: RiskReviewDecision(
+            needs_approval=True, approval_reason="Needs approval.", risk_level="HIGH"
+        ),
+    )
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.analyse_task",
+        lambda **_kwargs: TechLeadAnalysis(task_statement="Build it.", tech_direction=""),
+    )
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.review_project_guidance",
+        lambda *_args, **_kwargs: GuidanceGovernanceDecision(
+            status="sufficient",
+            requires_review=False,
+            summary="",
+            related_locations=[],
+            proposed_change="",
+            reason="",
+        ),
+    )
+
+    discovery_calls: list[int] = []
+
+    def fake_discover(_request, _root):
+        discovery_calls.append(1)
+        if len(discovery_calls) == 1:
+            return ("AGENTS.md: original guidance.",)
+        return ("AGENTS.md: guidance changed while this run was paused.",)
+
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.discover_project_guidance", fake_discover
+    )
+
+    app = build_graph(checkpointer_storage=MemorySaver(), execute_coding_agent_override=False)
+    thread_config = {"configurable": {"thread_id": "test-guidance-changed-on-resume"}}
+
+    app.invoke(graph_state(request="Build the feature"), config=thread_config)
+    state_snapshot = app.get_state(thread_config)
+    assert state_snapshot.next == (NodeName.APPROVAL_INTERRUPT,)
+    assert len(discovery_calls) == 1
+    original_hash = state_snapshot.values["project_guidance_hash"]
+
+    app.invoke(Command(resume={"action": "approve", "approved_by": "human"}), config=thread_config)
+
+    final_state = app.get_state(thread_config)
+    # Re-selected fresh guidance, re-formulated the task, and paused for a
+    # second approval instead of silently landing on REQUEST_PLAN.
+    assert final_state.next == (NodeName.APPROVAL_INTERRUPT,)
+    assert final_state.values["project_guidance_notes"] == [
+        "AGENTS.md: guidance changed while this run was paused."
+    ]
+    assert final_state.values["project_guidance_hash"] != original_hash
 
 
 def test_review_risk_connects_to_approval_routing_not_tech_lead_analyse() -> None:

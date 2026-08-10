@@ -48,8 +48,19 @@ def verify_completion(
     target_project_context: TargetProjectContext | None = None,
     settings: AppSettings,
     prior_correction: str = "",
+    project_guidance: list[str] | None = None,
 ) -> CompletionVerificationDecision:
-    """Decide whether the coding agent's completed work satisfies the approved task."""
+    """Decide whether the coding agent's completed work satisfies the approved task.
+
+    ``project_guidance`` is the same bounded, already-selected notes used
+    throughout this run (Tech Lead Analysis, plan review, coding-agent handoff)
+    — not re-selected here. The final diff, changed files, and reported
+    validation are checked against it in addition to the task/plan/acceptance
+    criteria; a relevant violation is a reason for ``correction_required``
+    (one bounded correction, same existing retry cap), never a silent pass —
+    but guidance can never excuse skipping the core safety/approval/evidence
+    bar either.
+    """
 
     if not settings.orchestrator_ai_enabled:
         logger.info("Completion verification: AI disabled, routing to human verification.")
@@ -69,6 +80,7 @@ def verify_completion(
             target_project_context=target_project_context,
             settings=settings,
             prior_correction=prior_correction,
+            project_guidance=project_guidance or [],
         )
     except OrchestratorLlmError as error:
         logger.warning(
@@ -99,6 +111,7 @@ def _llm_verify_completion(
     target_project_context: TargetProjectContext | None,
     settings: AppSettings,
     prior_correction: str,
+    project_guidance: list[str],
 ) -> CompletionVerificationDecision:
     project_text = "(not supplied)"
     if target_project_context is not None:
@@ -107,6 +120,11 @@ def _llm_verify_completion(
             or target_project_context.project_root
             or "(not supplied)"
         )
+    guidance_text = (
+        "Target project's own guidance:\n" + "\n".join(f"- {g}" for g in project_guidance)
+        if project_guidance
+        else ""
+    )
     prompt = render_prompt(
         COMPLETION_VERIFICATION_PROMPT_KEY,
         bounded_request=bounded_request,
@@ -118,6 +136,7 @@ def _llm_verify_completion(
         changed_files=", ".join(changed_files) or "(none detected)",
         coding_agent_result=coding_agent_result or "(no completion report)",
         prior_correction=prior_correction or "(none — first check)",
+        project_guidance=guidance_text,
     )
     result = call_orchestrator_llm(
         prompt=prompt,

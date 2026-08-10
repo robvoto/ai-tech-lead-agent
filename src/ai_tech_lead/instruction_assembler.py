@@ -33,6 +33,7 @@ def build_agent_instruction(
     project_root: Path | None = None,
     research_evidence: list[str] | None = None,
     agent_correction: str | None = None,
+    project_guidance: list[str] | None = None,
 ) -> str:
     if target_project_context is not None and target_project_context.has_explicit_context:
         target_project_root = target_project_context.require_project_root(
@@ -92,6 +93,13 @@ def build_agent_instruction(
                 "Previous attempt failed",
                 "The previous coding agent run failed. Diagnose and resolve the issue before "
                 "proceeding:\n" + agent_correction,
+            )
+        )
+    if project_guidance:
+        sections.append(
+            _section(
+                "Selected project guidance (same as Tech Lead Analysis and plan review)",
+                _format_bullets(project_guidance),
             )
         )
     sections.extend(
