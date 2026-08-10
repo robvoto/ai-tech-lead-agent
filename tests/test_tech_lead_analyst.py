@@ -68,3 +68,39 @@ def test_analyse_task_falls_back_to_raw_request_after_retry_exhausted(monkeypatc
 
     assert analysis.task_statement == "Build the feature"
     assert analysis.tech_direction == ""
+
+
+def test_project_guidance_is_included_in_the_prompt_when_present(monkeypatch) -> None:
+    captured: dict = {}
+
+    def fake_call(**kwargs):
+        captured["prompt"] = kwargs["prompt"]
+        return OrchestratorLlmResult(text='{"task_statement": "Build it", "tech_direction": ""}')
+
+    monkeypatch.setattr("ai_tech_lead.llm_json.call_orchestrator_llm", fake_call)
+
+    analyse_task(
+        "Build the feature",
+        [],
+        "",
+        [],
+        _settings(),
+        project_guidance=["AGENTS.md: use docs/INDEX.md for routing."],
+    )
+
+    assert "Target project's own guidance" in captured["prompt"]
+    assert "use docs/INDEX.md for routing" in captured["prompt"]
+
+
+def test_project_guidance_omitted_from_prompt_when_empty(monkeypatch) -> None:
+    captured: dict = {}
+
+    def fake_call(**kwargs):
+        captured["prompt"] = kwargs["prompt"]
+        return OrchestratorLlmResult(text='{"task_statement": "Build it", "tech_direction": ""}')
+
+    monkeypatch.setattr("ai_tech_lead.llm_json.call_orchestrator_llm", fake_call)
+
+    analyse_task("Build the feature", [], "", [], _settings())
+
+    assert "Target project's own guidance" not in captured["prompt"]

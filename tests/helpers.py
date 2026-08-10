@@ -53,6 +53,7 @@ def valid_settings_dict() -> dict[str, Any]:
         "research_max_fetch_bytes": 2_000_000,
         "research_code_context_enabled": True,
         "research_max_code_context_files": 5,
+        "project_guidance_discovery_enabled": True,
         "research_discovery_enabled": False,
         "research_discovery_timeout_seconds": 20,
         "research_discovery_max_candidates": 3,

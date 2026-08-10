@@ -58,6 +58,7 @@
   "research_max_fetch_bytes": 2000000,
   "research_code_context_enabled": true,
   "research_max_code_context_files": 5,
+  "project_guidance_discovery_enabled": true,
   "research_discovery_enabled": false,
   "research_discovery_timeout_seconds": 20,
   "research_discovery_max_candidates": 3,

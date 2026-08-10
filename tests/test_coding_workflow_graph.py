@@ -38,6 +38,7 @@ from ai_tech_lead.coding_workflow_graph import (
     route_after_tech_lead_analyse,
     route_after_verify_completion,
     run_coding_agent_node,
+    tech_lead_analyse_node,
 )
 from ai_tech_lead.completion_verifier import CompletionVerificationDecision
 from ai_tech_lead.plan_reviewer import PlanReviewDecision
@@ -1944,6 +1945,87 @@ def test_check_code_look_need_routes_to_codex_or_straight_to_analyse() -> None:
 def test_route_after_check_code_look_need() -> None:
     assert route_after_check_code_look_need(graph_state(code_look_needed=True)) == "needed"
     assert route_after_check_code_look_need(graph_state(code_look_needed=False)) == "not needed"
+
+
+# ---------------------------------------------------------------------------
+# Bounded project-guidance discovery, threaded into Tech Lead Analysis.
+# ---------------------------------------------------------------------------
+
+
+def test_tech_lead_analyse_node_passes_discovered_project_guidance(tmp_path, monkeypatch) -> None:
+    (tmp_path / "AGENTS.md").write_text(
+        "# AGENTS.md\n\nRoute everything through docs/INDEX.md.", encoding="utf-8"
+    )
+    settings = replace(
+        parse_settings(valid_settings_dict()),
+        project_guidance_discovery_enabled=True,
+    )
+    monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.load_settings", lambda: settings)
+    captured: dict = {}
+
+    def fake_analyse_task(**kwargs):
+        captured.update(kwargs)
+        return TechLeadAnalysis(task_statement="Build it", tech_direction="")
+
+    monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.analyse_task", fake_analyse_task)
+
+    state = graph_state(
+        request="Build the feature",
+        target_project_context=TargetProjectContext(project_root=str(tmp_path)).to_payload(),
+    )
+    tech_lead_analyse_node(state)
+
+    assert any("AGENTS.md" in note for note in captured["project_guidance"])
+
+
+def test_tech_lead_analyse_node_skips_discovery_when_disabled(tmp_path, monkeypatch) -> None:
+    (tmp_path / "AGENTS.md").write_text("# AGENTS.md\n\nSome guidance.", encoding="utf-8")
+    settings = replace(
+        parse_settings(valid_settings_dict()),
+        project_guidance_discovery_enabled=False,
+    )
+    monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.load_settings", lambda: settings)
+    captured: dict = {}
+
+    def fake_analyse_task(**kwargs):
+        captured.update(kwargs)
+        return TechLeadAnalysis(task_statement="Build it", tech_direction="")
+
+    monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.analyse_task", fake_analyse_task)
+
+    state = graph_state(
+        request="Build the feature",
+        target_project_context=TargetProjectContext(project_root=str(tmp_path)).to_payload(),
+    )
+    tech_lead_analyse_node(state)
+
+    assert captured["project_guidance"] == []
+
+
+def test_tech_lead_analyse_node_degrades_gracefully_with_no_project_pack(
+    tmp_path, monkeypatch
+) -> None:
+    """No AGENTS.md/.skills/docs anywhere resolvable: analysis still runs cleanly
+    on AI Tech Lead's own core guidance, not a failure."""
+    settings = replace(
+        parse_settings(valid_settings_dict()),
+        project_root=str(tmp_path),
+        project_guidance_discovery_enabled=True,
+    )
+    monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.load_settings", lambda: settings)
+    captured: dict = {}
+
+    def fake_analyse_task(**kwargs):
+        captured.update(kwargs)
+        return TechLeadAnalysis(task_statement="Build it", tech_direction="")
+
+    monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.analyse_task", fake_analyse_task)
+
+    state = graph_state(request="Build the feature", target_project_context=None)
+    result = tech_lead_analyse_node(state)
+
+    assert captured["project_guidance"] == []
+    assert result["formulated_task"] == "Build it"
 
 
 def test_review_risk_connects_to_approval_routing_not_tech_lead_analyse() -> None:

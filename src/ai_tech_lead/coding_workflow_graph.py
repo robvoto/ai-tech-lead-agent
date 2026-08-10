@@ -30,6 +30,7 @@ from .instruction_assembler import build_agent_instruction
 from .logging_setup import LOGGER_NAME
 from .operator_question import answer_operator_question
 from .plan_reviewer import PlanReviewUnavailable, review_plan
+from .project_guidance_discovery import discover_project_guidance
 from .prompt_loader import (
     CODE_RECON_INSTRUCTION_PROMPT_KEY,
     PLAN_REQUEST_INSTRUCTION_PROMPT_KEY,
@@ -946,6 +947,18 @@ def tech_lead_analyse_node(state: GraphState) -> dict[str, Any]:
         state.get("research_source_summaries", []),
     )
 
+    project_guidance: tuple[str, ...] = ()
+    if settings.project_guidance_discovery_enabled:
+        project_guidance = discover_project_guidance(
+            state.get("bounded_request", "") or state["request"],
+            _soft_target_project_root(state, settings),
+        )
+        if project_guidance:
+            logger.info(
+                "[LEARN] Project guidance discovered: %d bounded note(s)",
+                len(project_guidance),
+            )
+
     analysis = analyse_task(
         request=state.get("bounded_request", "") or state["request"],
         task_feedback=list(state.get("task_feedback", [])),
@@ -953,6 +966,7 @@ def tech_lead_analyse_node(state: GraphState) -> dict[str, Any]:
         research_evidence=research_evidence,
         settings=settings,
         code_recon_report=state.get("code_recon_report", ""),
+        project_guidance=list(project_guidance),
     )
 
     logger.info(
@@ -1064,6 +1078,21 @@ def _target_project_root(state: GraphState, settings: Any) -> Path:
 
     resolved = str(state.get("resolved_project_root", "")).strip()
     return Path(resolved or settings.project_root).resolve()
+
+
+def _soft_target_project_root(state: GraphState, settings: Any) -> str:
+    """Best-effort target root for optional, non-blocking lookups.
+
+    Unlike `_target_project_root`, never raises when no root is resolvable —
+    project-guidance discovery must degrade to "nothing found" rather than
+    fail the run over a caller that simply hasn't supplied a project root yet.
+    """
+
+    context = _target_project_context_from_state(state)
+    if context is not None and context.project_root:
+        return context.project_root
+    resolved = str(state.get("resolved_project_root", "")).strip()
+    return resolved or settings.project_root
 
 
 def request_plan_node(

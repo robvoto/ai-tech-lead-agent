@@ -29,8 +29,17 @@ def analyse_task(
     research_evidence: list[str],
     settings: AppSettings,
     code_recon_report: str = "",
+    project_guidance: list[str] | None = None,
 ) -> TechLeadAnalysis:
-    """Produce a task statement and high-level technical direction for the coding agent."""
+    """Produce a task statement and high-level technical direction for the coding agent.
+
+    ``project_guidance`` is the target project's own bounded guidance (AGENTS.md,
+    docs/INDEX.md, .skills/INDEX.md, and at most one matching skill — see
+    project_guidance_discovery.py), distinct from ``research_evidence``: it answers
+    "what does this repo already say about working in it", not "is there a domain
+    knowledge gap". It may be empty — that's the normal case when a project has no
+    project pack yet, and analysis proceeds on AI Tech Lead's own core guidance.
+    """
 
     if not settings.orchestrator_ai_enabled:
         return TechLeadAnalysis(task_statement=request, tech_direction="")
@@ -43,6 +52,7 @@ def analyse_task(
             research_evidence,
             settings,
             code_recon_report,
+            project_guidance or [],
         )
     except OrchestratorLlmError as error:
         logger.warning("Tech lead analysis LLM call failed: %s", error)
@@ -59,6 +69,7 @@ def _llm_analyse_task(
     research_evidence: list[str],
     settings: AppSettings,
     code_recon_report: str = "",
+    project_guidance: list[str] | None = None,
 ) -> TechLeadAnalysis:
     feedback_text = "\n".join(task_feedback) if task_feedback else "(none)"
     evidence_text = (
@@ -68,6 +79,11 @@ def _llm_analyse_task(
     )
     code_recon_text = (
         f"Code look report:\n{code_recon_report}" if code_recon_report.strip() else ""
+    )
+    project_guidance_text = (
+        "Target project's own guidance:\n" + "\n".join(f"- {g}" for g in project_guidance)
+        if project_guidance
+        else ""
     )
     approval_note = f"Approval reason: {approval_reason}" if approval_reason else ""
     watched_dirs = "\n".join(f"- {d}" for d in settings.watched_directories) or "(none)"
@@ -86,6 +102,7 @@ def _llm_analyse_task(
         risk_notes=risk_notes,
         research_evidence=evidence_text,
         code_recon=code_recon_text,
+        project_guidance=project_guidance_text,
     )
     config = OrchestratorLlmConfig(
         model=settings.orchestrator_ai_model,

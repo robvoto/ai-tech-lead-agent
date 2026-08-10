@@ -62,6 +62,7 @@ class AppSettings:
     research_max_fetch_bytes: int
     research_code_context_enabled: bool
     research_max_code_context_files: int
+    project_guidance_discovery_enabled: bool
     research_discovery_enabled: bool
     research_discovery_timeout_seconds: int
     research_discovery_max_candidates: int
@@ -205,6 +206,11 @@ def parse_settings(raw_settings: dict[str, Any]) -> AppSettings:
             raw_settings,
             "research_max_code_context_files",
             default=5,
+        ),
+        project_guidance_discovery_enabled=_optional_bool(
+            raw_settings,
+            "project_guidance_discovery_enabled",
+            default=True,
         ),
         research_discovery_enabled=_optional_bool(
             raw_settings,
@@ -356,6 +362,7 @@ def settings_to_dict(settings: AppSettings) -> dict[str, Any]:
         "research_max_fetch_bytes": settings.research_max_fetch_bytes,
         "research_code_context_enabled": settings.research_code_context_enabled,
         "research_max_code_context_files": settings.research_max_code_context_files,
+        "project_guidance_discovery_enabled": settings.project_guidance_discovery_enabled,
         "research_discovery_enabled": settings.research_discovery_enabled,
         "research_discovery_timeout_seconds": settings.research_discovery_timeout_seconds,
         "research_discovery_max_candidates": settings.research_discovery_max_candidates,
