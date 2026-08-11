@@ -426,6 +426,163 @@ def _run_with_pipes(
     )
 
 
+@dataclass(frozen=True)
+class GitPreflightResult:
+    """Read-only inspection of the target worktree, taken right before the
+    coding-agent subprocess launches.
+
+    `status` is one of "clean", "proceed_unrelated", "blocked_relevant",
+    "blocked_ambiguous", or "blocked_inspection_failed". This inspection never
+    resets, stashes, checks out, stages, or otherwise modifies pre-existing
+    work — it only reads `git status`/`git rev-parse`.
+    """
+
+    status: str
+    branch: str
+    head: str
+    dirty_paths: tuple[str, ...]
+    reason: str
+
+    @property
+    def safe_to_proceed(self) -> bool:
+        return self.status in ("clean", "proceed_unrelated")
+
+
+@dataclass(frozen=True)
+class _GitStatusEntry:
+    path: str
+    raw: str
+    ambiguous: bool
+
+
+# Rename (R), copy (C), and unmerged/conflict (U) status codes touch more than
+# one path or an unresolved conflict, so a single-path overlap check cannot
+# safely classify them as related or unrelated to the approved task.
+_AMBIGUOUS_GIT_STATUS_CODES = frozenset({"R", "C", "U"})
+
+
+def run_git_preflight(project_root: Path, relevance_text: str) -> GitPreflightResult:
+    """Inspect the worktree immediately before the coding-agent subprocess launches.
+
+    Fails closed: any error while reading git state blocks execution rather
+    than treating the repository as clean. `relevance_text` is the already-
+    approved plan/task text used to decide whether a pre-existing dirty path
+    overlaps the work about to be launched — no additional LLM call is made.
+    """
+    try:
+        branch = _git_rev_parse(project_root, "--abbrev-ref", "HEAD")
+        head = _git_rev_parse(project_root, "HEAD")
+        entries = _git_status_entries(project_root)
+    except Exception as error:
+        return GitPreflightResult(
+            status="blocked_inspection_failed",
+            branch="",
+            head="",
+            dirty_paths=(),
+            reason=f"Git preflight inspection failed: {error}",
+        )
+
+    dirty_paths = tuple(entry.path for entry in entries)
+
+    if not entries:
+        return GitPreflightResult(
+            status="clean", branch=branch, head=head, dirty_paths=(), reason="Worktree is clean."
+        )
+
+    ambiguous_entries = [entry for entry in entries if entry.ambiguous]
+    if ambiguous_entries:
+        return GitPreflightResult(
+            status="blocked_ambiguous",
+            branch=branch,
+            head=head,
+            dirty_paths=dirty_paths,
+            reason=(
+                "A pre-existing change cannot be safely classified as related or "
+                f"unrelated to the approved task: {ambiguous_entries[0].raw.strip()!r}"
+            ),
+        )
+
+    overlapping = [
+        entry.path for entry in entries if _path_overlaps_relevance(entry.path, relevance_text)
+    ]
+    if overlapping:
+        return GitPreflightResult(
+            status="blocked_relevant",
+            branch=branch,
+            head=head,
+            dirty_paths=dirty_paths,
+            reason=f"Pre-existing change overlaps the approved task: {', '.join(overlapping)}",
+        )
+
+    return GitPreflightResult(
+        status="proceed_unrelated",
+        branch=branch,
+        head=head,
+        dirty_paths=dirty_paths,
+        reason="Pre-existing changes are unrelated to the approved task; left untouched.",
+    )
+
+
+def _git_rev_parse(cwd: Path, *args: str) -> str:
+    result = subprocess.run(
+        ["git", "rev-parse", *args],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        shell=False,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"git rev-parse {' '.join(args)} failed: {result.stderr.strip()}")
+    return result.stdout.strip()
+
+
+def _git_status_entries(cwd: Path) -> tuple[_GitStatusEntry, ...]:
+    result = subprocess.run(
+        ["git", "status", "--porcelain=v1"],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        shell=False,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"git status --porcelain=v1 failed: {result.stderr.strip()}")
+    return tuple(
+        _parse_git_status_line(line) for line in result.stdout.splitlines() if line.strip()
+    )
+
+
+def _parse_git_status_line(line: str) -> _GitStatusEntry:
+    if len(line) < 4:
+        raise ValueError(f"Unrecognized git status line: {line!r}")
+    index_status, worktree_status, rest = line[0], line[1], line[3:]
+    ambiguous = (
+        index_status in _AMBIGUOUS_GIT_STATUS_CODES
+        or worktree_status in _AMBIGUOUS_GIT_STATUS_CODES
+    )
+    if " -> " in rest:
+        _, _, path = rest.partition(" -> ")
+    else:
+        path = rest
+    path = path.strip()
+    if not path:
+        raise ValueError(f"Unrecognized git status line: {line!r}")
+    return _GitStatusEntry(path=path, raw=line, ambiguous=ambiguous)
+
+
+def _path_overlaps_relevance(path: str, relevance_text: str) -> bool:
+    if not relevance_text:
+        return False
+    haystack = relevance_text.casefold()
+    if path.casefold() in haystack:
+        return True
+    basename = Path(path).name
+    return bool(basename) and basename.casefold() in haystack
+
+
 def _get_git_changed_files(cwd: Path) -> tuple[str, ...]:
     try:
         result = subprocess.run(

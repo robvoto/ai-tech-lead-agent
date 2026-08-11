@@ -11,6 +11,7 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import Command
 
 from ai_tech_lead.app_settings import parse_settings
+from ai_tech_lead.coding_agent_runner import GitPreflightResult
 from ai_tech_lead.coding_workflow_graph import (
     CONTEXT_CLARIFICATION_MAX_RETRIES,
     NodeName,
@@ -42,6 +43,7 @@ from ai_tech_lead.coding_workflow_graph import (
     route_after_resolve_context,
     route_after_review_plan,
     route_after_review_risk,
+    route_after_run_coding_agent,
     route_after_tech_lead_analyse,
     route_after_verify_completion,
     run_coding_agent_node,
@@ -989,6 +991,143 @@ def test_run_coding_agent_node_logs_approval_context(monkeypatch, caplog) -> Non
     assert "configured coding-agent backend" in caplog.text
     assert "Codex" not in caplog.text
     assert "Coding agent success=" in caplog.text
+
+
+def test_run_coding_agent_node_launches_subprocess_when_git_preflight_clean(monkeypatch) -> None:
+    settings = replace(parse_settings(valid_settings_dict()), execute_coding_agent=True)
+    monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.load_settings", lambda: settings)
+    monkeypatch.setattr("ai_tech_lead.risk_reviewer.load_settings", lambda: settings)
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.run_git_preflight",
+        lambda project_root, relevance_text: GitPreflightResult(
+            status="clean",
+            branch="main",
+            head="abc123",
+            dirty_paths=(),
+            reason="Worktree is clean.",
+        ),
+    )
+    called: dict[str, bool] = {}
+
+    def fake_run_coding_agent(**_kwargs):
+        called["ran"] = True
+        return _FakeAgentResult(returncode=0, command=["codex"])
+
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.run_coding_agent", fake_run_coding_agent
+    )
+
+    state = run_coding_agent_node(graph_state(agent_instruction="Do the task"))
+
+    assert called.get("ran") is True
+    assert state["git_preflight_status"] == "clean"
+    assert state["git_preflight_branch"] == "main"
+    assert state["git_preflight_head"] == "abc123"
+    assert state["coding_agent_success"] is True
+
+
+def test_run_coding_agent_node_skips_subprocess_when_git_preflight_blocks_relevant(
+    monkeypatch,
+) -> None:
+    settings = replace(parse_settings(valid_settings_dict()), execute_coding_agent=True)
+    monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.load_settings", lambda: settings)
+    monkeypatch.setattr("ai_tech_lead.risk_reviewer.load_settings", lambda: settings)
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.run_git_preflight",
+        lambda project_root, relevance_text: GitPreflightResult(
+            status="blocked_relevant",
+            branch="main",
+            head="abc123",
+            dirty_paths=("src/target_module.py",),
+            reason="Pre-existing change overlaps the approved task: src/target_module.py",
+        ),
+    )
+
+    def fail_if_called(**_kwargs):
+        raise AssertionError("run_coding_agent should not be called when preflight blocks")
+
+    monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.run_coding_agent", fail_if_called)
+
+    state = run_coding_agent_node(graph_state(agent_instruction="Do the task"))
+
+    assert state["git_preflight_status"] == "blocked_relevant"
+    assert state["git_preflight_dirty_paths"] == ("src/target_module.py",)
+    assert state["coding_agent_success"] is False
+    assert "src/target_module.py" in state["coding_agent_result"]
+
+
+def test_run_coding_agent_node_skips_subprocess_when_git_preflight_blocks_ambiguous(
+    monkeypatch,
+) -> None:
+    settings = replace(parse_settings(valid_settings_dict()), execute_coding_agent=True)
+    monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.load_settings", lambda: settings)
+    monkeypatch.setattr("ai_tech_lead.risk_reviewer.load_settings", lambda: settings)
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.run_git_preflight",
+        lambda project_root, relevance_text: GitPreflightResult(
+            status="blocked_ambiguous",
+            branch="main",
+            head="abc123",
+            dirty_paths=("conflict.py",),
+            reason="A pre-existing change cannot be safely classified.",
+        ),
+    )
+
+    def fail_if_called(**_kwargs):
+        raise AssertionError("run_coding_agent should not be called when preflight blocks")
+
+    monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.run_coding_agent", fail_if_called)
+
+    state = run_coding_agent_node(graph_state(agent_instruction="Do the task"))
+
+    assert state["git_preflight_status"] == "blocked_ambiguous"
+    assert state["coding_agent_success"] is False
+
+
+def test_run_coding_agent_node_skips_subprocess_when_git_inspection_fails(monkeypatch) -> None:
+    settings = replace(parse_settings(valid_settings_dict()), execute_coding_agent=True)
+    monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.load_settings", lambda: settings)
+    monkeypatch.setattr("ai_tech_lead.risk_reviewer.load_settings", lambda: settings)
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.run_git_preflight",
+        lambda project_root, relevance_text: GitPreflightResult(
+            status="blocked_inspection_failed",
+            branch="",
+            head="",
+            dirty_paths=(),
+            reason="Git preflight inspection failed: git not found",
+        ),
+    )
+
+    def fail_if_called(**_kwargs):
+        raise AssertionError("run_coding_agent should not be called when preflight blocks")
+
+    monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.run_coding_agent", fail_if_called)
+
+    state = run_coding_agent_node(graph_state(agent_instruction="Do the task"))
+
+    assert state["git_preflight_status"] == "blocked_inspection_failed"
+    assert state["coding_agent_success"] is False
+
+
+def test_route_after_run_coding_agent_routes_blocked_preflight_to_failure_interrupt() -> None:
+    state = graph_state(
+        git_preflight_status="blocked_relevant",
+        coding_agent_success=False,
+        coding_agent_retry_count=0,
+    )
+
+    assert route_after_run_coding_agent(state) == "retries exhausted"
+
+
+def test_route_after_run_coding_agent_retries_normally_when_preflight_not_blocked() -> None:
+    state = graph_state(
+        git_preflight_status="clean",
+        coding_agent_success=False,
+        coding_agent_retry_count=0,
+    )
+
+    assert route_after_run_coding_agent(state) == "retry coding"
 
 
 def test_rejected_graph_resumes_without_coding_agent_result_index_error(monkeypatch) -> None:

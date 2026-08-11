@@ -49,3 +49,26 @@ def _disable_relevance_check_ai_by_default(monkeypatch):
     settings = settings_mod.parse_settings(valid_settings_dict())
     monkeypatch.setattr(relevance_mod, "load_settings", lambda: settings)
     monkeypatch.setattr(code_look_mod, "load_settings", lambda: settings)
+
+
+@pytest.fixture(autouse=True)
+def _default_git_preflight_clean(monkeypatch):
+    """Default the ATL-079 git preflight gate to "clean" for existing tests.
+
+    Without this, every test that runs `run_coding_agent_node` would perform
+    real `git status`/`git rev-parse` calls against whatever project root the
+    test happens to use (often a bare tmp_path that isn't a git repo, which
+    fails closed and would block the coding-agent subprocess). Tests that
+    specifically want to exercise the preflight gate monkeypatch
+    `run_git_preflight` again afterward.
+    """
+    from ai_tech_lead.coding_agent_runner import GitPreflightResult
+    import ai_tech_lead.coding_workflow_graph as workflow_mod
+
+    monkeypatch.setattr(
+        workflow_mod,
+        "run_git_preflight",
+        lambda project_root, relevance_text: GitPreflightResult(
+            status="clean", branch="", head="", dirty_paths=(), reason="Worktree is clean."
+        ),
+    )

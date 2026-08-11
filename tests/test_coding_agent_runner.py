@@ -9,7 +9,7 @@ import pytest
 from helpers import valid_settings_dict
 
 from ai_tech_lead.app_settings import parse_settings
-from ai_tech_lead.coding_agent_runner import run_coding_agent
+from ai_tech_lead.coding_agent_runner import run_coding_agent, run_git_preflight
 from ai_tech_lead.runtime_lock import RuntimeLockBusyError
 
 
@@ -268,3 +268,150 @@ def test_run_coding_agent_emits_progress_heartbeats(
     assert len(progress_messages) >= 1
     assert any("Coding agent running" in m for m in progress_messages)
     assert result.stdout == "agent output line"
+
+
+def _fake_git_run(
+    *,
+    status_stdout: str = "",
+    status_returncode: int = 0,
+    branch: str = "main",
+    head: str = "abc123def456",
+) -> tuple[list[list[str]], object]:
+    """Fake `subprocess.run` for `run_git_preflight`'s read-only git calls."""
+    calls: list[list[str]] = []
+
+    def fake_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        cmd = args[0]
+        calls.append(cmd)
+        if cmd[:2] == ["git", "rev-parse"]:
+            if cmd[2:] == ["--abbrev-ref", "HEAD"]:
+                return subprocess.CompletedProcess(
+                    args=cmd, returncode=0, stdout=f"{branch}\n", stderr=""
+                )
+            if cmd[2:] == ["HEAD"]:
+                return subprocess.CompletedProcess(
+                    args=cmd, returncode=0, stdout=f"{head}\n", stderr=""
+                )
+        if cmd[:2] == ["git", "status"]:
+            return subprocess.CompletedProcess(
+                args=cmd, returncode=status_returncode, stdout=status_stdout, stderr=""
+            )
+        raise AssertionError(f"Unexpected subprocess call: {cmd}")
+
+    return calls, fake_run
+
+
+def test_run_git_preflight_clean_repo_reports_clean_status(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    calls, fake_run = _fake_git_run(status_stdout="")
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    result = run_git_preflight(tmp_path, "Do the task")
+
+    assert result.status == "clean"
+    assert result.safe_to_proceed is True
+    assert result.dirty_paths == ()
+    assert result.branch == "main"
+    assert result.head == "abc123def456"
+    # Preflight is read-only: never resets, stashes, or checks out.
+    assert all(call[1] in ("status", "rev-parse") for call in calls)
+
+
+def test_run_git_preflight_unrelated_dirty_file_allows_proceed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    calls, fake_run = _fake_git_run(status_stdout=" M unrelated_file.py\n")
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    result = run_git_preflight(tmp_path, "Implement the new billing export feature")
+
+    assert result.status == "proceed_unrelated"
+    assert result.safe_to_proceed is True
+    assert result.dirty_paths == ("unrelated_file.py",)
+    # The pre-existing file is left untouched: only read-only git calls were made.
+    assert all(call[1] in ("status", "rev-parse") for call in calls)
+
+
+def test_run_git_preflight_relevant_dirty_file_blocks(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _fake_git_run_calls, fake_run = _fake_git_run(status_stdout=" M src/billing_export.py\n")
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    result = run_git_preflight(
+        tmp_path, "Plan:\nUpdate src/billing_export.py to add CSV support."
+    )
+
+    assert result.status == "blocked_relevant"
+    assert result.safe_to_proceed is False
+    assert "billing_export.py" in result.reason
+
+
+def test_run_git_preflight_ambiguous_rename_blocks(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _calls, fake_run = _fake_git_run(status_stdout="R  old_name.py -> new_name.py\n")
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    result = run_git_preflight(tmp_path, "Do the task")
+
+    assert result.status == "blocked_ambiguous"
+    assert result.safe_to_proceed is False
+
+
+def test_run_git_preflight_unmerged_conflict_blocks(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _calls, fake_run = _fake_git_run(status_stdout="UU conflict.py\n")
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    result = run_git_preflight(tmp_path, "Do the task")
+
+    assert result.status == "blocked_ambiguous"
+    assert result.safe_to_proceed is False
+
+
+def test_run_git_preflight_inspection_failure_fails_closed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    def fake_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        raise OSError("git not found")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    result = run_git_preflight(tmp_path, "Do the task")
+
+    assert result.status == "blocked_inspection_failed"
+    assert result.safe_to_proceed is False
+    assert result.dirty_paths == ()
+
+
+def test_run_git_preflight_nonzero_status_returncode_fails_closed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _calls, fake_run = _fake_git_run(status_stdout="", status_returncode=128)
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    result = run_git_preflight(tmp_path, "Do the task")
+
+    assert result.status == "blocked_inspection_failed"
+    assert result.safe_to_proceed is False
+
+
+def test_run_git_preflight_captures_branch_head_and_multiple_dirty_paths(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _calls, fake_run = _fake_git_run(
+        status_stdout=" M unrelated_one.py\n?? unrelated_two.py\n",
+        branch="feature/atl-079",
+        head="cafef00d",
+    )
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    result = run_git_preflight(tmp_path, "Do the task")
+
+    assert result.branch == "feature/atl-079"
+    assert result.head == "cafef00d"
+    assert result.dirty_paths == ("unrelated_one.py", "unrelated_two.py")
+    assert result.status == "proceed_unrelated"

@@ -26,7 +26,7 @@ from .backlog_sheets_repository import (
     repository_for,
 )
 from .code_look_checker import check_code_look_need
-from .coding_agent_runner import CodingAgentCancellationToken, run_coding_agent
+from .coding_agent_runner import CodingAgentCancellationToken, run_coding_agent, run_git_preflight
 from .completion_verifier import CompletionVerificationUnavailable, verify_completion
 from .instruction_assembler import build_agent_instruction
 from .logging_setup import LOGGER_NAME
@@ -158,6 +158,11 @@ class GraphState(TypedDict):
     plan_rejection_count: int
     plan_needs_human_review: bool
     agent_instruction: str
+    git_preflight_status: str
+    git_preflight_branch: str
+    git_preflight_head: str
+    git_preflight_dirty_paths: tuple[str, ...]
+    git_preflight_reason: str
     coding_agent_result: str
     coding_agent_success: bool
     coding_agent_changed_files: tuple[str, ...]
@@ -257,6 +262,11 @@ def build_initial_graph_state(
         "plan_rejection_count": 0,
         "plan_needs_human_review": False,
         "agent_instruction": "",
+        "git_preflight_status": "",
+        "git_preflight_branch": "",
+        "git_preflight_head": "",
+        "git_preflight_dirty_paths": (),
+        "git_preflight_reason": "",
         "coding_agent_result": "",
         "coding_agent_success": False,
         "coding_agent_changed_files": (),
@@ -1844,6 +1854,46 @@ def run_coding_agent_node(
             )
         target_project_root = override_root
 
+    relevance_text = "\n".join(
+        text
+        for text in (
+            state.get("agent_instruction", ""),
+            state.get("plan_text", ""),
+            state.get("formulated_task", ""),
+            state.get("bounded_request", "") or state.get("request", ""),
+        )
+        if text
+    )
+    preflight = run_git_preflight(target_project_root, relevance_text)
+    logger.info(
+        "[LEARN] Git preflight: status=%s branch=%s head=%s dirty_paths=%d",
+        preflight.status,
+        preflight.branch,
+        preflight.head,
+        len(preflight.dirty_paths),
+    )
+    preflight_fields = {
+        "git_preflight_status": preflight.status,
+        "git_preflight_branch": preflight.branch,
+        "git_preflight_head": preflight.head,
+        "git_preflight_dirty_paths": preflight.dirty_paths,
+        "git_preflight_reason": preflight.reason,
+    }
+    if not preflight.safe_to_proceed:
+        logger.warning("Git preflight blocked the coding-agent launch: %s", preflight.reason)
+        return {
+            **preflight_fields,
+            "coding_agent_result": preflight.reason,
+            "coding_agent_success": False,
+            "coding_agent_changed_files": (),
+            "restart_required": False,
+            "coding_agent_correction": preflight.reason,
+            "coding_agent_command": "",
+            "coding_agent_returncode": None,
+            "coding_agent_timed_out": False,
+            "coding_agent_performed_by": "",
+        }
+
     # Approval context: explains who/what authorised this run
     needs_approval = state["needs_approval"]
     approved = state["approved"]
@@ -1931,6 +1981,7 @@ def run_coding_agent_node(
     logger.info("Restart required: %s", restart_required)
 
     return {
+        **preflight_fields,
         "coding_agent_result": result.summary(),
         "coding_agent_success": success,
         "coding_agent_changed_files": changed_files,
@@ -1975,6 +2026,12 @@ def route_after_run_coding_agent(state: GraphState) -> str:
     """Route after coding agent: success → end, failure → retry or human interrupt."""
 
     _log_decision_start("6", "ROUTE_AFTER_RUN_CODING_AGENT", "Route after coding agent run")
+
+    if str(state.get("git_preflight_status", "")).startswith("blocked"):
+        logger.info(
+            "Decision: git preflight %s -> FAILURE_INTERRUPT", state.get("git_preflight_status")
+        )
+        return "retries exhausted"
 
     if state.get("coding_agent_success"):
         logger.info("Decision: success -> VERIFY_COMPLETION")
