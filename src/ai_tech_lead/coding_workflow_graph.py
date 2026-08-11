@@ -1854,6 +1854,11 @@ def run_coding_agent_node(
             )
         target_project_root = override_root
 
+    # Reuse every already-approved, already-produced piece of workflow state
+    # that can name a relevant file — the coding-agent instruction, plan, and
+    # task description, plus the earlier read-only code-recon report and the
+    # project-guidance locations already resolved for this task. No new LLM
+    # call: this is all state the graph already computed this run.
     relevance_text = "\n".join(
         text
         for text in (
@@ -1861,6 +1866,9 @@ def run_coding_agent_node(
             state.get("plan_text", ""),
             state.get("formulated_task", ""),
             state.get("bounded_request", "") or state.get("request", ""),
+            state.get("brief", ""),
+            state.get("code_recon_report", ""),
+            "\n".join(state.get("project_guidance_related_locations", []) or []),
         )
         if text
     )

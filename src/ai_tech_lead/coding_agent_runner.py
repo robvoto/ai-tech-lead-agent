@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import subprocess
 import threading
 import time
@@ -502,16 +503,34 @@ def run_git_preflight(project_root: Path, relevance_text: str) -> GitPreflightRe
             ),
         )
 
-    overlapping = [
-        entry.path for entry in entries if _path_overlaps_relevance(entry.path, relevance_text)
-    ]
-    if overlapping:
+    relevant_paths: list[str] = []
+    uncertain_paths: list[str] = []
+    for entry in entries:
+        classification = _classify_path_relevance(entry.path, relevance_text)
+        if classification == "relevant":
+            relevant_paths.append(entry.path)
+        elif classification == "uncertain":
+            uncertain_paths.append(entry.path)
+
+    if relevant_paths:
         return GitPreflightResult(
             status="blocked_relevant",
             branch=branch,
             head=head,
             dirty_paths=dirty_paths,
-            reason=f"Pre-existing change overlaps the approved task: {', '.join(overlapping)}",
+            reason=f"Pre-existing change overlaps the approved task: {', '.join(relevant_paths)}",
+        )
+
+    if uncertain_paths:
+        return GitPreflightResult(
+            status="blocked_ambiguous",
+            branch=branch,
+            head=head,
+            dirty_paths=dirty_paths,
+            reason=(
+                "A pre-existing change has an uncertain relationship to the approved task "
+                f"and cannot be safely classified as unrelated: {', '.join(uncertain_paths)}"
+            ),
         )
 
     return GitPreflightResult(
@@ -573,14 +592,80 @@ def _parse_git_status_line(line: str) -> _GitStatusEntry:
     return _GitStatusEntry(path=path, raw=line, ambiguous=ambiguous)
 
 
-def _path_overlaps_relevance(path: str, relevance_text: str) -> bool:
+# Generic scaffolding directory/file-stem names that show up in almost any
+# repository regardless of what the task is about (e.g. a plan that mentions
+# "add tests" would otherwise flag every dirty file under tests/). Structural
+# vocabulary, not project- or domain-specific, so excluding it from the
+# partial-match tier does not hardcode any product rule.
+_GENERIC_PATH_TOKENS = frozenset(
+    {
+        "src",
+        "lib",
+        "libs",
+        "app",
+        "apps",
+        "bin",
+        "dist",
+        "build",
+        "docs",
+        "doc",
+        "test",
+        "tests",
+        "data",
+        "config",
+        "configs",
+        "scripts",
+        "assets",
+        "public",
+        "static",
+        "vendor",
+    }
+)
+
+
+def _classify_path_relevance(path: str, relevance_text: str) -> str:
+    """Classify one dirty path against the already-approved task text as
+    "relevant", "uncertain", or "unrelated" — no LLM call, no repo scan.
+
+    "relevant": the full path, its filename, or a nested (multi-segment)
+    ancestor directory of it is explicitly named in the text — e.g. the plan,
+    formulated task, code-recon report, or project-guidance locations already
+    gathered earlier in this same approved workflow run.
+
+    "uncertain": no explicit match, but the file's immediate directory name or
+    filename stem (a single, generic-enough word) appears in the text — too
+    weak a signal to safely call the file unrelated, so it blocks for human
+    review rather than silently proceeding.
+
+    "unrelated": no textual signal at all. This is the only positive evidence
+    obtainable without scanning the whole repository or making another LLM
+    call, so it is the bar for allowing a dirty file through untouched.
+    """
     if not relevance_text:
-        return False
+        return "unrelated"
     haystack = relevance_text.casefold()
+
     if path.casefold() in haystack:
-        return True
-    basename = Path(path).name
-    return bool(basename) and basename.casefold() in haystack
+        return "relevant"
+
+    candidate = Path(path)
+    basename = candidate.name
+    if basename and basename.casefold() in haystack:
+        return "relevant"
+
+    parent = candidate.parent
+    if str(parent) not in ("", ".") and "/" in str(parent) and str(parent).casefold() in haystack:
+        return "relevant"
+
+    weak_tokens = [candidate.stem, parent.name]
+    for token in weak_tokens:
+        normalized = token.casefold()
+        if len(normalized) < 4 or normalized in _GENERIC_PATH_TOKENS:
+            continue
+        if re.search(rf"\b{re.escape(normalized)}\b", haystack):
+            return "uncertain"
+
+    return "unrelated"
 
 
 def _get_git_changed_files(cwd: Path) -> tuple[str, ...]:

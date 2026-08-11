@@ -415,3 +415,74 @@ def test_run_git_preflight_captures_branch_head_and_multiple_dirty_paths(
     assert result.head == "cafef00d"
     assert result.dirty_paths == ("unrelated_one.py", "unrelated_two.py")
     assert result.status == "proceed_unrelated"
+
+
+def test_run_git_preflight_directory_and_stem_token_match_blocks_ambiguous(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Filename-literal matching alone would call this "unrelated" — the plan
+    never spells out "service.py" — but the words "auth" and "service" are
+    both present, a real signal that should not be silently waved through.
+    """
+    _calls, fake_run = _fake_git_run(status_stdout=" M src/auth/service.py\n")
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    result = run_git_preflight(
+        tmp_path, "Update the auth service to reject expired tokens."
+    )
+
+    assert result.status == "blocked_ambiguous"
+    assert result.safe_to_proceed is False
+    assert "src/auth/service.py" in result.reason
+
+
+def test_run_git_preflight_nested_ancestor_directory_mention_blocks_relevant(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A plan that scopes work to a nested directory (without naming the
+    exact file) is explicit enough evidence to block outright, not just flag
+    as uncertain.
+    """
+    _calls, fake_run = _fake_git_run(status_stdout=" M src/billing/export.py\n")
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    result = run_git_preflight(
+        tmp_path, "Plan:\nAll changes are scoped to src/billing/."
+    )
+
+    assert result.status == "blocked_relevant"
+    assert result.safe_to_proceed is False
+
+
+def test_run_git_preflight_generic_directory_token_does_not_cause_false_ambiguous(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Coincidentally sharing a generic directory name like "tests" with the
+    plan text should not block every dirty file under tests/ — that would
+    make the gate unusable on any repo doing normal test-writing work.
+    """
+    _calls, fake_run = _fake_git_run(status_stdout=" M tests/test_something.py\n")
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    result = run_git_preflight(tmp_path, "Add tests for the new tests runner.")
+
+    assert result.status == "proceed_unrelated"
+    assert result.safe_to_proceed is True
+
+
+def test_run_git_preflight_no_textual_signal_still_proceeds_unrelated(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Documents the known residual gap: with no code-recon report, no
+    directory/stem mention, and no exact path mention anywhere in the
+    already-approved task text, there is no deterministic signal left to
+    classify on without a whole-repo scan or another LLM call — both out of
+    scope for this slice — so this case proceeds untouched rather than
+    blocking every run.
+    """
+    _calls, fake_run = _fake_git_run(status_stdout=" M src/auth/service.py\n")
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    result = run_git_preflight(tmp_path, "Fix the login validation bug.")
+
+    assert result.status == "proceed_unrelated"

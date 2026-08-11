@@ -1130,6 +1130,56 @@ def test_route_after_run_coding_agent_retries_normally_when_preflight_not_blocke
     assert route_after_run_coding_agent(state) == "retry coding"
 
 
+def test_run_coding_agent_node_git_preflight_relevance_text_reuses_workflow_state(
+    monkeypatch,
+) -> None:
+    """Proves the hardening fix from the ATL-079 review: relevance text fed
+    to the git preflight is not limited to plan_text/formulated_task — it
+    also carries the earlier code-recon report, execution brief, and
+    resolved project-guidance locations, all already produced this run with
+    no new LLM call. This is what lets a dirty file get flagged even when
+    the plan itself never spells out the exact filename.
+    """
+    settings = replace(parse_settings(valid_settings_dict()), execute_coding_agent=True)
+    monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.load_settings", lambda: settings)
+    monkeypatch.setattr("ai_tech_lead.risk_reviewer.load_settings", lambda: settings)
+    captured: dict[str, str] = {}
+
+    def fake_run_git_preflight(project_root, relevance_text):
+        captured["relevance_text"] = relevance_text
+        return GitPreflightResult(
+            status="clean",
+            branch="main",
+            head="abc123",
+            dirty_paths=(),
+            reason="Worktree is clean.",
+        )
+
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.run_git_preflight", fake_run_git_preflight
+    )
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.run_coding_agent",
+        lambda **_kwargs: _FakeAgentResult(returncode=0, command=["codex"]),
+    )
+
+    run_coding_agent_node(
+        graph_state(
+            agent_instruction="Do the task",
+            plan_text="Plan bullets",
+            formulated_task="Fix the login validation bug",
+            brief="Technical direction: check the auth module",
+            code_recon_report="Relevant file: src/auth/service.py handles login validation.",
+            project_guidance_related_locations=["docs/AUTH_GUIDANCE.md"],
+        )
+    )
+
+    relevance_text = captured["relevance_text"]
+    assert "src/auth/service.py" in relevance_text
+    assert "check the auth module" in relevance_text
+    assert "docs/AUTH_GUIDANCE.md" in relevance_text
+
+
 def test_rejected_graph_resumes_without_coding_agent_result_index_error(monkeypatch) -> None:
     settings = parse_settings(valid_settings_dict())
 
