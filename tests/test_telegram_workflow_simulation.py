@@ -100,10 +100,22 @@ def _init_git_repo(root: Path, files: dict[str, str]) -> None:
     )
 
 
-def _wire_common_workflow_mocks(monkeypatch, settings, *, tech_direction: str) -> None:
+def _wire_common_workflow_mocks(
+    monkeypatch,
+    settings,
+    *,
+    tech_direction: str,
+    project_guidance_captures: dict[str, list[str]] | None = None,
+) -> None:
     """Mock every orchestrator-LLM/coding-agent boundary coding_workflow_graph.py
     calls, the same way test_coding_workflow_graph.py's scenario tests do —
     reused here rather than reinvented.
+
+    When `project_guidance_captures` is given, the `project_guidance` kwarg
+    each mock actually receives is recorded under its call-site name, so a
+    test can assert the same selected guidance reached review_plan,
+    build_agent_instruction, and verify_completion — not just that discovery
+    ran.
     """
 
     monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.load_settings", lambda: settings)
@@ -148,24 +160,39 @@ def _wire_common_workflow_mocks(monkeypatch, settings, *, tech_direction: str) -
             f"{replacements['task_feedback']}::{replacements['correction_feedback']}"
         ),
     )
-    monkeypatch.setattr(
-        "ai_tech_lead.coding_workflow_graph.review_plan",
-        lambda **_kwargs: PlanReviewDecision(approved=True, reason="Plan is bounded.", correction=""),
-    )
-    monkeypatch.setattr(
-        "ai_tech_lead.coding_workflow_graph.build_agent_instruction",
-        lambda **kwargs: (
+    def fake_review_plan(**kwargs):
+        if project_guidance_captures is not None:
+            project_guidance_captures["review_plan"] = list(kwargs["project_guidance"])
+        return PlanReviewDecision(approved=True, reason="Plan is bounded.", correction="")
+
+    monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.review_plan", fake_review_plan)
+
+    def fake_build_agent_instruction(**kwargs):
+        if project_guidance_captures is not None:
+            project_guidance_captures["build_agent_instruction"] = list(
+                kwargs["project_guidance"]
+            )
+        return (
             f"IMPLEMENT::{kwargs['formulated_task']}::{kwargs['brief']}::"
             f"{' | '.join(kwargs['task_feedback'])}::{kwargs['agent_correction'] or ''}"
-        ),
-    )
+        )
+
     monkeypatch.setattr(
-        "ai_tech_lead.coding_workflow_graph.verify_completion",
-        lambda **_kwargs: CompletionVerificationDecision(
+        "ai_tech_lead.coding_workflow_graph.build_agent_instruction",
+        fake_build_agent_instruction,
+    )
+
+    def fake_verify_completion(**kwargs):
+        if project_guidance_captures is not None:
+            project_guidance_captures["verify_completion"] = list(kwargs["project_guidance"])
+        return CompletionVerificationDecision(
             status="complete",
             reason="Verified: app/service.py now validates input as required.",
             correction="",
-        ),
+        )
+
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.verify_completion", fake_verify_completion
     )
     # Restore the real ATL-079 preflight for this test — conftest's autouse
     # fixture defaults it to "clean" so unrelated tests don't need a real
@@ -197,18 +224,26 @@ def test_telegram_workflow_simulation_happy_path_approve_and_complete(
                 "def handle_request(payload):\n    return process(payload)\n"
             ),
             "README.md": "# Demo project\n",
+            "AGENTS.md": (
+                "Follow explicit-validation conventions in app/service.py before merging.\n"
+            ),
         },
     )
+    expected_project_guidance = [
+        "AGENTS.md: Follow explicit-validation conventions in app/service.py before merging."
+    ]
 
     settings = replace(
         parse_settings(valid_settings_dict()),
         orchestrator_ai_enabled=True,
         execute_coding_agent=False,
     )
+    project_guidance_captures: dict[str, list[str]] = {}
     _wire_common_workflow_mocks(
         monkeypatch,
         settings,
         tech_direction="Keep the change scoped to app/service.py.",
+        project_guidance_captures=project_guidance_captures,
     )
 
     plan_calls: list[str] = []
@@ -307,6 +342,14 @@ def test_telegram_workflow_simulation_happy_path_approve_and_complete(
             "Keep the change scoped to app/service.py.::::"
         )
     ]
+
+    # The same selected guidance (the real AGENTS.md note, discovered from the
+    # target repo, not mocked) reached all three downstream stages: the plan
+    # reviewer, the coding-agent instruction builder, and completion
+    # verification — not just discovery/governance in isolation.
+    assert project_guidance_captures["review_plan"] == expected_project_guidance
+    assert project_guidance_captures["build_agent_instruction"] == expected_project_guidance
+    assert project_guidance_captures["verify_completion"] == expected_project_guidance
 
     # 3. Completion reaches Telegram and names the changed file.
     final_message = client.messages[-1][1]
