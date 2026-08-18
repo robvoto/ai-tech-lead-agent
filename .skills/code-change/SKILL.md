@@ -8,6 +8,7 @@ description: Use for code, tests, runtime, graph, or integration implementation 
 Use before modifying existing code.
 
 ## Rules
+- If the design introduces or relies on a heuristic/approximate inference, apply the global `heuristic-review` skill before coding. Assistive heuristics are allowed only when an independent LLM/authoritative validation layer controls the final outcome; authoritative heuristics require explicit human approval.
 - Inspect the target file before editing.
 - Check `docs/ARCHITECTURE.md` before changing adapters, graph flow, settings, subprocess execution, or UI boundaries.
 - Touch only files required for the task.

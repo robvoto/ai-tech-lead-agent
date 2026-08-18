@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import replace
+from types import SimpleNamespace
 from urllib.error import URLError
 
 import pytest
@@ -19,8 +20,8 @@ from test_backlog_sheets_repository import (
 
 import ai_tech_lead.backlog_sheets_repository as sheets_mod
 from ai_tech_lead.app_settings import parse_settings
-from ai_tech_lead.backlog_refinement_capability import BacklogRefinementProposal
 from ai_tech_lead.backlog_reference import BacklogReference
+from ai_tech_lead.backlog_refinement_capability import BacklogRefinementProposal
 from ai_tech_lead.backlog_repository import (
     BacklogItem,
     BacklogRefinementDraft,
@@ -28,8 +29,8 @@ from ai_tech_lead.backlog_repository import (
 )
 from ai_tech_lead.backlog_sheets_repository import SheetsBacklogRepository
 from ai_tech_lead.backlog_status import BacklogStatus
-from ai_tech_lead.config import PROJECT_ROOT
 from ai_tech_lead.coding_workflow_graph import NodeName
+from ai_tech_lead.config import PROJECT_ROOT
 from ai_tech_lead.telegram_agent_graph import TelegramAgentReply
 from ai_tech_lead.telegram_operator import (
     CANONICAL_BOT_COMMANDS,
@@ -326,7 +327,8 @@ def test_help_text_shows_identity_and_model() -> None:
         "  /code <text> - explicit coding workflow",
         "  /cancel_code - stop the running coding-agent subprocess",
         "  /approve - approve the waiting task/decision",
-        "  /request_changes <feedback> - send feedback on a waiting approval and get a revised proposal",
+        "  /request_changes <feedback> - send feedback on a waiting approval and get a "
+        "revised proposal",
         "  /ask <question> - ask a question about a waiting approval",
         "  /cancel - cancel the waiting task/decision",
         "  /reject - alias for /cancel",
@@ -1860,3 +1862,37 @@ def test_stale_openclaw_commands_are_not_registered() -> None:
     registered = {c["command"] for c in set_calls[0]}
     stale = {"fix", "stop", "restart", "reset", "reasoning"}
     assert not registered & stale, f"Stale commands found in payload: {registered & stale}"
+
+
+def test_detect_stage_for_context_clarification_interrupt(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    settings = parse_settings(valid_settings_dict())
+    operator = TelegramOperator("token", settings, client=_RecordingClient())
+    snapshot = SimpleNamespace(
+        tasks=[
+            SimpleNamespace(
+                interrupts=[
+                    SimpleNamespace(
+                        value={
+                            "kind": "context_clarification",
+                            "question": "What does ATL-999 refer to?",
+                        }
+                    )
+                ]
+            )
+        ],
+        values={},
+    )
+
+    caplog.set_level(logging.INFO)
+    stage, message = operator._stage_and_message_from_snapshot(
+        task_label="ATL-999 for AI Tech Lead",
+        request_summary="ATL-999 for AI Tech Lead",
+        state_snapshot=snapshot,
+    )
+
+    assert stage == TelegramTaskStage.ORCHESTRATOR_INPUT
+    assert message == "What does ATL-999 refer to?"
+    assert "interrupt kind=context_clarification" in caplog.text
+    assert "unrecognised interrupt kind='context_clarification'" not in caplog.text

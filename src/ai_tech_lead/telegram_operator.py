@@ -866,7 +866,9 @@ class TelegramOperator:
             )
             return
 
-        self._pending_backlog_drafts[chat_id] = PendingBacklogDraft(chat_id=chat_id, proposal=proposal)
+        self._pending_backlog_drafts[chat_id] = PendingBacklogDraft(
+            chat_id=chat_id, proposal=proposal
+        )
         self._send_message(
             chat_id,
             format_backlog_refinement_review(
@@ -1327,8 +1329,7 @@ class TelegramOperator:
             logger.warning("Finalize: %s", alert)
             return False, alert
         alert = (
-            f"ALERT: Backlog update for {backlog_item_id} is queued "
-            f"(sync status: {sync_status})."
+            f"ALERT: Backlog update for {backlog_item_id} is queued (sync status: {sync_status})."
         )
         logger.warning("Finalize: %s", alert)
         return False, alert
@@ -1402,7 +1403,7 @@ class TelegramOperator:
         action: str,
         text: str = "",
     ) -> bool:
-        """Handle a human decision on a paused pre-run, research, or completion-verification interrupt.
+        """Handle a decision on a paused pre-run, research, or completion-verification interrupt.
 
         `action` is one of "approve", "request_changes", "ask_question", "cancel".
         `request_changes` and `ask_question` only apply to the PRE_RUN_APPROVAL
@@ -1608,7 +1609,7 @@ class TelegramOperator:
             )
             return TelegramTaskStage.RESEARCH_APPROVAL, message
 
-        if kind == "clarification":
+        if kind in {"clarification", "context_clarification"}:
             question = str(interrupt_value.get("question", "")).strip()
             message = question or "I need more information before I can proceed."
             return TelegramTaskStage.ORCHESTRATOR_INPUT, message
@@ -1746,7 +1747,9 @@ class TelegramOperator:
         if active_task is not None:
             lines.append(f"Discarded active task: {active_task.task_label}.")
         if pending_draft is not None:
-            lines.append(f"Discarded pending backlog draft: {pending_draft.proposal.draft.item_id}.")
+            lines.append(
+                f"Discarded pending backlog draft: {pending_draft.proposal.draft.item_id}."
+            )
         if cancellation_requested:
             lines.append("Cancellation requested for the running coding-agent subprocess.")
         elif active_task is not None and active_task.stage == TelegramTaskStage.RUNNING:
