@@ -33,14 +33,15 @@ The settings file now also carries the explicit knowledge-store path. The curren
 ## Normal CLI run
 
 ```bash
-cd /home/robvoto/projects/ai-tech-lead
-uv run python -m ai_tech_lead --debug
+./scripts/run-worktree.sh --debug
 ```
+
+The launcher is worktree-aware: it forces imports from the current checkout, verifies the imported package path before startup, and creates an ignored worktree-local settings copy when a linked worktree does not have one yet.
 
 For local development, use `--reload` to restart the process when source, config, docs, or prompt files change:
 
 ```bash
-uv run python -m ai_tech_lead --debug --reload
+./scripts/run-worktree.sh --debug --reload
 ```
 
 Trigger backlog tasks through Telegram, for example:

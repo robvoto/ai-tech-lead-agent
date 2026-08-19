@@ -7,17 +7,22 @@ description: Launch the AI Tech Lead bot for manual testing or verification.
 
 ## Launch command
 
+Run from any AI Tech Lead worktree with the tracked launcher:
+
 ```bash
-cd /home/robvoto/projects/ai-tech-lead
-uv run python -m ai_tech_lead --debug
+./scripts/run-worktree.sh --debug
 ```
+
+The launcher resolves the current worktree dynamically, reuses the primary worktree's `.venv` when needed, forces imports from the current worktree's `src`, and fails before startup if Python imports AI Tech Lead from another worktree. If the ignored local settings file is missing in a linked worktree, it creates a worktree-local copy from the primary settings and rewrites only the primary AI Tech Lead root to the current worktree root.
+
+Do not launch a linked worktree with `../ai-tech-lead/.venv/bin/python -m ai_tech_lead` directly: the shared editable install points at the primary worktree unless `PYTHONPATH` is corrected.
 
 The app runs until interrupted (Ctrl-C). There is no `--task-id` CLI flag; task execution is triggered via Telegram (e.g. `/run ATL-001`).
 
 ## Background launch (for automated checks)
 
 ```bash
-uv run python -m ai_tech_lead --debug > /tmp/atl_run.log 2>&1 &
+./scripts/run-worktree.sh --debug > /tmp/atl_run.log 2>&1 &
 APP_PID=$!
 sleep 20
 cat /tmp/atl_run.log
