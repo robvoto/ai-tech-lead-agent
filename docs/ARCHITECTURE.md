@@ -143,6 +143,17 @@ Supporting modules such as `src/ai_tech_lead/backlog_graph_runner.py` call the c
   behavior decided, but it is not yet wired into `coding_workflow_graph.py` — that graph has no
   existing per-run usage accumulator, so wiring one in across every orchestrator-calling node is
   left as a scoped follow-up rather than bolted on here.
+  **Current model assignment** (as of ATL-090, 2026-08-19): `gpt-4.1-mini` remains the base model
+  — it backs the entire `"strong"` tier (`tech_lead_analysis`, `plan_review`, unbenchmarked) and
+  is `"normal"` tier's settings-driven fallback. `gpt-5.6-luna` was adopted only where a live
+  benchmark supported it: all of `"simple"` tier (ATL-036), plus four `"normal"`-tier purposes via
+  `PURPOSE_PROFILE_OVERRIDE` — `research_knowledge_gap_check`, `operator_question`,
+  `research_discovery`, and `telegram_chat` (the last pinned to `"none"` as a hard requirement,
+  not just cost: Luna's `"low"`/`"medium"` 400s over Chat Completions with bound tools). Two
+  `"normal"`-tier purposes were benchmarked and deliberately kept on `gpt-4.1-mini` —
+  `completion_verification` (Luna produced invalid JSON on the final done-gate) and
+  `backlog_draft_builder` (Luna's per-token discount was outweighed by needing more tokens for its
+  large structured output). Raw benchmark data lives in the ATL-036/ATL-090 backlog rows, not here.
 - Settings own configurable values, limits, and paths, plus the active model for the
   `"normal"` profile and the run-budget ceilings. Human-readable prompt and rule text lives
   in `data/prompts.json`. Prompt
