@@ -982,9 +982,9 @@ _GUIDANCE_NOTE_PATH_PATTERN = re.compile(r"^([^\s:(]+\.md)")
 def _guidance_paths_and_hash(notes: list[str]) -> tuple[list[str], str]:
     """Derive the file paths behind the selected notes and one compact content
     hash — metadata extracted from what discover_project_guidance already
-    returned, not a new discovery pass or a new persistence store. Ready for
-    ATL-038's audit/replay record to pick up once that ticket exists; this
-    does not build that record itself.
+    returned, not a new discovery pass or a new persistence store. The
+    completed run writes these bounded paths and hashes into ATL-038's compact
+    audit receipt; resumable state remains in the LangGraph checkpoint.
     """
 
     paths: list[str] = []
