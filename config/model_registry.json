@@ -1,0 +1,79 @@
+{
+  "_comment": "Single authoritative registry of supported LLM models: identity, endpoint/capability support, reasoning controls, and pricing. No provider exposes pricing via API, so this is a hardcoded prototype config maintained manually. Check https://developers.openai.com/api/docs/pricing before changing prices or adding models.",
+  "pricing_source": "https://developers.openai.com/api/docs/pricing",
+  "models": {
+    "gpt-4.1-mini": {
+      "tier": "efficiency",
+      "endpoints": ["responses_api", "chat_completions"],
+      "capabilities": {"structured_output": true, "tool_use": true, "web_search": true},
+      "reasoning": null,
+      "pricing": {
+        "input_per_million": 0.40,
+        "cached_input_per_million": null,
+        "output_per_million": 1.60
+      },
+      "pricing_checked": "2026-08-19"
+    },
+    "gpt-4.1": {
+      "tier": "standard",
+      "endpoints": ["responses_api", "chat_completions"],
+      "capabilities": {"structured_output": true, "tool_use": true, "web_search": true},
+      "reasoning": null,
+      "pricing": {
+        "input_per_million": 2.00,
+        "cached_input_per_million": null,
+        "output_per_million": 8.00
+      },
+      "pricing_checked": "2026-08-19"
+    },
+    "gpt-4o-mini": {
+      "tier": "efficiency",
+      "endpoints": ["responses_api", "chat_completions"],
+      "capabilities": {"structured_output": true, "tool_use": true, "web_search": true},
+      "reasoning": null,
+      "pricing": {
+        "input_per_million": 0.15,
+        "cached_input_per_million": null,
+        "output_per_million": 0.60
+      },
+      "pricing_checked": "2026-08-19"
+    },
+    "gpt-4o": {
+      "tier": "standard",
+      "endpoints": ["responses_api", "chat_completions"],
+      "capabilities": {"structured_output": true, "tool_use": true, "web_search": true},
+      "reasoning": null,
+      "pricing": {
+        "input_per_million": 2.50,
+        "cached_input_per_million": null,
+        "output_per_million": 10.00
+      },
+      "pricing_checked": "2026-08-19"
+    },
+    "gpt-5.6-luna": {
+      "tier": "efficiency",
+      "endpoints": ["responses_api", "chat_completions"],
+      "capabilities": {"structured_output": true, "tool_use": true, "web_search": true},
+      "reasoning": {
+        "supported_efforts": ["none", "low", "medium", "high", "xhigh", "max"],
+        "default_effort": "medium",
+        "requires_explicit_effort": true,
+        "persisted_reasoning_default": "all_turns",
+        "min_recommended_output_tokens": 1024,
+        "_min_output_tokens_note": "Conservative floor so reasoning-token consumption doesn't starve visible output; not an OpenAI-published figure, tune from observed usage."
+      },
+      "pricing": {
+        "input_per_million": 0.20,
+        "cached_input_per_million": 0.02,
+        "output_per_million": 1.20
+      },
+      "pricing_checked": "2026-08-19",
+      "other_pricing_tiers": {
+        "_note": "Recorded for reference only; not wired into cost estimation because no call site in this codebase currently uses batch, fast mode, or >272K-token long context.",
+        "long_context_over_272k_input_tokens": {"input_per_million": 0.40, "output_per_million": 1.80, "output_multiplier_note": "output also carries an additional 1.5x multiplier at this tier"},
+        "batch": {"input_per_million": 0.10, "output_per_million": 0.60},
+        "fast_mode": {"input_per_million": 0.40, "output_per_million": 2.40}
+      }
+    }
+  }
+}

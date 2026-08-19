@@ -11,7 +11,6 @@ LangChain Academy Module 3 pattern:
 
 from __future__ import annotations
 
-import json
 import logging
 import time
 from contextvars import ContextVar
@@ -31,8 +30,9 @@ from ai_tech_lead.backlog_sheets_repository import (
     BacklogSourceUnavailableError,
     repository_from_settings,
 )
-from ai_tech_lead.config import PROJECT_ROOT
 from ai_tech_lead.env_loader import load_local_env
+from ai_tech_lead.execution_profiles import STANDARD_PROFILE, resolve_execution_profile
+from ai_tech_lead.model_registry import estimate_cost as _registry_estimate_cost
 from ai_tech_lead.prompt_loader import TELEGRAM_AGENT_SYSTEM_PROMPT_KEY, load_prompt
 
 logger = logging.getLogger(__name__)
@@ -43,9 +43,6 @@ _EXPECTED_BACKLOG_TOOL_ERRORS = (
     BacklogSourceUnavailableError,
 )
 
-_LLM_PRICING_PATH = PROJECT_ROOT / "config" / "llm_pricing.json"
-# Cached after first load — pricing file is read once per process.
-_pricing_cache: dict[str, tuple[float, float]] | None = None
 _active_telegram_tool_context: ContextVar[tuple[str, str] | None] = ContextVar(
     "active_telegram_tool_context", default=None
 )
@@ -104,18 +101,22 @@ def build_telegram_agent_graph(*, settings: AppSettings, checkpointer: Any):
     except Exception as exc:
         logger.warning("Knowledge store unavailable, running without memory tools: %s", exc)
 
+    profile = resolve_execution_profile(STANDARD_PROFILE, settings=settings)
     logger.info(
-        "Building Telegram agent graph with model=%s max_completion_tokens=%s timeout_seconds=%s",
-        settings.orchestrator_ai_model,
-        settings.orchestrator_ai_max_output_tokens,
+        "Building Telegram agent graph with model=%s reasoning_effort=%s "
+        "max_completion_tokens=%s timeout_seconds=%s",
+        profile.model,
+        profile.reasoning_effort,
+        profile.max_output_tokens,
         settings.orchestrator_ai_timeout_seconds,
     )
     llm = ChatOpenAI(
-        model=settings.orchestrator_ai_model,
+        model=profile.model,
         # Keep the reply budget configurable from validated settings.
         # This ChatOpenAI version expects max_completion_tokens.
-        max_completion_tokens=settings.orchestrator_ai_max_output_tokens,
+        max_completion_tokens=profile.max_output_tokens,
         timeout=settings.orchestrator_ai_timeout_seconds,
+        reasoning_effort=profile.reasoning_effort,
     )
     llm_with_tools = llm.bind_tools(tools)
     system_message = SystemMessage(content=load_prompt(TELEGRAM_AGENT_SYSTEM_PROMPT_KEY))
@@ -394,34 +395,12 @@ def _message_model_name(message: AIMessage) -> str | None:
     return name if isinstance(name, str) else None
 
 
-def _load_pricing() -> dict[str, tuple[float, float]]:
-    """Load model pricing from config/llm_pricing.json, cached after first read."""
-    global _pricing_cache
-    if _pricing_cache is not None:
-        return _pricing_cache
-    try:
-        data = json.loads(_LLM_PRICING_PATH.read_text(encoding="utf-8"))
-        models = data.get("models", {})
-        _pricing_cache = {
-            name: (float(v["input"]), float(v["output"]))
-            for name, v in models.items()
-            if isinstance(v, dict)
-        }
-    except Exception:
-        logger.warning(
-            "Could not load LLM pricing from %s — cost reporting disabled", _LLM_PRICING_PATH
-        )
-        _pricing_cache = {}
-    return _pricing_cache
-
-
 def _estimate_cost(model: str, input_tokens: int, output_tokens: int) -> float | None:
-    """Return approximate USD cost or None if model pricing is unknown."""
-    pricing = _load_pricing()
-    for key, (in_price, out_price) in pricing.items():
-        if model.startswith(key):
-            return (input_tokens * in_price + output_tokens * out_price) / 1_000_000
-    return None
+    """Return approximate USD cost from the model registry, or None if unresolved."""
+    estimate = _registry_estimate_cost(
+        model, input_tokens=input_tokens, output_tokens=output_tokens
+    )
+    return estimate.usd if estimate.is_estimated else None
 
 
 def _extract_token_counts(msg: AIMessage) -> tuple[int, int]:

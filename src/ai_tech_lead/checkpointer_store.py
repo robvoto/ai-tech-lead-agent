@@ -7,6 +7,7 @@ conversations never mix. Threads persist across process restarts.
 
 from __future__ import annotations
 
+import os
 import sqlite3
 from typing import TYPE_CHECKING
 
@@ -20,10 +21,19 @@ _conn: sqlite3.Connection | None = None
 _checkpointer: "SqliteSaver | None" = None
 
 
+def _enable_strict_msgpack() -> None:
+    """Require LangGraph's safe built-in MessagePack deserialization path."""
+
+    # This must happen before importing/constructing SqliteSaver because the
+    # serializer reads the environment setting during module initialisation.
+    os.environ["LANGGRAPH_STRICT_MSGPACK"] = "true"
+
+
 def get_checkpointer() -> "SqliteSaver":
     """Return the module-level SqliteSaver singleton, creating it on first call."""
     global _conn, _checkpointer
     if _checkpointer is None:
+        _enable_strict_msgpack()
         from langgraph.checkpoint.sqlite import SqliteSaver
 
         ensure_project_dirs()

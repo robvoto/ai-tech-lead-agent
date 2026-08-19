@@ -33,6 +33,14 @@ def _isolate_knowledge_store(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _isolate_run_audit_store(tmp_path, monkeypatch):
+    """Redirect compact run receipts to a per-test database."""
+    import ai_tech_lead.run_audit_store as audit_mod
+
+    monkeypatch.setattr(audit_mod, "RUN_AUDIT_DB_PATH", tmp_path / "ai_tech_lead.sqlite3")
+
+
+@pytest.fixture(autouse=True)
 def _disable_relevance_check_ai_by_default(monkeypatch):
     """Default the ATL-relevance and code-look checks to AI-disabled (fail open).
 

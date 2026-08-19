@@ -28,7 +28,7 @@ from .backlog_sheets_repository import (
 from .code_look_checker import check_code_look_need
 from .coding_agent_runner import CodingAgentCancellationToken, run_coding_agent, run_git_preflight
 from .completion_verifier import CompletionVerificationUnavailable, verify_completion
-from .instruction_assembler import build_agent_instruction
+from .instruction_assembler import build_agent_instruction, selected_instruction_hashes
 from .logging_setup import LOGGER_NAME
 from .operator_question import answer_operator_question
 from .plan_reviewer import PlanReviewUnavailable, review_plan
@@ -123,6 +123,9 @@ class GraphState(TypedDict):
     project_guidance_paths: list[str]
     project_guidance_hash: str
     project_guidance_changed_on_resume: bool
+    selected_skill_paths: list[str]
+    selected_skill_hashes: dict[str, str]
+    rubric_status: str
     brief: str
     force_approval: bool
     orchestrator_input_required: bool
@@ -227,6 +230,9 @@ def build_initial_graph_state(
         "project_guidance_paths": [],
         "project_guidance_hash": "",
         "project_guidance_changed_on_resume": False,
+        "selected_skill_paths": [],
+        "selected_skill_hashes": {},
+        "rubric_status": "",
         "brief": "",
         "force_approval": force_approval,
         "orchestrator_input_required": False,
@@ -976,9 +982,9 @@ _GUIDANCE_NOTE_PATH_PATTERN = re.compile(r"^([^\s:(]+\.md)")
 def _guidance_paths_and_hash(notes: list[str]) -> tuple[list[str], str]:
     """Derive the file paths behind the selected notes and one compact content
     hash — metadata extracted from what discover_project_guidance already
-    returned, not a new discovery pass or a new persistence store. Ready for
-    ATL-038's audit/replay record to pick up once that ticket exists; this
-    does not build that record itself.
+    returned, not a new discovery pass or a new persistence store. The
+    completed run writes these bounded paths and hashes into ATL-038's compact
+    audit receipt; resumable state remains in the LangGraph checkpoint.
     """
 
     paths: list[str] = []
@@ -1724,6 +1730,17 @@ def create_agent_instruction_node(state: GraphState) -> dict[str, Any]:
         agent_correction=correction,
         project_guidance=list(state.get("project_guidance_notes", [])),
     )
+    try:
+        selected_hashes = selected_instruction_hashes(
+            state["request"],
+            project_root=_target_project_root(state, settings),
+        )
+    except (FileNotFoundError, OSError) as error:
+        # The handoff above is authoritative. Version capture is additive
+        # telemetry and must not break a valid workflow when a minimal target
+        # project has no optional skills pack.
+        logger.warning("Could not record selected instruction versions: %s", error)
+        selected_hashes = {}
 
     logger.info(
         "Instruction purpose: merge task, brief, project rules, selected skills, "
@@ -1733,7 +1750,11 @@ def create_agent_instruction_node(state: GraphState) -> dict[str, Any]:
     logger.info("Instruction size: %s characters", len(agent_instruction))
     logger.info("Instruction preview: %s", _single_line_preview(agent_instruction, limit=360))
 
-    return {"agent_instruction": agent_instruction}
+    return {
+        "agent_instruction": agent_instruction,
+        "selected_skill_paths": list(selected_hashes),
+        "selected_skill_hashes": selected_hashes,
+    }
 
 
 def _log_node_start(step: str, node_name: str, description: str) -> None:

@@ -118,8 +118,14 @@ Supporting modules such as `src/ai_tech_lead/backlog_graph_runner.py` call the c
 - The current coding-agent backend is Codex CLI, but the architecture must stay
   backend-neutral. Future backends may include Claude Code, OpenAI tools, local
   agents, or other compatible execution backends.
-- Settings own configurable values, limits, paths, model names, and prices.
-  Human-readable prompt and rule text lives in `data/prompts.json`. Prompt
+- `config/model_registry.json` (`model_registry.py`) is the single authoritative source of
+  supported LLM models: endpoint/capability support, reasoning-effort controls, and
+  pricing. `execution_profiles.py` is the one resolver boundary between that registry and
+  workflow call sites — call sites request a named profile (e.g. `"standard"`) and never
+  inline a raw model ID or reasoning-effort string, so a future model swap changes only
+  these two files. See ATL-035.
+- Settings own configurable values, limits, and paths, plus the active model for the
+  `"standard"` profile. Human-readable prompt and rule text lives in `data/prompts.json`. Prompt
   keys are centralized in `src/ai_tech_lead/prompt_loader.py`, and graph nodes
   or instruction builders load the registry entries on demand when they need
   them. The local admin UI exposes the same registry so prompts can be
@@ -137,6 +143,10 @@ Supporting modules such as `src/ai_tech_lead/backlog_graph_runner.py` call the c
   Telegram operator uses (`checkpointer_store.py`), keyed by `subprocess-<request_id>`.
   A paused conversation survives across separate subprocess invocations, so a caller
   resumes the exact paused run rather than restarting the task from scratch.
+- Each coding run also writes one compact `run_audit_summaries` receipt to the existing
+  local runtime SQLite database. It records bounded task, model, approval, Git,
+  selected-skill-version, result, validation, and available usage metadata. It does
+  not duplicate checkpoint state, raw prompts, provider traces, or unbounded logs.
 - LangChain/LangGraph tools, when added, are executable capabilities exposed to an LLM or graph. They are different from this repository's `.skills`, which are reusable coding-agent instructions.
 - Admin UI is optional local tooling for editing settings. Browser code keeps HTML, CSS, and JavaScript separated. HTML owns structure, CSS owns presentation, and JavaScript owns behaviour. Browser JavaScript uses ES modules.
 - UI field schemas, API paths, labels, and other UI configuration should move to JSON or API-provided configuration when they become shared, large, or reused. Small local constants are acceptable only when they are explicit and easy to replace.
@@ -180,6 +190,10 @@ This section replaces the standalone `ARMY_INTEGRATION.md` page. Keep the bounde
 ## Persistence
 
 SQLite is the preferred local persistence layer when the project needs durable task runs, approvals, events, cost/token usage, or operator audit history. Keep SQLite minimal until those tables are genuinely used.
+
+LangGraph checkpoints remain the source of resumable workflow state. The compact run
+audit receipt is an inspectable summary only; retrieve one with
+`uv run python -m ai_tech_lead run-audit <request_id>`.
 
 Do not add database tables only because a future feature might need them. Add a table when a workflow reads from it, writes to it, or reports from it.
 

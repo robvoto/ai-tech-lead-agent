@@ -12,6 +12,7 @@ from urllib.request import Request, urlopen
 
 from ai_tech_lead.env_loader import load_local_env
 from ai_tech_lead.logging_setup import LOGGER_NAME
+from ai_tech_lead.model_registry import estimate_cost as _registry_estimate_cost
 
 OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses"
 OPENAI_API_KEY_ENV = "OPENAI_API_KEY"
@@ -24,6 +25,7 @@ class OrchestratorLlmConfig:
     model: str
     max_output_tokens: int
     timeout_seconds: int
+    reasoning_effort: str | None = None
 
 
 @dataclass(frozen=True)
@@ -65,11 +67,13 @@ def call_orchestrator_llm(*, prompt: str, config: OrchestratorLlmConfig) -> Orch
         )
         raise OrchestratorLlmError("OPENAI_API_KEY is not configured.")
 
-    payload = {
+    payload: dict = {
         "model": config.model,
         "input": prompt,
         "max_output_tokens": config.max_output_tokens,
     }
+    if config.reasoning_effort is not None:
+        payload["reasoning"] = {"effort": config.reasoning_effort}
     request = Request(
         OPENAI_RESPONSES_URL,
         data=json.dumps(payload).encode("utf-8"),
@@ -153,12 +157,14 @@ def call_orchestrator_web_search(
         logger.info("Web search call elapsed: 0ms model=%s status=skipped", config.model)
         raise OrchestratorLlmError("OPENAI_API_KEY is not configured.")
 
-    payload = {
+    payload: dict = {
         "model": config.model,
         "input": query,
         "max_output_tokens": config.max_output_tokens,
         "tools": [{"type": "web_search"}],
     }
+    if config.reasoning_effort is not None:
+        payload["reasoning"] = {"effort": config.reasoning_effort}
     request = Request(
         OPENAI_RESPONSES_URL,
         data=json.dumps(payload).encode("utf-8"),
@@ -204,20 +210,8 @@ def call_orchestrator_web_search(
     )
 
 
-# Approximate USD per 1K tokens. Update when pricing changes.
-_COST_PER_1K: dict[str, dict[str, float]] = {
-    "gpt-4.1-mini": {"input": 0.0004, "output": 0.0016},
-    "gpt-4.1": {"input": 0.002, "output": 0.008},
-    "gpt-4o-mini": {"input": 0.00015, "output": 0.0006},
-    "gpt-4o": {"input": 0.0025, "output": 0.01},
-}
-
-
 def _estimate_cost(model: str, tokens_in: int, tokens_out: int) -> float:
-    prices = _COST_PER_1K.get(model)
-    if prices is None:
-        return 0.0
-    return (tokens_in / 1000) * prices["input"] + (tokens_out / 1000) * prices["output"]
+    return _registry_estimate_cost(model, input_tokens=tokens_in, output_tokens=tokens_out).usd
 
 
 def _extract_response_text(data: dict) -> str:

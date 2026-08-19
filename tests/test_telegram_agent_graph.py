@@ -396,6 +396,33 @@ def test_count_and_list_backlog_tools_return_controlled_source_errors(monkeypatc
     assert caplog.text.count("Telegram backlog tool failed") == 2
 
 
+def test_build_telegram_agent_graph_passes_resolved_profile_to_chat_openai(monkeypatch) -> None:
+    class _FakeLLM:
+        def bind_tools(self, tools):
+            return self
+
+    settings = parse_settings(
+        {**valid_settings_dict(), "orchestrator_ai_model": "gpt-4.1-mini"}
+    )
+    captured: dict[str, object] = {}
+
+    def fake_chat_openai(**kwargs):
+        captured.update(kwargs)
+        return _FakeLLM()
+
+    monkeypatch.setattr(
+        "ai_tech_lead.telegram_agent_graph.repository_from_settings",
+        lambda _settings: MarkdownBacklogRepository(Path("/nonexistent/BACKLOG.md")),
+    )
+    monkeypatch.setattr(telegram_agent_graph, "ChatOpenAI", fake_chat_openai)
+
+    telegram_agent_graph.build_telegram_agent_graph(settings=settings, checkpointer=MemorySaver())
+
+    assert captured["model"] == "gpt-4.1-mini"
+    assert captured["reasoning_effort"] is None
+    assert captured["max_completion_tokens"] == settings.orchestrator_ai_max_output_tokens
+
+
 def test_telegram_agent_graph_survives_unexpected_tool_error(monkeypatch, caplog) -> None:
     class _BrokenRepository:
         def list_open_items(self):

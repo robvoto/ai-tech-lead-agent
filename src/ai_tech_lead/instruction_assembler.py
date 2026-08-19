@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -118,6 +119,49 @@ def build_agent_instruction(
         ]
     )
     return "\n\n".join(sections)
+
+
+def selected_instruction_files(
+    request: str,
+    *,
+    project_root: Path | None = None,
+) -> tuple[Path, ...]:
+    """Return the bounded instruction files actually selected for a handoff.
+
+    This reports paths only. Audit callers hash the files without copying their
+    contents, so replay metadata does not become a second instruction store.
+    """
+
+    target_project_root = project_root or PROJECT_ROOT
+    core_path = RUNTIME_CORE_DIR / "CORE.md"
+    if not core_path.is_file():
+        raise FileNotFoundError(f"Runtime core instruction file not found: {core_path}")
+    selections = [
+        core_path,
+        *(selection.path for selection in select_runtime_core_skills(request)),
+        *(selection.path for selection in select_skills(request, project_root=target_project_root)),
+    ]
+    unique_paths: list[Path] = []
+    seen: set[Path] = set()
+    for path in selections:
+        resolved = path.resolve()
+        if resolved not in seen:
+            unique_paths.append(resolved)
+            seen.add(resolved)
+    return tuple(unique_paths)
+
+
+def selected_instruction_hashes(
+    request: str,
+    *,
+    project_root: Path | None = None,
+) -> dict[str, str]:
+    """Return SHA-256 versions for the selected instruction files only."""
+
+    return {
+        str(path): hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in selected_instruction_files(request, project_root=project_root)
+    }
 
 
 def select_skills(
