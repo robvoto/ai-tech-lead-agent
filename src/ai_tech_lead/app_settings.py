@@ -83,6 +83,9 @@ class AppSettings:
     orchestrator_ai_model: str
     orchestrator_ai_max_output_tokens: int
     orchestrator_ai_timeout_seconds: int
+    orchestrator_run_max_calls: int
+    orchestrator_run_max_tokens: int
+    orchestrator_run_max_cost_usd: float
     coding_agent_progress_interval_seconds: int
     project_registry: list[ProjectRegistryEntry]
     sleep_mode: bool
@@ -303,6 +306,21 @@ def parse_settings(raw_settings: dict[str, Any]) -> AppSettings:
             "orchestrator_ai_timeout_seconds",
             default=20,
         ),
+        orchestrator_run_max_calls=_optional_positive_int(
+            raw_settings,
+            "orchestrator_run_max_calls",
+            default=40,
+        ),
+        orchestrator_run_max_tokens=_optional_positive_int(
+            raw_settings,
+            "orchestrator_run_max_tokens",
+            default=400_000,
+        ),
+        orchestrator_run_max_cost_usd=_optional_positive_float(
+            raw_settings,
+            "orchestrator_run_max_cost_usd",
+            default=2.0,
+        ),
         coding_agent_progress_interval_seconds=_optional_positive_int(
             raw_settings,
             "coding_agent_progress_interval_seconds",
@@ -383,6 +401,9 @@ def settings_to_dict(settings: AppSettings) -> dict[str, Any]:
         "orchestrator_ai_model": settings.orchestrator_ai_model,
         "orchestrator_ai_max_output_tokens": settings.orchestrator_ai_max_output_tokens,
         "orchestrator_ai_timeout_seconds": settings.orchestrator_ai_timeout_seconds,
+        "orchestrator_run_max_calls": settings.orchestrator_run_max_calls,
+        "orchestrator_run_max_tokens": settings.orchestrator_run_max_tokens,
+        "orchestrator_run_max_cost_usd": settings.orchestrator_run_max_cost_usd,
         "coding_agent_progress_interval_seconds": settings.coding_agent_progress_interval_seconds,
         PROJECT_REGISTRY_KEY: [entry.to_dict() for entry in settings.project_registry],
         "sleep_mode": settings.sleep_mode,
@@ -571,6 +592,17 @@ def _optional_positive_int(
     if not isinstance(value, int) or value <= 0:
         raise ValueError(f"Setting '{key}' must be a positive integer.")
     return value
+
+
+def _optional_positive_float(
+    raw_settings: dict[str, Any],
+    key: str,
+    default: float,
+) -> float:
+    value = raw_settings.get(key, default)
+    if not isinstance(value, (int, float)) or isinstance(value, bool) or value <= 0:
+        raise ValueError(f"Setting '{key}' must be a positive number.")
+    return float(value)
 
 
 def _optional_url(

@@ -18,13 +18,13 @@ from ai_tech_lead.backlog_repository import (
     BacklogRepositoryProtocol,
     validate_backlog_refinement_draft,
 )
-from ai_tech_lead.execution_profiles import STANDARD_PROFILE, resolve_execution_profile
 from ai_tech_lead.logging_setup import LOGGER_NAME
 from ai_tech_lead.orchestrator_llm import (
     OrchestratorLlmConfig,
     OrchestratorLlmError,
     call_orchestrator_llm,
 )
+from ai_tech_lead.profile_override_store import resolve_profile_with_override
 from ai_tech_lead.research_cache import (
     format_research_cache_for_prompt,
     load_research_cache_entries,
@@ -67,8 +67,8 @@ def build_backlog_refinement_from_text(
     existing_items = repository.list_items()
     try:
         research_cache_entries = load_research_cache_entries()
-        profile = resolve_execution_profile(
-            STANDARD_PROFILE, settings=settings, min_output_tokens=800
+        profile = resolve_profile_with_override(
+            "backlog_draft_builder", settings=settings, min_output_tokens=800
         )
         result = call_orchestrator_llm(
             prompt=_backlog_refinement_prompt(
@@ -83,6 +83,8 @@ def build_backlog_refinement_from_text(
                 max_output_tokens=profile.max_output_tokens,
                 timeout_seconds=settings.orchestrator_ai_timeout_seconds,
                 reasoning_effort=profile.reasoning_effort,
+                purpose="backlog_draft_builder",
+                profile_name=profile.name,
             ),
         )
         payload = json.loads(_strip_json_fence(result.text))

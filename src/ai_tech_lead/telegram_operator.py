@@ -54,7 +54,9 @@ from .checkpointer_store import get_checkpointer
 from .coding_agent_runner import CodingAgentCancellationToken
 from .coding_workflow_graph import GraphState, build_graph, build_initial_graph_state
 from .config import PROJECT_ROOT
+from .execution_profiles import PURPOSE_TIER, TIER_CEILING_EFFORT, resolve_profile_for_purpose
 from .logging_setup import LOGGER_NAME
+from .profile_override_store import ProfileOverrideError, ProfileOverrideStore
 from .request_context import understand_request
 from .run_audit_store import record_run_audit_summary
 from .telegram_agent_graph import (
@@ -133,6 +135,19 @@ CANONICAL_BOT_COMMAND_SECTIONS: tuple[tuple[str, tuple[_BotCommand, ...]], ...] 
             ),
         ),
     ),
+    (
+        "Cost & profiles",
+        (
+            _BotCommand("profile", "", "show active model/reasoning-effort per tier"),
+            _BotCommand(
+                "profile_override",
+                "<tier> <override_tier> <calls>",
+                "temporarily route one tier's calls to another tier's profile, "
+                "e.g. /profile_override simple strong 5",
+            ),
+            _BotCommand("profile_clear", "<tier>", "cancel an active tier override early"),
+        ),
+    ),
 )
 
 
@@ -164,6 +179,9 @@ class TelegramCommandName(StrEnum):
     COUNT = "count"
     READ = "read"
     SET_STATUS = "set_status"
+    PROFILE = "profile"
+    PROFILE_OVERRIDE = "profile_override"
+    PROFILE_CLEAR = "profile_clear"
     UNKNOWN = "unknown"
 
 
@@ -656,6 +674,25 @@ class TelegramOperator:
         if command.name == TelegramCommandName.SET_STATUS:
             logger.info("Telegram action: /set_status %s in chat %s.", command.argument, chat_id)
             self._handle_set_status(chat_id, command.argument)
+            return
+
+        if command.name == TelegramCommandName.PROFILE:
+            logger.info("Telegram action: /profile in chat %s.", chat_id)
+            self._handle_profile_status(chat_id)
+            return
+
+        if command.name == TelegramCommandName.PROFILE_OVERRIDE:
+            logger.info(
+                "Telegram action: /profile_override %s in chat %s.", command.argument, chat_id
+            )
+            self._handle_profile_override(chat_id, command.argument, sender)
+            return
+
+        if command.name == TelegramCommandName.PROFILE_CLEAR:
+            logger.info(
+                "Telegram action: /profile_clear %s in chat %s.", command.argument, chat_id
+            )
+            self._handle_profile_clear(chat_id, command.argument)
             return
 
         if chat_id in self._active_tasks:
@@ -1304,6 +1341,62 @@ class TelegramOperator:
             )
         except (ValueError, FileNotFoundError) as error:
             self._send_message(chat_id, f"Failed to update status: {error}")
+
+    def _handle_profile_status(self, chat_id: str) -> None:
+        store = ProfileOverrideStore()
+        active_overrides = {override.tier: override for override in store.list_overrides()}
+        purposes_by_tier: dict[str, list[str]] = {}
+        for purpose, tier in PURPOSE_TIER.items():
+            purposes_by_tier.setdefault(tier, []).append(purpose)
+
+        lines = ["Orchestrator execution profiles:"]
+        for tier in ("simple", "normal", "strong"):
+            try:
+                profile = resolve_profile_for_purpose(
+                    next(iter(purposes_by_tier.get(tier, [])), tier),
+                    settings=self._settings,
+                )
+            except Exception as error:  # noqa: BLE001 — show status even if one tier fails
+                lines.append(f"- {tier}: unavailable ({error})")
+                continue
+            effort = profile.reasoning_effort or "none"
+            line = f"- {tier}: {profile.model} @ {effort} (ceiling {TIER_CEILING_EFFORT[tier]})"
+            override = active_overrides.get(tier)
+            if override is not None:
+                line += (
+                    f" — OVERRIDDEN to '{override.override_tier}' for "
+                    f"{override.remaining_calls} more call(s) by {override.created_by}"
+                )
+            lines.append(line)
+        lines.append("")
+        lines.append("Override: /profile_override <tier> <override_tier> <calls>")
+        lines.append("Clear: /profile_clear <tier>")
+        self._send_message(chat_id, "\n".join(lines))
+
+    def _handle_profile_override(self, chat_id: str, argument: str, sender: str) -> None:
+        tier, override_tier, calls_text = argument.split()
+        store = ProfileOverrideStore()
+        try:
+            override = store.set_override(
+                tier=tier,
+                override_tier=override_tier,
+                calls=int(calls_text),
+                created_by=sender,
+            )
+        except ProfileOverrideError as error:
+            self._send_message(chat_id, f"Could not set override: {error}")
+            return
+        self._send_message(
+            chat_id,
+            f"Override set: '{override.tier}' calls will use the '{override.override_tier}' "
+            f"profile for the next {override.remaining_calls} call(s). "
+            "The saved default is unchanged — this expires on its own. "
+            f"/profile_clear {override.tier} to cancel early.",
+        )
+
+    def _handle_profile_clear(self, chat_id: str, tier: str) -> None:
+        ProfileOverrideStore().clear_override(tier)
+        self._send_message(chat_id, f"Override cleared for '{tier}' — back to its saved default.")
 
     def _coding_agent_progress_callback(
         self,
@@ -2119,6 +2212,7 @@ def parse_telegram_command(text: str) -> TelegramCommand:
         TelegramCommandName.REJECT,
         TelegramCommandName.CANCEL,
         TelegramCommandName.COUNT,
+        TelegramCommandName.PROFILE,
     }:
         if argument:
             raise ValueError(f"/{command_name} does not accept extra text.")
@@ -2225,6 +2319,36 @@ def parse_telegram_command(text: str) -> TelegramCommand:
         return TelegramCommand(
             name=TelegramCommandName.SET_STATUS,
             argument=f"{item_id} {status.value}",
+            raw_text=normalized_text,
+        )
+
+    if command_name == TelegramCommandName.PROFILE_OVERRIDE:
+        parts = argument.strip().split()
+        if len(parts) != 3:
+            raise ValueError(
+                "/profile_override requires a tier, an override tier, and a call count, "
+                f"e.g. /profile_override simple strong 5. Tiers: {sorted(TIER_CEILING_EFFORT)}."
+            )
+        tier, override_tier, calls_text = parts
+        if tier not in TIER_CEILING_EFFORT or override_tier not in TIER_CEILING_EFFORT:
+            raise ValueError(
+                f"/profile_override tiers must be one of: {sorted(TIER_CEILING_EFFORT)}."
+            )
+        if not calls_text.isdigit() or int(calls_text) < 1:
+            raise ValueError("/profile_override call count must be a positive integer.")
+        return TelegramCommand(
+            name=TelegramCommandName.PROFILE_OVERRIDE,
+            argument=f"{tier} {override_tier} {calls_text}",
+            raw_text=normalized_text,
+        )
+
+    if command_name == TelegramCommandName.PROFILE_CLEAR:
+        tier = argument.strip()
+        if tier not in TIER_CEILING_EFFORT:
+            raise ValueError(f"/profile_clear requires one of: {sorted(TIER_CEILING_EFFORT)}.")
+        return TelegramCommand(
+            name=TelegramCommandName.PROFILE_CLEAR,
+            argument=tier,
             raw_text=normalized_text,
         )
 

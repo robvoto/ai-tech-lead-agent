@@ -11,8 +11,10 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import replace
 from typing import Any, Callable, TypeVar
 
+from .execution_profiles import next_escalation_effort
 from .logging_setup import LOGGER_NAME
 from .orchestrator_llm import OrchestratorLlmConfig, OrchestratorLlmResult, call_orchestrator_llm
 
@@ -50,6 +52,7 @@ def call_llm_for_json(
     parse: Callable[[dict[str, Any]], T],
     attempts: int = DEFAULT_JSON_CALL_ATTEMPTS,
     on_result: Callable[[OrchestratorLlmResult], None] | None = None,
+    tier: str = "",
 ) -> T:
     """Call the orchestrator LLM and parse+validate its JSON reply, retrying
     on any invalid output — malformed JSON, a Markdown-fenced response, or a
@@ -58,6 +61,11 @@ def call_llm_for_json(
     `on_result` runs after each raw call (before parsing) so a caller can log
     its own token/cost metric line with its own wording; the retry/parse
     logic itself stays centralized here.
+
+    `tier`, when given, enables one bounded reasoning-effort escalation step
+    on the retry after an invalid response — never crossing above that
+    tier's own ceiling (ATL-036 acceptance criterion 13). Without a `tier`,
+    every retry reuses `config` unchanged, as before ATL-036.
     """
     last_error: Exception = ValueError(f"{error_label}: produced no attempts")
     for attempt in range(1, attempts + 1):
@@ -77,5 +85,26 @@ def call_llm_for_json(
                 error,
                 result.text,
             )
+            if tier and attempt < attempts:
+                config = _escalate_one_step(config, tier=tier, error_label=error_label)
 
     raise last_error
+
+
+def _escalate_one_step(
+    config: OrchestratorLlmConfig, *, tier: str, error_label: str
+) -> OrchestratorLlmConfig:
+    """Return `config` with reasoning effort bumped one step within `tier`'s
+    ceiling, or `config` unchanged when there is no room left to escalate."""
+
+    escalated_effort = next_escalation_effort(tier, config.reasoning_effort)
+    if escalated_effort is None:
+        return config
+    logger.info(
+        "%s: escalating reasoning effort %s -> %s within tier '%s' after invalid response.",
+        error_label,
+        config.reasoning_effort,
+        escalated_effort,
+        tier,
+    )
+    return replace(config, reasoning_effort=escalated_effort)

@@ -20,6 +20,9 @@ def valid_settings_dict() -> dict[str, Any]:
         "orchestrator_ai_model": "gpt-4.1-mini",
         "orchestrator_ai_max_output_tokens": 300,
         "orchestrator_ai_timeout_seconds": 20,
+        "orchestrator_run_max_calls": 40,
+        "orchestrator_run_max_tokens": 400_000,
+        "orchestrator_run_max_cost_usd": 2.0,
         "coding_agent_progress_interval_seconds": 1,
         "project_context": [
             "Architecture and module map: docs/ARCHITECTURE.md",

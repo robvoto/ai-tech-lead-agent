@@ -8,13 +8,13 @@ from dataclasses import dataclass
 from typing import Any
 
 from .app_settings import AppSettings
-from .execution_profiles import STANDARD_PROFILE, resolve_execution_profile
 from .logging_setup import LOGGER_NAME
 from .orchestrator_llm import (
     OrchestratorLlmConfig,
     OrchestratorLlmError,
     call_orchestrator_llm,
 )
+from .profile_override_store import resolve_profile_with_override
 from .prompt_loader import COMPLETION_VERIFICATION_PROMPT_KEY, render_prompt
 from .target_project_context import TargetProjectContext
 
@@ -139,7 +139,7 @@ def _llm_verify_completion(
         prior_correction=prior_correction or "(none — first check)",
         project_guidance=guidance_text,
     )
-    profile = resolve_execution_profile(STANDARD_PROFILE, settings=settings)
+    profile = resolve_profile_with_override("completion_verification", settings=settings)
     result = call_orchestrator_llm(
         prompt=prompt,
         config=OrchestratorLlmConfig(
@@ -147,6 +147,8 @@ def _llm_verify_completion(
             max_output_tokens=profile.max_output_tokens,
             timeout_seconds=settings.orchestrator_ai_timeout_seconds,
             reasoning_effort=profile.reasoning_effort,
+            purpose="completion_verification",
+            profile_name=profile.name,
         ),
     )
     logger.info(

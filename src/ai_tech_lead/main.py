@@ -16,6 +16,7 @@ from ai_tech_lead.admin_server import run_admin_server
 from ai_tech_lead.agent_manifest import render_agent_manifest
 from ai_tech_lead.app_settings import AppSettings, load_settings
 from ai_tech_lead.config import PROJECT_ROOT, SETTINGS_PATH
+from ai_tech_lead.execution_profiles import ExecutionProfileError, validate_registry_ceilings
 from ai_tech_lead.graph_diagrams import export_graph_diagrams
 from ai_tech_lead.knowledge_store import (
     backup_knowledge_store,
@@ -42,6 +43,14 @@ def main() -> int:
     """Initialize local storage and start the configured local services."""
 
     args = _parse_args()
+
+    try:
+        validate_registry_ceilings()
+    except ExecutionProfileError as error:
+        # Fail closed: an invalid or newly-unsupported profile must never run
+        # under whatever weaker/stronger model happens to still resolve.
+        print(f"Execution profile registry is invalid, refusing to start: {error}", file=sys.stderr)
+        return 1
 
     # JSON subprocess entry point — non-interactive, no Telegram, no admin UI
     if getattr(args, "command", None) == "run-agent-task":

@@ -13,13 +13,13 @@ from dataclasses import dataclass
 from typing import Any
 
 from .app_settings import AppSettings, load_settings
-from .execution_profiles import STANDARD_PROFILE, resolve_execution_profile
 from .logging_setup import LOGGER_NAME
 from .orchestrator_llm import (
     OrchestratorLlmConfig,
     OrchestratorLlmError,
     call_orchestrator_llm,
 )
+from .profile_override_store import resolve_profile_with_override
 from .prompt_loader import ATL_RELEVANCE_PROMPT_KEY, render_prompt
 
 logger = logging.getLogger(LOGGER_NAME)
@@ -66,7 +66,7 @@ def classify_request_relevance(request: str) -> RelevanceDecision:
 
 def _llm_relevance_decision(request: str, settings: AppSettings) -> RelevanceDecision:
     prompt = render_prompt(ATL_RELEVANCE_PROMPT_KEY, request=request)
-    profile = resolve_execution_profile(STANDARD_PROFILE, settings=settings)
+    profile = resolve_profile_with_override("request_relevance", settings=settings)
     result = call_orchestrator_llm(
         prompt=prompt,
         config=OrchestratorLlmConfig(
@@ -74,6 +74,8 @@ def _llm_relevance_decision(request: str, settings: AppSettings) -> RelevanceDec
             max_output_tokens=profile.max_output_tokens,
             timeout_seconds=settings.orchestrator_ai_timeout_seconds,
             reasoning_effort=profile.reasoning_effort,
+            purpose="request_relevance",
+            profile_name=profile.name,
         ),
     )
     payload: dict[str, Any] = json.loads(result.text)

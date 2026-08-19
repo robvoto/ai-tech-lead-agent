@@ -8,13 +8,13 @@ from dataclasses import dataclass
 from typing import Any
 
 from .app_settings import AppSettings, load_settings
-from .execution_profiles import STANDARD_PROFILE, resolve_execution_profile
 from .logging_setup import LOGGER_NAME
 from .orchestrator_llm import (
     OrchestratorLlmConfig,
     OrchestratorLlmError,
     call_orchestrator_llm,
 )
+from .profile_override_store import resolve_profile_with_override
 from .prompt_loader import (
     RISK_REVIEW_PROMPT_KEY,
     RISK_REVIEW_REASON_PROMPT_KEY,
@@ -67,7 +67,7 @@ def review_task_risk(request: str) -> RiskReviewDecision:
 
 def _llm_risk_decision(request: str, settings: AppSettings) -> RiskReviewDecision:
     prompt = _risk_review_prompt(request)
-    profile = resolve_execution_profile(STANDARD_PROFILE, settings=settings)
+    profile = resolve_profile_with_override("risk_review", settings=settings)
     result = call_orchestrator_llm(
         prompt=prompt,
         config=OrchestratorLlmConfig(
@@ -75,6 +75,8 @@ def _llm_risk_decision(request: str, settings: AppSettings) -> RiskReviewDecisio
             max_output_tokens=profile.max_output_tokens,
             timeout_seconds=settings.orchestrator_ai_timeout_seconds,
             reasoning_effort=profile.reasoning_effort,
+            purpose="risk_review",
+            profile_name=profile.name,
         ),
     )
     payload = json.loads(result.text)

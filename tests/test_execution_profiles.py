@@ -5,11 +5,19 @@ from helpers import valid_settings_dict
 
 from ai_tech_lead.app_settings import parse_settings
 from ai_tech_lead.execution_profiles import (
-    DEEP_PROFILE,
-    LOW_PROFILE,
-    STANDARD_PROFILE,
+    NORMAL_PROFILE,
+    NORMAL_TIER,
+    SIMPLE_PROFILE,
+    SIMPLE_TIER,
+    STRONG_PROFILE,
+    STRONG_TIER,
+    ExecutionProfile,
     ExecutionProfileError,
+    _validate_tier_ceiling,
+    next_escalation_effort,
     resolve_execution_profile,
+    resolve_profile_for_purpose,
+    validate_registry_ceilings,
 )
 
 
@@ -19,44 +27,50 @@ def _settings(**overrides):
     return parse_settings(raw)
 
 
-def test_standard_profile_mirrors_configured_model_with_no_reasoning_effort() -> None:
+def test_normal_profile_mirrors_configured_model_with_no_reasoning_effort() -> None:
     settings = _settings(
         orchestrator_ai_model="gpt-4.1-mini", orchestrator_ai_max_output_tokens=300
     )
-    profile = resolve_execution_profile(STANDARD_PROFILE, settings=settings)
+    profile = resolve_execution_profile(NORMAL_PROFILE, settings=settings)
     assert profile.model == "gpt-4.1-mini"
+    assert profile.tier == NORMAL_TIER
     assert profile.reasoning_effort is None
     assert profile.max_output_tokens == 300
 
 
-def test_standard_profile_requires_settings() -> None:
+def test_normal_profile_requires_settings() -> None:
     with pytest.raises(ExecutionProfileError):
-        resolve_execution_profile(STANDARD_PROFILE)
+        resolve_execution_profile(NORMAL_PROFILE)
 
 
-def test_standard_profile_min_output_tokens_raises_the_floor() -> None:
+def test_normal_profile_min_output_tokens_raises_the_floor() -> None:
     settings = _settings(
         orchestrator_ai_model="gpt-4.1-mini", orchestrator_ai_max_output_tokens=300
     )
-    profile = resolve_execution_profile(STANDARD_PROFILE, settings=settings, min_output_tokens=800)
+    profile = resolve_execution_profile(NORMAL_PROFILE, settings=settings, min_output_tokens=800)
     assert profile.max_output_tokens == 800
 
 
-def test_standard_profile_unknown_configured_model_raises() -> None:
+def test_normal_profile_unknown_configured_model_raises() -> None:
     settings = _settings(orchestrator_ai_model="not-a-real-model")
     with pytest.raises(ExecutionProfileError):
-        resolve_execution_profile(STANDARD_PROFILE, settings=settings)
+        resolve_execution_profile(NORMAL_PROFILE, settings=settings)
 
 
-def test_low_profile_is_a_valid_non_reasoning_profile() -> None:
-    profile = resolve_execution_profile(LOW_PROFILE)
-    assert profile.model == "gpt-4.1-mini"
-    assert profile.reasoning_effort is None
-
-
-def test_deep_profile_uses_luna_with_explicit_high_reasoning_effort() -> None:
-    profile = resolve_execution_profile(DEEP_PROFILE)
+def test_simple_profile_uses_luna_at_none_effort_per_live_benchmark() -> None:
+    # SIMPLE_PROFILE migrated from gpt-4.1-mini to gpt-5.6-luna @ "none" on
+    # 2026-08-19 based on a live benchmark (see execution_profiles.py's
+    # _STATIC_PROFILES comment for the evidence and its caveats).
+    profile = resolve_execution_profile(SIMPLE_PROFILE)
     assert profile.model == "gpt-5.6-luna"
+    assert profile.tier == SIMPLE_TIER
+    assert profile.reasoning_effort == "none"
+
+
+def test_strong_profile_uses_luna_with_explicit_high_reasoning_effort() -> None:
+    profile = resolve_execution_profile(STRONG_PROFILE)
+    assert profile.model == "gpt-5.6-luna"
+    assert profile.tier == STRONG_TIER
     assert profile.reasoning_effort == "high"
     assert profile.max_output_tokens >= 1024
 
@@ -66,17 +80,97 @@ def test_unknown_profile_name_raises() -> None:
         resolve_execution_profile("nonexistent")
 
 
-def test_standard_profile_auto_sets_default_reasoning_effort_for_a_reasoning_model() -> None:
+def test_normal_profile_auto_sets_default_reasoning_effort_for_a_reasoning_model() -> None:
     settings = _settings(
         orchestrator_ai_model="gpt-5.6-luna", orchestrator_ai_max_output_tokens=2000
     )
-    profile = resolve_execution_profile(STANDARD_PROFILE, settings=settings)
+    profile = resolve_execution_profile(NORMAL_PROFILE, settings=settings)
     assert profile.reasoning_effort == "medium"
 
 
-def test_standard_profile_reasoning_model_below_output_floor_raises() -> None:
+def test_normal_profile_reasoning_model_below_output_floor_raises() -> None:
     settings = _settings(
         orchestrator_ai_model="gpt-5.6-luna", orchestrator_ai_max_output_tokens=100
     )
     with pytest.raises(ExecutionProfileError):
-        resolve_execution_profile(STANDARD_PROFILE, settings=settings)
+        resolve_execution_profile(NORMAL_PROFILE, settings=settings)
+
+
+def test_normal_tier_ceiling_allows_lunas_own_default_of_medium() -> None:
+    # Luna's own registry default is "medium", which is exactly the "normal"
+    # ceiling — this proves the ceiling check runs, not just that it never fires.
+    settings = _settings(
+        orchestrator_ai_model="gpt-5.6-luna", orchestrator_ai_max_output_tokens=2000
+    )
+    profile = resolve_profile_for_purpose("risk_review", settings=settings)
+    assert profile.reasoning_effort == "medium"
+
+
+def test_resolve_profile_for_purpose_unknown_purpose_raises() -> None:
+    with pytest.raises(ExecutionProfileError):
+        resolve_profile_for_purpose("not-a-real-purpose")
+
+
+def test_resolve_profile_for_purpose_simple_call_site_stays_simple() -> None:
+    profile = resolve_profile_for_purpose("request_relevance")
+    assert profile.tier == SIMPLE_TIER
+
+
+def test_resolve_profile_for_purpose_strong_call_site_stays_strong() -> None:
+    profile = resolve_profile_for_purpose("tech_lead_analysis")
+    assert profile.tier == STRONG_TIER
+
+
+def test_validate_tier_ceiling_rejects_an_effort_above_the_tier_ceiling() -> None:
+    # A directly-constructed profile — bypassing resolve_execution_profile's
+    # own guardrails — still gets caught by the ceiling check itself, proving
+    # it is a real independent safety net and not just dead code.
+    profile = ExecutionProfile(
+        name="hypothetical",
+        tier=SIMPLE_TIER,
+        model="gpt-5.6-luna",
+        reasoning_effort="medium",
+        max_output_tokens=2000,
+    )
+    with pytest.raises(ExecutionProfileError):
+        _validate_tier_ceiling(SIMPLE_TIER, profile)
+
+
+def test_validate_tier_ceiling_rejects_never_automatic_efforts() -> None:
+    profile = ExecutionProfile(
+        name="hypothetical",
+        tier=STRONG_TIER,
+        model="gpt-5.6-luna",
+        reasoning_effort="xhigh",
+        max_output_tokens=2000,
+    )
+    with pytest.raises(ExecutionProfileError):
+        _validate_tier_ceiling(STRONG_TIER, profile)
+
+
+def test_resolve_profile_for_purpose_with_override_tier_uses_the_override() -> None:
+    profile = resolve_profile_for_purpose("request_relevance", override_tier=STRONG_TIER)
+    assert profile.tier == STRONG_TIER
+    assert profile.model == "gpt-5.6-luna"
+
+
+def test_next_escalation_effort_steps_up_within_tier_ceiling() -> None:
+    assert next_escalation_effort(SIMPLE_TIER, "none") == "low"
+
+
+def test_next_escalation_effort_returns_none_at_tier_ceiling() -> None:
+    assert next_escalation_effort(SIMPLE_TIER, "low") is None
+
+
+def test_next_escalation_effort_never_crosses_into_a_higher_tier() -> None:
+    # "normal"'s ceiling is medium — stepping from medium must not reach "high",
+    # which belongs to "strong".
+    assert next_escalation_effort(NORMAL_TIER, "medium") is None
+
+
+def test_next_escalation_effort_none_for_a_non_reasoning_model() -> None:
+    assert next_escalation_effort(SIMPLE_TIER, None) is None
+
+
+def test_validate_registry_ceilings_passes_for_the_shipped_profiles() -> None:
+    validate_registry_ceilings()
