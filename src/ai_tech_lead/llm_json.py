@@ -16,7 +16,12 @@ from typing import Any, Callable, TypeVar
 
 from .execution_profiles import next_escalation_effort
 from .logging_setup import LOGGER_NAME
-from .orchestrator_llm import OrchestratorLlmConfig, OrchestratorLlmResult, call_orchestrator_llm
+from .orchestrator_llm import (
+    OrchestratorLlmConfig,
+    OrchestratorLlmIncompleteError,
+    OrchestratorLlmResult,
+    call_orchestrator_llm,
+)
 
 logger = logging.getLogger(LOGGER_NAME)
 
@@ -49,6 +54,8 @@ def call_llm_for_json(
     prompt: str,
     config: OrchestratorLlmConfig,
     error_label: str,
+    schema_name: str,
+    schema: dict[str, Any],
     parse: Callable[[dict[str, Any]], T],
     attempts: int = DEFAULT_JSON_CALL_ATTEMPTS,
     on_result: Callable[[OrchestratorLlmResult], None] | None = None,
@@ -69,7 +76,23 @@ def call_llm_for_json(
     """
     last_error: Exception = ValueError(f"{error_label}: produced no attempts")
     for attempt in range(1, attempts + 1):
-        result = call_orchestrator_llm(prompt=prompt, config=config)
+        try:
+            result = call_orchestrator_llm(
+                prompt=prompt,
+                config=config,
+                json_schema_name=schema_name,
+                json_schema=schema,
+            )
+        except OrchestratorLlmIncompleteError as error:
+            last_error = error
+            logger.warning(
+                "%s incomplete on attempt %d/%d: %s",
+                error_label,
+                attempt,
+                attempts,
+                error,
+            )
+            continue
         if on_result is not None:
             on_result(result)
         try:

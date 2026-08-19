@@ -13,16 +13,25 @@ from dataclasses import dataclass
 from typing import Any
 
 from .app_settings import AppSettings, load_settings
+from .llm_json import call_llm_for_json
 from .logging_setup import LOGGER_NAME
 from .orchestrator_llm import (
     OrchestratorLlmConfig,
     OrchestratorLlmError,
-    call_orchestrator_llm,
 )
 from .profile_override_store import resolve_profile_with_override
 from .prompt_loader import CODE_LOOK_NEED_PROMPT_KEY, render_prompt
 
 logger = logging.getLogger(LOGGER_NAME)
+_CODE_LOOK_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "needs_code_look": {"type": "boolean"},
+        "reason": {"type": "string"},
+    },
+    "required": ["needs_code_look", "reason"],
+    "additionalProperties": False,
+}
 
 
 @dataclass(frozen=True)
@@ -67,18 +76,26 @@ def check_code_look_need(request: str) -> CodeLookNeedDecision:
 def _llm_code_look_decision(request: str, settings: AppSettings) -> CodeLookNeedDecision:
     prompt = render_prompt(CODE_LOOK_NEED_PROMPT_KEY, request=request)
     profile = resolve_profile_with_override("code_look_check", settings=settings)
-    result = call_orchestrator_llm(
-        prompt=prompt,
-        config=OrchestratorLlmConfig(
-            model=profile.model,
-            max_output_tokens=profile.max_output_tokens,
-            timeout_seconds=settings.orchestrator_ai_timeout_seconds,
-            reasoning_effort=profile.reasoning_effort,
-            purpose="code_look_check",
-            profile_name=profile.name,
-        ),
+    config = OrchestratorLlmConfig(
+        model=profile.model,
+        max_output_tokens=profile.max_output_tokens,
+        timeout_seconds=settings.orchestrator_ai_timeout_seconds,
+        reasoning_effort=profile.reasoning_effort,
+        purpose="code_look_check",
+        profile_name=profile.name,
     )
-    payload: dict[str, Any] = json.loads(result.text)
+    return call_llm_for_json(
+        prompt=prompt,
+        config=config,
+        error_label="Orchestrator AI code-look response",
+        schema_name="code_look_need",
+        schema=_CODE_LOOK_SCHEMA,
+        parse=_parse_code_look_payload,
+        tier=profile.tier,
+    )
+
+
+def _parse_code_look_payload(payload: dict[str, Any]) -> CodeLookNeedDecision:
     needs_code_look = payload["needs_code_look"]
     reason = str(payload["reason"]).strip()
     if not isinstance(needs_code_look, bool):

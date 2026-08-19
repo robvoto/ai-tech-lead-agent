@@ -3,7 +3,18 @@ from __future__ import annotations
 import pytest
 
 from ai_tech_lead.llm_json import call_llm_for_json, parse_json_object, strip_json_fence
-from ai_tech_lead.orchestrator_llm import OrchestratorLlmConfig, OrchestratorLlmResult
+from ai_tech_lead.orchestrator_llm import (
+    OrchestratorLlmConfig,
+    OrchestratorLlmIncompleteError,
+    OrchestratorLlmResult,
+)
+
+_SCHEMA = {
+    "type": "object",
+    "properties": {"ok": {"type": "boolean"}},
+    "required": ["ok"],
+    "additionalProperties": False,
+}
 
 
 def _config() -> OrchestratorLlmConfig:
@@ -30,7 +41,12 @@ def test_call_llm_for_json_returns_the_parsed_value_on_first_try(monkeypatch) ->
     )
 
     value = call_llm_for_json(
-        prompt="p", config=_config(), error_label="test", parse=lambda payload: payload["ok"]
+        prompt="p",
+        config=_config(),
+        error_label="test",
+        schema_name="test_response",
+        schema=_SCHEMA,
+        parse=lambda payload: payload["ok"],
     )
 
     assert value is True
@@ -47,7 +63,12 @@ def test_call_llm_for_json_retries_once_then_raises_the_last_error(monkeypatch) 
 
     with pytest.raises(Exception):
         call_llm_for_json(
-            prompt="p", config=_config(), error_label="test", parse=lambda payload: payload
+            prompt="p",
+            config=_config(),
+            error_label="test",
+            schema_name="test_response",
+            schema=_SCHEMA,
+            parse=lambda payload: payload,
         )
 
     assert len(calls) == 2
@@ -71,7 +92,14 @@ def test_call_llm_for_json_retries_when_parse_itself_rejects_the_shape(monkeypat
 
     monkeypatch.setattr("ai_tech_lead.llm_json.call_orchestrator_llm", fake_call)
 
-    value = call_llm_for_json(prompt="p", config=_config(), error_label="test", parse=_parse)
+    value = call_llm_for_json(
+        prompt="p",
+        config=_config(),
+        error_label="test",
+        schema_name="test_response",
+        schema=_SCHEMA,
+        parse=_parse,
+    )
 
     assert len(calls) == 2
     assert value is True
@@ -80,8 +108,8 @@ def test_call_llm_for_json_retries_when_parse_itself_rejects_the_shape(monkeypat
 def test_call_llm_for_json_escalates_reasoning_effort_within_tier_on_retry(monkeypatch) -> None:
     seen_configs: list[OrchestratorLlmConfig] = []
 
-    def fake_call(*, prompt, config):
-        seen_configs.append(config)
+    def fake_call(**kwargs):
+        seen_configs.append(kwargs["config"])
         if len(seen_configs) == 1:
             return OrchestratorLlmResult(text="not json")
         return OrchestratorLlmResult(text='{"ok": true}')
@@ -92,7 +120,12 @@ def test_call_llm_for_json_escalates_reasoning_effort_within_tier_on_retry(monke
         model="test:model", max_output_tokens=100, timeout_seconds=5, reasoning_effort="none"
     )
     value = call_llm_for_json(
-        prompt="p", config=config, error_label="test", parse=lambda payload: payload["ok"],
+        prompt="p",
+        config=config,
+        error_label="test",
+        schema_name="test_response",
+        schema=_SCHEMA,
+        parse=lambda payload: payload["ok"],
         tier="simple",
     )
 
@@ -104,8 +137,8 @@ def test_call_llm_for_json_escalates_reasoning_effort_within_tier_on_retry(monke
 def test_call_llm_for_json_without_tier_never_escalates(monkeypatch) -> None:
     seen_configs: list[OrchestratorLlmConfig] = []
 
-    def fake_call(*, prompt, config):
-        seen_configs.append(config)
+    def fake_call(**kwargs):
+        seen_configs.append(kwargs["config"])
         return OrchestratorLlmResult(text="not json")
 
     monkeypatch.setattr("ai_tech_lead.llm_json.call_orchestrator_llm", fake_call)
@@ -115,7 +148,12 @@ def test_call_llm_for_json_without_tier_never_escalates(monkeypatch) -> None:
     )
     with pytest.raises(Exception):
         call_llm_for_json(
-            prompt="p", config=config, error_label="test", parse=lambda payload: payload
+            prompt="p",
+            config=config,
+            error_label="test",
+            schema_name="test_response",
+            schema=_SCHEMA,
+            parse=lambda payload: payload,
         )
 
     assert seen_configs[0].reasoning_effort == "none"
@@ -126,8 +164,8 @@ def test_call_llm_for_json_escalation_never_exceeds_tier_ceiling(monkeypatch) ->
     """"simple"'s ceiling is "low" — already-at-ceiling must not climb to medium."""
     seen_configs: list[OrchestratorLlmConfig] = []
 
-    def fake_call(*, prompt, config):
-        seen_configs.append(config)
+    def fake_call(**kwargs):
+        seen_configs.append(kwargs["config"])
         return OrchestratorLlmResult(text="not json")
 
     monkeypatch.setattr("ai_tech_lead.llm_json.call_orchestrator_llm", fake_call)
@@ -137,7 +175,12 @@ def test_call_llm_for_json_escalation_never_exceeds_tier_ceiling(monkeypatch) ->
     )
     with pytest.raises(Exception):
         call_llm_for_json(
-            prompt="p", config=config, error_label="test", parse=lambda payload: payload,
+            prompt="p",
+            config=config,
+            error_label="test",
+            schema_name="test_response",
+            schema=_SCHEMA,
+            parse=lambda payload: payload,
             tier="simple",
         )
 
@@ -157,8 +200,36 @@ def test_call_llm_for_json_calls_on_result_for_every_attempt(monkeypatch) -> Non
             prompt="p",
             config=_config(),
             error_label="test",
+            schema_name="test_response",
+            schema=_SCHEMA,
             parse=lambda payload: payload,
             on_result=lambda result: seen.append(result.text),
         )
 
     assert seen == ["not json", "not json"]
+
+
+def test_call_llm_for_json_retries_incomplete_response(monkeypatch) -> None:
+    calls: list[dict] = []
+
+    def fake_call(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            raise OrchestratorLlmIncompleteError("OpenAI response incomplete: max_output_tokens")
+        return OrchestratorLlmResult(text='{"ok": true}')
+
+    monkeypatch.setattr("ai_tech_lead.llm_json.call_orchestrator_llm", fake_call)
+
+    value = call_llm_for_json(
+        prompt="p",
+        config=_config(),
+        error_label="test",
+        schema_name="test_response",
+        schema=_SCHEMA,
+        parse=lambda payload: payload["ok"],
+    )
+
+    assert value is True
+    assert len(calls) == 2
+    assert calls[0]["json_schema_name"] == "test_response"
+    assert calls[0]["json_schema"] == _SCHEMA

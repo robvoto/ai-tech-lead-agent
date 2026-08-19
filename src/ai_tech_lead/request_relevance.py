@@ -13,16 +13,25 @@ from dataclasses import dataclass
 from typing import Any
 
 from .app_settings import AppSettings, load_settings
+from .llm_json import call_llm_for_json
 from .logging_setup import LOGGER_NAME
 from .orchestrator_llm import (
     OrchestratorLlmConfig,
     OrchestratorLlmError,
-    call_orchestrator_llm,
 )
 from .profile_override_store import resolve_profile_with_override
 from .prompt_loader import ATL_RELEVANCE_PROMPT_KEY, render_prompt
 
 logger = logging.getLogger(LOGGER_NAME)
+_RELEVANCE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "atl_relevant": {"type": "boolean"},
+        "reason": {"type": "string"},
+    },
+    "required": ["atl_relevant", "reason"],
+    "additionalProperties": False,
+}
 
 
 @dataclass(frozen=True)
@@ -67,18 +76,26 @@ def classify_request_relevance(request: str) -> RelevanceDecision:
 def _llm_relevance_decision(request: str, settings: AppSettings) -> RelevanceDecision:
     prompt = render_prompt(ATL_RELEVANCE_PROMPT_KEY, request=request)
     profile = resolve_profile_with_override("request_relevance", settings=settings)
-    result = call_orchestrator_llm(
-        prompt=prompt,
-        config=OrchestratorLlmConfig(
-            model=profile.model,
-            max_output_tokens=profile.max_output_tokens,
-            timeout_seconds=settings.orchestrator_ai_timeout_seconds,
-            reasoning_effort=profile.reasoning_effort,
-            purpose="request_relevance",
-            profile_name=profile.name,
-        ),
+    config = OrchestratorLlmConfig(
+        model=profile.model,
+        max_output_tokens=profile.max_output_tokens,
+        timeout_seconds=settings.orchestrator_ai_timeout_seconds,
+        reasoning_effort=profile.reasoning_effort,
+        purpose="request_relevance",
+        profile_name=profile.name,
     )
-    payload: dict[str, Any] = json.loads(result.text)
+    return call_llm_for_json(
+        prompt=prompt,
+        config=config,
+        error_label="Orchestrator AI relevance response",
+        schema_name="atl_relevance",
+        schema=_RELEVANCE_SCHEMA,
+        parse=_parse_relevance_payload,
+        tier=profile.tier,
+    )
+
+
+def _parse_relevance_payload(payload: dict[str, Any]) -> RelevanceDecision:
     is_atl_relevant = payload["atl_relevant"]
     reason = str(payload["reason"]).strip()
     if not isinstance(is_atl_relevant, bool):

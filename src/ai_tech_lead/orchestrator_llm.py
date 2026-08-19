@@ -53,7 +53,17 @@ class OrchestratorLlmError(RuntimeError):
     """Raised when the orchestrator LLM cannot return a usable response."""
 
 
-def call_orchestrator_llm(*, prompt: str, config: OrchestratorLlmConfig) -> OrchestratorLlmResult:
+class OrchestratorLlmIncompleteError(OrchestratorLlmError):
+    """Raised when the Responses API stops before producing a complete response."""
+
+
+def call_orchestrator_llm(
+    *,
+    prompt: str,
+    config: OrchestratorLlmConfig,
+    json_schema_name: str | None = None,
+    json_schema: dict | None = None,
+) -> OrchestratorLlmResult:
     """Call OpenAI using a local project API key from the environment."""
 
     load_local_env()
@@ -76,6 +86,19 @@ def call_orchestrator_llm(*, prompt: str, config: OrchestratorLlmConfig) -> Orch
     }
     if config.reasoning_effort is not None:
         payload["reasoning"] = {"effort": config.reasoning_effort}
+    if (json_schema_name is None) != (json_schema is None):
+        raise ValueError("json_schema_name and json_schema must be supplied together")
+    if json_schema is not None:
+        # `text.format` is the protocol-owned Responses API boundary for strict
+        # structured output; each caller owns its task-specific schema.
+        payload["text"] = {
+            "format": {
+                "type": "json_schema",
+                "name": json_schema_name,
+                "schema": json_schema,
+                "strict": True,
+            }
+        }
     request = Request(
         OPENAI_RESPONSES_URL,
         data=json.dumps(payload).encode("utf-8"),
@@ -110,6 +133,33 @@ def call_orchestrator_llm(*, prompt: str, config: OrchestratorLlmConfig) -> Orch
         raise OrchestratorLlmError(f"OpenAI API request failed: {error.reason}") from error
 
     data = json.loads(body)
+    if data.get("status") == "incomplete":
+        details = data.get("incomplete_details")
+        reason = (
+            str(details.get("reason", "unknown")).strip()
+            if isinstance(details, dict)
+            else "unknown"
+        )
+        elapsed_ms = (time.perf_counter() - start_time) * 1000
+        usage = data.get("usage", {})
+        tokens_in = int(usage.get("input_tokens", 0))
+        tokens_out = int(usage.get("output_tokens", 0))
+        cost_usd = _estimate_cost(config.model, tokens_in, tokens_out)
+        logger.info(
+            "LLM call elapsed: %.0fms model=%s purpose=%s profile=%s effort=%s "
+            "status=incomplete reason=%s in=%d out=%d total=%d cost_total=$%.5f",
+            elapsed_ms,
+            config.model,
+            config.purpose or "-",
+            config.profile_name or "-",
+            config.reasoning_effort or "-",
+            reason,
+            tokens_in,
+            tokens_out,
+            tokens_in + tokens_out,
+            cost_usd,
+        )
+        raise OrchestratorLlmIncompleteError(f"OpenAI response incomplete: {reason}")
     text = _extract_response_text(data)
     if not text:
         elapsed_ms = (time.perf_counter() - start_time) * 1000

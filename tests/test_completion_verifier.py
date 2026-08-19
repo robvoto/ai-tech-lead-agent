@@ -53,7 +53,7 @@ def test_verify_completion_returns_complete(monkeypatch) -> None:
         cost_usd=0.001,
     )
     monkeypatch.setattr(
-        "ai_tech_lead.completion_verifier.call_orchestrator_llm", lambda **_kw: result
+        "ai_tech_lead.llm_json.call_orchestrator_llm", lambda **_kw: result
     )
 
     decision = _call()
@@ -76,7 +76,7 @@ def test_verify_completion_returns_correction_required(monkeypatch) -> None:
         cost_usd=0.001,
     )
     monkeypatch.setattr(
-        "ai_tech_lead.completion_verifier.call_orchestrator_llm", lambda **_kw: result
+        "ai_tech_lead.llm_json.call_orchestrator_llm", lambda **_kw: result
     )
 
     decision = _call()
@@ -99,7 +99,7 @@ def test_verify_completion_returns_human_verification_required(monkeypatch) -> N
         cost_usd=0.001,
     )
     monkeypatch.setattr(
-        "ai_tech_lead.completion_verifier.call_orchestrator_llm", lambda **_kw: result
+        "ai_tech_lead.llm_json.call_orchestrator_llm", lambda **_kw: result
     )
 
     decision = _call()
@@ -111,7 +111,7 @@ def test_verify_completion_raises_when_llm_call_fails(monkeypatch) -> None:
     def _raise(**_kw):
         raise OrchestratorLlmError("timeout")
 
-    monkeypatch.setattr("ai_tech_lead.completion_verifier.call_orchestrator_llm", _raise)
+    monkeypatch.setattr("ai_tech_lead.llm_json.call_orchestrator_llm", _raise)
 
     with pytest.raises(CompletionVerificationUnavailable):
         _call()
@@ -120,7 +120,7 @@ def test_verify_completion_raises_when_llm_call_fails(monkeypatch) -> None:
 def test_verify_completion_raises_on_malformed_json(monkeypatch) -> None:
     result = OrchestratorLlmResult(text="not json", tokens_in=1, tokens_out=1, cost_usd=0.0)
     monkeypatch.setattr(
-        "ai_tech_lead.completion_verifier.call_orchestrator_llm", lambda **_kw: result
+        "ai_tech_lead.llm_json.call_orchestrator_llm", lambda **_kw: result
     )
 
     with pytest.raises(CompletionVerificationUnavailable):
@@ -135,7 +135,7 @@ def test_verify_completion_raises_on_invalid_status(monkeypatch) -> None:
         cost_usd=0.0,
     )
     monkeypatch.setattr(
-        "ai_tech_lead.completion_verifier.call_orchestrator_llm", lambda **_kw: result
+        "ai_tech_lead.llm_json.call_orchestrator_llm", lambda **_kw: result
     )
 
     with pytest.raises(CompletionVerificationUnavailable):
@@ -154,7 +154,7 @@ def test_project_guidance_is_included_in_the_completion_verification_prompt(monk
             cost_usd=0.0,
         )
 
-    monkeypatch.setattr("ai_tech_lead.completion_verifier.call_orchestrator_llm", fake_call)
+    monkeypatch.setattr("ai_tech_lead.llm_json.call_orchestrator_llm", fake_call)
 
     _call(project_guidance=["AGENTS.md: run `make test` before reporting done."])
 
@@ -176,7 +176,7 @@ def test_project_guidance_omitted_from_completion_verification_prompt_when_empty
             cost_usd=0.0,
         )
 
-    monkeypatch.setattr("ai_tech_lead.completion_verifier.call_orchestrator_llm", fake_call)
+    monkeypatch.setattr("ai_tech_lead.llm_json.call_orchestrator_llm", fake_call)
 
     _call()
 
@@ -193,7 +193,7 @@ def test_verify_completion_raises_when_correction_required_has_empty_correction(
         cost_usd=0.0,
     )
     monkeypatch.setattr(
-        "ai_tech_lead.completion_verifier.call_orchestrator_llm", lambda **_kw: result
+        "ai_tech_lead.llm_json.call_orchestrator_llm", lambda **_kw: result
     )
 
     with pytest.raises(CompletionVerificationUnavailable):

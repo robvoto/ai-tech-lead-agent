@@ -7,6 +7,7 @@ import pytest
 from ai_tech_lead.orchestrator_llm import (
     OrchestratorLlmConfig,
     OrchestratorLlmError,
+    OrchestratorLlmIncompleteError,
     call_orchestrator_llm,
     call_orchestrator_web_search,
 )
@@ -191,5 +192,61 @@ def test_call_orchestrator_web_search_malformed_json_raises(monkeypatch) -> None
     with pytest.raises(OrchestratorLlmError):
         call_orchestrator_web_search(
             query="official docs",
+            config=OrchestratorLlmConfig(model="test-model", max_output_tokens=10, timeout_seconds=5),
+        )
+
+
+def test_call_orchestrator_llm_sends_strict_json_schema(monkeypatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    seen_payloads: list[dict] = []
+    schema = {
+        "type": "object",
+        "properties": {"ok": {"type": "boolean"}},
+        "required": ["ok"],
+        "additionalProperties": False,
+    }
+
+    def fake_urlopen(request, timeout):
+        seen_payloads.append(json.loads(request.data.decode("utf-8")))
+        return _FakeResponse(json.dumps({"status": "completed", "output_text": '{"ok":true}'}))
+
+    monkeypatch.setattr("ai_tech_lead.orchestrator_llm.urlopen", fake_urlopen)
+
+    result = call_orchestrator_llm(
+        prompt="hello",
+        config=OrchestratorLlmConfig(model="test-model", max_output_tokens=10, timeout_seconds=5),
+        json_schema_name="test_response",
+        json_schema=schema,
+    )
+
+    assert result.text == '{"ok":true}'
+    assert seen_payloads[0]["text"]["format"] == {
+        "type": "json_schema",
+        "name": "test_response",
+        "schema": schema,
+        "strict": True,
+    }
+
+
+def test_call_orchestrator_llm_rejects_incomplete_response(monkeypatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+
+    def fake_urlopen(request, timeout):
+        return _FakeResponse(
+            json.dumps(
+                {
+                    "status": "incomplete",
+                    "incomplete_details": {"reason": "max_output_tokens"},
+                    "output_text": '{"ok":',
+                    "usage": {"input_tokens": 10, "output_tokens": 10},
+                }
+            )
+        )
+
+    monkeypatch.setattr("ai_tech_lead.orchestrator_llm.urlopen", fake_urlopen)
+
+    with pytest.raises(OrchestratorLlmIncompleteError, match="max_output_tokens"):
+        call_orchestrator_llm(
+            prompt="hello",
             config=OrchestratorLlmConfig(model="test-model", max_output_tokens=10, timeout_seconds=5),
         )

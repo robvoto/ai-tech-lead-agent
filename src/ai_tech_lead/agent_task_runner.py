@@ -177,7 +177,18 @@ def run_agent_task(input_path: str | Path, output_path: str | Path) -> int:
     # Execution gate: local settings decide, not the caller.
     # The caller can *request* execution_mode=execute, but settings.execute_coding_agent
     # must also be True. The caller's requires_human_approval is intentionally ignored.
-    task_kind = _validate_task_kind(task_input.get("task_kind"))
+    # Decision-only resumes may omit request metadata. Recover it from the
+    # persisted subprocess checkpoint before applying new-request defaults.
+    resume_metadata = (
+        _request_checkpoint_metadata(request_id)
+        if decision is not None
+        and (task_input.get("task_kind") is None or task_input.get("execution_mode") is None)
+        else {}
+    )
+    task_kind_raw = task_input.get("task_kind")
+    if task_kind_raw is None:
+        task_kind_raw = resume_metadata.get("task_kind")
+    task_kind = _validate_task_kind(task_kind_raw)
     if task_kind is None:
         _write_error_output(
             output_file,
@@ -187,7 +198,10 @@ def run_agent_task(input_path: str | Path, output_path: str | Path) -> int:
             settings=settings,
         )
         return 1
-    execution_mode = _validate_execution_mode(task_input.get("execution_mode"))
+    execution_mode_raw = task_input.get("execution_mode")
+    if execution_mode_raw is None:
+        execution_mode_raw = resume_metadata.get("execution_mode")
+    execution_mode = _validate_execution_mode(execution_mode_raw)
     if execution_mode is None:
         _write_error_output(
             output_file,
@@ -338,6 +352,8 @@ def run_agent_task(input_path: str | Path, output_path: str | Path) -> int:
                     result, final_target_project_context = _execute_workflow(
                         request_id=request_id,
                         task=task_text,
+                        task_kind=task_kind,
+                        execution_mode=execution_mode,
                         execute_coding_agent=execute_coding_agent,
                         decision=decision,
                         progress_reporter=progress_reporter,
@@ -606,6 +622,16 @@ def _validate_execution_mode(execution_mode_raw: Any) -> str | None:
     return None
 
 
+def _request_checkpoint_metadata(request_id: str) -> dict[str, Any]:
+    """Return persisted subprocess metadata for a request, if checkpointed."""
+
+    checkpoint = get_checkpointer().get_tuple(
+        {"configurable": {"thread_id": f"subprocess-{request_id}"}}
+    )
+    metadata = checkpoint.metadata if checkpoint is not None else None
+    return dict(metadata) if isinstance(metadata, dict) else {}
+
+
 def _validate_task_kind(task_kind_raw: Any) -> str | None:
     if task_kind_raw is None:
         return "coding_task"
@@ -732,6 +758,8 @@ def _execute_workflow(
     request_id: str,
     task: str,
     execute_coding_agent: bool,
+    task_kind: str,
+    execution_mode: str,
     decision: _Decision | None = None,
     progress_reporter: ProgressReporter | None = None,
     target_project_context: TargetProjectContext | None = None,
@@ -742,6 +770,8 @@ def _execute_workflow(
     mid-run (the known-backlog-resolution path in coding_workflow_graph.py),
     not just one supplied up front — callers doing completion sync must read
     it from here, not from the pre-graph `target_project_context` argument.
+    The required request kind and execution mode are stored in checkpoint metadata
+    so decision-only resumes retain the original request semantics.
     """
     from .coding_workflow_graph import build_graph, build_initial_graph_state
 
@@ -767,7 +797,13 @@ def _execute_workflow(
     )
 
     thread_id = f"subprocess-{request_id}"
-    config = {"configurable": {"thread_id": thread_id}}
+    config = {
+        "configurable": {"thread_id": thread_id},
+        "metadata": {
+            "task_kind": task_kind,
+            "execution_mode": execution_mode,
+        },
+    }
 
     if decision is not None:
         pending_snapshot = graph.get_state(config)
@@ -1068,11 +1104,6 @@ def _map_state_to_output(
         summary = f"Clarification needed: {orchestrator_input_question}"
         next_action = f"Answer the question and submit a new task: {orchestrator_input_question}"
         result_kind = RESULT_KIND_CLARIFICATION_REQUEST
-    elif restart_required:
-        status = STATUS_FAILED
-        summary = "Agent workflow requires a restart."
-        next_action = "Retry the task from scratch."
-        result_kind = RESULT_KIND_TERMINAL_FAILURE
     elif state.get("project_guidance_rejected_summary"):
         # Guidance was flagged as missing/conflicting and required review; the
         # human rejected the proposal, so this ends clearly rather than
@@ -1092,7 +1123,11 @@ def _map_state_to_output(
         elif coding_agent_success is True:
             status = STATUS_SUCCESS
             summary = "Task completed and verified by the AI Tech Lead."
-            next_action = "Review output."
+            next_action = (
+                "Restart the AI Tech Lead runtime, then review output."
+                if restart_required
+                else "Review output."
+            )
             result_kind = RESULT_KIND_EXECUTION_RESULT
         elif coding_agent_success is False:
             status = STATUS_FAILED
@@ -1118,7 +1153,7 @@ def _map_state_to_output(
         "brief": brief,
         "coding_agent_instruction": agent_instruction,
         "backend_used": state.get("coding_agent_performed_by", "none") or "none",
-        "execution_performed": bool(coding_agent_success is not None),
+        "execution_performed": bool(state.get("coding_agent_performed_by")),
         "logs": state.get("task_feedback", []),
         "evidence": list(state.get("research_source_titles", [])),
         "next_action": next_action,

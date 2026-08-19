@@ -620,6 +620,13 @@ def test_run_graph_task_uses_requested_execution_mode(
     request_id = graph_state["request_id"]
     assert request_id
     assert captured["config"]["configurable"]["thread_id"] == f"telegram-{request_id}"
+    assert captured["config"]["metadata"] == {
+        "telegram_task": True,
+        "telegram_chat_id": "chat-1",
+        "telegram_task_label": "JH-001 - Local placeholder",
+        "telegram_request_summary": "Local placeholder",
+        "telegram_backlog_item_id": None,
+    }
     assert "----------------------------------------" in caplog.text
     assert "Telegram run: preparing graph task for chat chat-1." in caplog.text
     assert "Telegram run: task label: JH-001 - Local placeholder" in caplog.text
@@ -636,6 +643,95 @@ def test_run_graph_task_uses_requested_execution_mode(
         "Coding agent still running (about 1m 0s elapsed).",
     )
     assert operator._status_text("chat-1").startswith("Bot is alive.")
+
+
+def test_run_recovers_only_the_latest_genuinely_paused_telegram_task(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = parse_settings(valid_settings_dict())
+    client = _RecordingClient()
+    paused_app = _PausedTaskApp(
+        {"request_id": "paused-request", "request": "Wait for approval."},
+        next_nodes=(NodeName.APPROVAL_INTERRUPT,),
+        interrupt_value={"kind": "approval", "reason": "Needs approval."},
+    )
+    completed_app = _PausedTaskApp(
+        {"request_id": "completed-request", "request": "Already done."}
+    )
+    running_app = _PausedTaskApp(
+        {"request_id": "running-request", "request": "Still running."},
+        next_nodes=(NodeName.RUN_CODING_AGENT,),
+    )
+    apps_by_thread = {
+        "telegram-paused": paused_app,
+        "telegram-completed": completed_app,
+        "telegram-running": running_app,
+    }
+
+    class _RecoveryApp:
+        def get_state(self, thread_config):
+            thread_id = thread_config["configurable"]["thread_id"]
+            return apps_by_thread[thread_id].get_state(thread_config)
+
+    class _Checkpoint:
+        def __init__(self, thread_id: str, metadata: dict[str, object]) -> None:
+            self.config = {"configurable": {"thread_id": thread_id}}
+            self.metadata = metadata
+
+    class _Checkpointer:
+        def list(self, config, *, filter):
+            assert config is None
+            assert filter == {"telegram_task": True}
+            paused_metadata = {
+                "telegram_task": True,
+                "telegram_chat_id": "chat-paused",
+                "telegram_task_label": "Paused task",
+                "telegram_request_summary": "Wait for approval.",
+                "telegram_backlog_item_id": None,
+            }
+            completed_metadata = {
+                **paused_metadata,
+                "telegram_chat_id": "chat-completed",
+                "telegram_task_label": "Completed task",
+                "telegram_request_summary": "Already done.",
+            }
+            running_metadata = {
+                **paused_metadata,
+                "telegram_chat_id": "chat-running",
+                "telegram_task_label": "Running task",
+                "telegram_request_summary": "Still running.",
+            }
+            return iter(
+                [
+                    _Checkpoint("telegram-paused", paused_metadata),
+                    _Checkpoint("telegram-completed", completed_metadata),
+                    _Checkpoint("telegram-running", running_metadata),
+                ]
+            )
+
+    checkpointer = _Checkpointer()
+
+    monkeypatch.setattr("ai_tech_lead.telegram_operator.get_checkpointer", lambda: checkpointer)
+    build_calls: list[dict[str, object]] = []
+    recovery_app = _RecoveryApp()
+
+    def fake_build_graph(**kwargs):
+        build_calls.append(kwargs)
+        return recovery_app
+
+    monkeypatch.setattr("ai_tech_lead.telegram_operator.build_graph", fake_build_graph)
+    operator = TelegramOperator("token", settings, client=client)
+    monkeypatch.setattr(operator, "_run_polling", lambda: None)
+
+    operator.run()
+
+    assert set(operator._active_tasks) == {"chat-paused"}
+    recovered = operator._active_tasks["chat-paused"]
+    assert recovered.stage == TelegramTaskStage.PRE_RUN_APPROVAL
+    assert recovered.request_id == "paused-request"
+    assert recovered.thread_config["configurable"]["thread_id"] == "telegram-paused"
+    assert client.messages == []
+    assert len(build_calls) == 3
 
 
 def test_plain_text_during_clarification_pause_stores_feedback_and_auto_resumes(

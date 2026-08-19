@@ -15,6 +15,15 @@ from .profile_override_store import resolve_profile_with_override
 from .prompt_loader import TECH_LEAD_ANALYSIS_PROMPT_KEY, render_prompt
 
 logger = logging.getLogger(LOGGER_NAME)
+_TECH_LEAD_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "task_statement": {"type": "string"},
+        "tech_direction": {"type": "string"},
+    },
+    "required": ["task_statement", "tech_direction"],
+    "additionalProperties": False,
+}
 
 
 @dataclass(frozen=True)
@@ -128,6 +137,8 @@ def _llm_analyse_task(
         prompt=prompt,
         config=config,
         error_label="Tech lead analysis response",
+        schema_name="tech_lead_analysis",
+        schema=_TECH_LEAD_SCHEMA,
         parse=_parse_analysis,
         on_result=_log_metric,
         tier=profile.tier,

@@ -15,7 +15,7 @@ def _ai_enabled_settings():
 
 
 def _fake_llm(payload: dict) -> None:
-    return lambda *, prompt, config: OrchestratorLlmResult(text=json.dumps(payload))
+    return lambda **_kwargs: OrchestratorLlmResult(text=json.dumps(payload))
 
 
 def test_sufficient_guidance_does_not_require_review(monkeypatch) -> None:
@@ -126,7 +126,7 @@ def test_ai_disabled_fails_closed_to_conflicting_and_requires_review() -> None:
 
 
 def test_llm_error_fails_closed_to_conflicting_and_requires_review(monkeypatch) -> None:
-    def raise_error(*, prompt, config):
+    def raise_error(**_kwargs):
         raise OrchestratorLlmError("network unavailable")
 
     monkeypatch.setattr("ai_tech_lead.llm_json.call_orchestrator_llm", raise_error)
@@ -140,7 +140,7 @@ def test_llm_error_fails_closed_to_conflicting_and_requires_review(monkeypatch) 
 def test_invalid_response_fails_closed_to_conflicting_and_requires_review(monkeypatch) -> None:
     monkeypatch.setattr(
         "ai_tech_lead.llm_json.call_orchestrator_llm",
-        lambda *, prompt, config: OrchestratorLlmResult(text="not json"),
+        lambda **_kwargs: OrchestratorLlmResult(text="not json"),
     )
 
     decision = review_project_guidance("Do something", [], _ai_enabled_settings())

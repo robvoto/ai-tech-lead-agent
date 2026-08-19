@@ -17,6 +17,16 @@ from .prompt_loader import PLAN_REVIEW_PROMPT_KEY, render_prompt
 logger = logging.getLogger(LOGGER_NAME)
 MAX_PLAN_REVIEW_WORDS = 120
 MAX_PLAN_REVIEW_LINES = 5
+_PLAN_REVIEW_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "approved": {"type": "boolean"},
+        "reason": {"type": "string"},
+        "correction": {"type": "string"},
+    },
+    "required": ["approved", "reason", "correction"],
+    "additionalProperties": False,
+}
 
 
 class PlanReviewUnavailable(RuntimeError):
@@ -126,6 +136,8 @@ def _llm_review_plan(
         prompt=prompt,
         config=config,
         error_label="Plan review response",
+        schema_name="plan_review",
+        schema=_PLAN_REVIEW_SCHEMA,
         parse=_parse_review_payload,
         on_result=_log_metric,
         tier=profile.tier,

@@ -45,8 +45,8 @@ def test_risk_review_uses_ai_when_enabled(monkeypatch, tmp_path) -> None:
         )
 
     monkeypatch.setattr(
-        "ai_tech_lead.risk_reviewer.call_orchestrator_llm",
-        lambda prompt, config: FakeResult(),
+        "ai_tech_lead.llm_json.call_orchestrator_llm",
+        lambda **_kw: FakeResult(),
     )
 
     decision = review_task_risk("Small docs change")
@@ -73,8 +73,8 @@ def test_risk_review_requires_approval_when_ai_confidence_is_low(monkeypatch, tm
         )
 
     monkeypatch.setattr(
-        "ai_tech_lead.risk_reviewer.call_orchestrator_llm",
-        lambda prompt, config: FakeResult(),
+        "ai_tech_lead.llm_json.call_orchestrator_llm",
+        lambda **_kw: FakeResult(),
     )
 
     decision = review_task_risk("Small docs change")
@@ -101,8 +101,8 @@ def test_risk_review_includes_risk_level_high(monkeypatch, tmp_path) -> None:
         )
 
     monkeypatch.setattr(
-        "ai_tech_lead.risk_reviewer.call_orchestrator_llm",
-        lambda prompt, config: FakeResult(),
+        "ai_tech_lead.llm_json.call_orchestrator_llm",
+        lambda **_kw: FakeResult(),
     )
 
     decision = review_task_risk("Delete all production records")
@@ -128,8 +128,8 @@ def test_risk_review_unknown_risk_level_treated_as_unknown(monkeypatch, tmp_path
         )
 
     monkeypatch.setattr(
-        "ai_tech_lead.risk_reviewer.call_orchestrator_llm",
-        lambda prompt, config: FakeResult(),
+        "ai_tech_lead.llm_json.call_orchestrator_llm",
+        lambda **_kw: FakeResult(),
     )
 
     decision = review_task_risk("Some task")

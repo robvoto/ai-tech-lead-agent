@@ -73,6 +73,16 @@ logger = logging.getLogger(LOGGER_NAME)
 ORCHESTRATOR_IDENTITY_PATH = PROJECT_ROOT / "docs" / "ORCHESTRATOR_IDENTITY.md"
 LOG_SEPARATOR = "----------------------------------------"
 
+# These fields are the Telegram adapter's recovery envelope inside the existing
+# LangGraph checkpoint metadata. They identify ownership without creating a second
+# task registry; the graph state remains the source of truth for whether a run is paused.
+_TELEGRAM_THREAD_PREFIX = "telegram-"
+_TELEGRAM_CHECKPOINT_MARKER = "telegram_task"
+_TELEGRAM_CHAT_ID_METADATA = "telegram_chat_id"
+_TELEGRAM_TASK_LABEL_METADATA = "telegram_task_label"
+_TELEGRAM_REQUEST_SUMMARY_METADATA = "telegram_request_summary"
+_TELEGRAM_BACKLOG_ITEM_ID_METADATA = "telegram_backlog_item_id"
+
 def _normalized_project_text(value: str) -> str:
     """Normalize configured project names/keys for bounded text matching."""
 
@@ -252,6 +262,19 @@ class TelegramTaskStage(StrEnum):
     ORCHESTRATOR_INPUT = "orchestrator_input"
     COMPLETION_VERIFICATION = "completion_verification"
     RUNNING = "running"
+
+
+_RECOVERABLE_TELEGRAM_INTERRUPT_KINDS = frozenset(
+    {
+        "approval",
+        "research_approval",
+        "clarification",
+        "context_clarification",
+        "plan_guidance",
+        "failure_guidance",
+        "completion_verification",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -462,12 +485,6 @@ class TelegramOperator:
         self._telegram_agent_app: Any | None = None
         self._telegram_agent_session_cost_usd = 0.0
         self._session_id = uuid.uuid4().hex
-        logger.warning(
-            "TelegramOperator initialised (session=%s). "
-            "Active tasks reset to empty — any in-flight task from a previous process run "
-            "has been lost. If a coding agent was running, its result is unknown.",
-            self._session_id,
-        )
         self._allowed_chat_ids = {
             chat_id.strip() for chat_id in settings.telegram_allowed_chat_ids if chat_id.strip()
         }
@@ -481,6 +498,7 @@ class TelegramOperator:
             logger.info("Telegram operator disabled by settings.")
             return
 
+        self._recover_paused_tasks()
         transport = self._settings.telegram_transport
         logger.info("Telegram operator starting (%s transport)", transport)
 
@@ -1165,6 +1183,25 @@ class TelegramOperator:
             backlog_item_id=backlog_item_id,
         )
 
+    def _build_telegram_graph(
+        self,
+        *,
+        chat_id: str,
+        request_summary: str,
+        cancellation_token: CodingAgentCancellationToken,
+    ) -> Any:
+        """Build a Telegram workflow app against the shared durable checkpointer."""
+
+        return build_graph(
+            checkpointer_storage=get_checkpointer(),
+            execute_coding_agent_override=self._execute_coding_agent_override,
+            coding_agent_progress_callback=self._coding_agent_progress_callback(
+                chat_id=chat_id,
+                request_summary=request_summary,
+            ),
+            coding_agent_cancellation_token=cancellation_token,
+        )
+
     def _run_graph_task(
         self,
         *,
@@ -1197,17 +1234,22 @@ class TelegramOperator:
         )
         self._send_message(chat_id, f"Working on: {request_summary}")
         cancellation_token = CodingAgentCancellationToken()
-        app = build_graph(
-            checkpointer_storage=get_checkpointer(),
-            execute_coding_agent_override=self._execute_coding_agent_override,
-            coding_agent_progress_callback=self._coding_agent_progress_callback(
-                chat_id=chat_id,
-                request_summary=request_summary,
-            ),
-            coding_agent_cancellation_token=cancellation_token,
+        app = self._build_telegram_graph(
+            chat_id=chat_id,
+            request_summary=request_summary,
+            cancellation_token=cancellation_token,
         )
         logger.info("Telegram run: graph compiled and checkpointer attached.")
-        thread_config: RunnableConfig = {"configurable": {"thread_id": f"telegram-{request_id}"}}
+        thread_config: RunnableConfig = {
+            "configurable": {"thread_id": f"{_TELEGRAM_THREAD_PREFIX}{request_id}"},
+            "metadata": {
+                _TELEGRAM_CHECKPOINT_MARKER: True,
+                _TELEGRAM_CHAT_ID_METADATA: chat_id,
+                _TELEGRAM_TASK_LABEL_METADATA: task_label,
+                _TELEGRAM_REQUEST_SUMMARY_METADATA: request_summary,
+                _TELEGRAM_BACKLOG_ITEM_ID_METADATA: backlog_item_id,
+            },
+        }
         logger.info("Telegram run: thread id: %s", thread_config["configurable"]["thread_id"])
         self._active_tasks[chat_id] = ActiveTelegramTask(
             chat_id=chat_id,
@@ -1229,6 +1271,105 @@ class TelegramOperator:
         )
         worker.start()
         logger.info("Telegram run: background graph worker started for chat %s.", chat_id)
+
+    def _recover_paused_tasks(self) -> None:
+        """Rebuild in-memory ownership only for recognized durable Telegram pauses.
+
+        LangGraph returns checkpoints newest first. The latest checkpoint for each
+        Telegram thread decides whether the run is still paused; completed or
+        non-interrupt checkpoints are deliberately not revived.
+        """
+
+        latest_by_thread: dict[str, Any] = {}
+        for checkpoint in get_checkpointer().list(
+            None, filter={_TELEGRAM_CHECKPOINT_MARKER: True}
+        ):
+            configurable = checkpoint.config.get("configurable", {})
+            thread_id = configurable.get("thread_id")
+            if not isinstance(thread_id, str) or not thread_id.startswith(
+                _TELEGRAM_THREAD_PREFIX
+            ):
+                continue
+            latest_by_thread.setdefault(thread_id, checkpoint)
+
+        candidates_by_chat: dict[str, list[tuple[str, str, str, str | None]]] = {}
+        for thread_id, checkpoint in latest_by_thread.items():
+            metadata = checkpoint.metadata
+            if not isinstance(metadata, Mapping):
+                continue
+            chat_id = metadata.get(_TELEGRAM_CHAT_ID_METADATA)
+            task_label = metadata.get(_TELEGRAM_TASK_LABEL_METADATA)
+            request_summary = metadata.get(_TELEGRAM_REQUEST_SUMMARY_METADATA)
+            if not all(
+                isinstance(value, str) and value.strip()
+                for value in (chat_id, task_label, request_summary)
+            ):
+                continue
+            if self._allowed_chat_ids and chat_id not in self._allowed_chat_ids:
+                continue
+            if _TELEGRAM_BACKLOG_ITEM_ID_METADATA not in metadata:
+                continue
+            backlog_item_id = metadata[_TELEGRAM_BACKLOG_ITEM_ID_METADATA]
+            if backlog_item_id is not None and not isinstance(backlog_item_id, str):
+                continue
+            candidates_by_chat.setdefault(chat_id, []).append(
+                (thread_id, task_label, request_summary, backlog_item_id)
+            )
+
+        for chat_id, candidates in candidates_by_chat.items():
+            if len(candidates) != 1:
+                logger.warning(
+                    "Telegram recovery: skipped %d ambiguous paused tasks for chat %s.",
+                    len(candidates),
+                    chat_id,
+                )
+                continue
+            if chat_id in self._active_tasks:
+                logger.info("Telegram recovery: chat %s already has an active task.", chat_id)
+                continue
+            thread_id, task_label, request_summary, backlog_item_id = candidates[0]
+            thread_config: RunnableConfig = {"configurable": {"thread_id": thread_id}}
+            cancellation_token = CodingAgentCancellationToken()
+            app = self._build_telegram_graph(
+                chat_id=chat_id,
+                request_summary=request_summary,
+                cancellation_token=cancellation_token,
+            )
+            state_snapshot = app.get_state(thread_config)
+            if not state_snapshot.next:
+                continue
+            interrupt_value = _interrupt_from_snapshot(state_snapshot)
+            if not isinstance(interrupt_value, dict) or interrupt_value.get(
+                "kind"
+            ) not in _RECOVERABLE_TELEGRAM_INTERRUPT_KINDS:
+                continue
+
+            state_values = state_snapshot.values
+            request_id = state_values.get("request_id")
+            if not isinstance(request_id, str) or not request_id.strip():
+                continue
+            stage, _ = self._stage_and_message_from_snapshot(
+                task_label=task_label,
+                request_summary=request_summary,
+                state_snapshot=state_snapshot,
+            )
+            self._active_tasks[chat_id] = ActiveTelegramTask(
+                chat_id=chat_id,
+                task_label=task_label,
+                request_summary=request_summary,
+                app=app,
+                thread_config=thread_config,
+                stage=stage,
+                request_id=request_id,
+                backlog_item_id=backlog_item_id,
+                cancellation_token=cancellation_token,
+            )
+            logger.info(
+                "Telegram recovery: restored paused task %s for chat %s on thread %s.",
+                task_label,
+                chat_id,
+                thread_id,
+            )
 
     def _run_graph_task_background(
         self,

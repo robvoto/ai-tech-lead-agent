@@ -8,11 +8,11 @@ from dataclasses import dataclass
 from typing import Any
 
 from .app_settings import AppSettings
+from .llm_json import call_llm_for_json
 from .logging_setup import LOGGER_NAME
 from .orchestrator_llm import (
     OrchestratorLlmConfig,
     OrchestratorLlmError,
-    call_orchestrator_llm,
 )
 from .profile_override_store import resolve_profile_with_override
 from .prompt_loader import COMPLETION_VERIFICATION_PROMPT_KEY, render_prompt
@@ -24,6 +24,16 @@ STATUS_COMPLETE = "complete"
 STATUS_CORRECTION_REQUIRED = "correction_required"
 STATUS_HUMAN_VERIFICATION_REQUIRED = "human_verification_required"
 _VALID_STATUSES = (STATUS_COMPLETE, STATUS_CORRECTION_REQUIRED, STATUS_HUMAN_VERIFICATION_REQUIRED)
+_COMPLETION_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "status": {"type": "string", "enum": list(_VALID_STATUSES)},
+        "reason": {"type": "string"},
+        "correction": {"type": "string"},
+    },
+    "required": ["status", "reason", "correction"],
+    "additionalProperties": False,
+}
 
 
 class CompletionVerificationUnavailable(RuntimeError):
@@ -140,26 +150,34 @@ def _llm_verify_completion(
         project_guidance=guidance_text,
     )
     profile = resolve_profile_with_override("completion_verification", settings=settings)
-    result = call_orchestrator_llm(
+    config = OrchestratorLlmConfig(
+        model=profile.model,
+        max_output_tokens=profile.max_output_tokens,
+        timeout_seconds=settings.orchestrator_ai_timeout_seconds,
+        reasoning_effort=profile.reasoning_effort,
+        purpose="completion_verification",
+        profile_name=profile.name,
+    )
+
+    def _log_metric(result: Any) -> None:
+        logger.info(
+            "Completion verification LLM: in=%d out=%d total=%d cost_total=$%.5f",
+            result.tokens_in,
+            result.tokens_out,
+            result.tokens_in + result.tokens_out,
+            result.cost_usd,
+        )
+
+    return call_llm_for_json(
         prompt=prompt,
-        config=OrchestratorLlmConfig(
-            model=profile.model,
-            max_output_tokens=profile.max_output_tokens,
-            timeout_seconds=settings.orchestrator_ai_timeout_seconds,
-            reasoning_effort=profile.reasoning_effort,
-            purpose="completion_verification",
-            profile_name=profile.name,
-        ),
+        config=config,
+        error_label="Completion verification response",
+        schema_name="completion_verification",
+        schema=_COMPLETION_SCHEMA,
+        parse=_parse_verification_payload,
+        on_result=_log_metric,
+        tier=profile.tier,
     )
-    logger.info(
-        "Completion verification LLM: in=%d out=%d total=%d cost_total=$%.5f",
-        result.tokens_in,
-        result.tokens_out,
-        result.tokens_in + result.tokens_out,
-        result.cost_usd,
-    )
-    payload = json.loads(result.text)
-    return _parse_verification_payload(payload)
 
 
 def _parse_verification_payload(payload: dict[str, Any]) -> CompletionVerificationDecision:

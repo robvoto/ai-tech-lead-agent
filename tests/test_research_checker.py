@@ -16,8 +16,7 @@ def _ai_enabled_settings():
 def test_knowledge_gap_check_retries_once_on_malformed_response(monkeypatch, caplog):
     calls = []
 
-    def fake_call_orchestrator_llm(*, prompt, config):
-        del prompt, config
+    def fake_call_orchestrator_llm(**_kwargs):
         calls.append(1)
         if len(calls) == 1:
             return OrchestratorLlmResult(text="")
@@ -40,8 +39,7 @@ def test_knowledge_gap_check_retries_once_on_malformed_response(monkeypatch, cap
 def test_knowledge_gap_check_falls_back_to_approval_after_retry_exhausted(monkeypatch):
     calls = []
 
-    def fake_call_orchestrator_llm(*, prompt, config):
-        del prompt, config
+    def fake_call_orchestrator_llm(**_kwargs):
         calls.append(1)
         return OrchestratorLlmResult(text="not json")
 
@@ -59,8 +57,7 @@ def test_knowledge_gap_check_falls_back_to_approval_after_retry_exhausted(monkey
 
 
 def test_knowledge_gap_check_accepts_markdown_fenced_json(monkeypatch):
-    def fake_call_orchestrator_llm(*, prompt, config):
-        del prompt, config
+    def fake_call_orchestrator_llm(**_kwargs):
         return OrchestratorLlmResult(
             text='```json\n{"has_gap": false, "gap_question": "", "reason": "planning only"}\n```'
         )
@@ -77,8 +74,7 @@ def test_knowledge_gap_check_accepts_markdown_fenced_json(monkeypatch):
 
 
 def test_knowledge_gap_check_rejects_missing_gap_question_when_gap_true(monkeypatch):
-    def fake_call_orchestrator_llm(*, prompt, config):
-        del prompt, config
+    def fake_call_orchestrator_llm(**_kwargs):
         return OrchestratorLlmResult(text='{"has_gap": true, "gap_question": "", "reason": "unclear"}')
 
     monkeypatch.setattr(

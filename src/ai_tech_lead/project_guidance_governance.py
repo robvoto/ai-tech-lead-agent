@@ -37,6 +37,26 @@ from .prompt_loader import PROJECT_GUIDANCE_GOVERNANCE_PROMPT_KEY, render_prompt
 logger = logging.getLogger(LOGGER_NAME)
 
 _STATUSES = {"sufficient", "missing", "conflicting"}
+_GUIDANCE_GOVERNANCE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "status": {"type": "string", "enum": ["sufficient", "missing", "conflicting"]},
+        "requires_review": {"type": "boolean"},
+        "summary": {"type": "string"},
+        "related_locations": {"type": "array", "items": {"type": "string"}},
+        "proposed_change": {"type": "string"},
+        "reason": {"type": "string"},
+    },
+    "required": [
+        "status",
+        "requires_review",
+        "summary",
+        "related_locations",
+        "proposed_change",
+        "reason",
+    ],
+    "additionalProperties": False,
+}
 
 
 @dataclass(frozen=True)
@@ -123,6 +143,8 @@ def _llm_review(
         prompt=prompt,
         config=config,
         error_label="Project guidance governance response",
+        schema_name="project_guidance_governance",
+        schema=_GUIDANCE_GOVERNANCE_SCHEMA,
         parse=_parse_decision,
         on_result=_log_metric,
         tier=profile.tier,

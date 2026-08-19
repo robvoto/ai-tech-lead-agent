@@ -8,11 +8,11 @@ from dataclasses import dataclass
 from typing import Any
 
 from .app_settings import AppSettings, load_settings
+from .llm_json import call_llm_for_json
 from .logging_setup import LOGGER_NAME
 from .orchestrator_llm import (
     OrchestratorLlmConfig,
     OrchestratorLlmError,
-    call_orchestrator_llm,
 )
 from .profile_override_store import resolve_profile_with_override
 from .prompt_loader import (
@@ -25,6 +25,17 @@ logger = logging.getLogger(LOGGER_NAME)
 
 
 RISK_LEVELS = frozenset({"LOW", "MEDIUM", "HIGH"})
+_RISK_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "needs_approval": {"type": "boolean"},
+        "risk_level": {"type": "string", "enum": ["LOW", "MEDIUM", "HIGH"]},
+        "reason": {"type": "string"},
+        "confidence": {"type": "number"},
+    },
+    "required": ["needs_approval", "risk_level", "reason", "confidence"],
+    "additionalProperties": False,
+}
 
 
 @dataclass(frozen=True)
@@ -68,19 +79,23 @@ def review_task_risk(request: str) -> RiskReviewDecision:
 def _llm_risk_decision(request: str, settings: AppSettings) -> RiskReviewDecision:
     prompt = _risk_review_prompt(request)
     profile = resolve_profile_with_override("risk_review", settings=settings)
-    result = call_orchestrator_llm(
-        prompt=prompt,
-        config=OrchestratorLlmConfig(
-            model=profile.model,
-            max_output_tokens=profile.max_output_tokens,
-            timeout_seconds=settings.orchestrator_ai_timeout_seconds,
-            reasoning_effort=profile.reasoning_effort,
-            purpose="risk_review",
-            profile_name=profile.name,
-        ),
+    config = OrchestratorLlmConfig(
+        model=profile.model,
+        max_output_tokens=profile.max_output_tokens,
+        timeout_seconds=settings.orchestrator_ai_timeout_seconds,
+        reasoning_effort=profile.reasoning_effort,
+        purpose="risk_review",
+        profile_name=profile.name,
     )
-    payload = json.loads(result.text)
-    return _parse_risk_payload(payload)
+    return call_llm_for_json(
+        prompt=prompt,
+        config=config,
+        error_label="Orchestrator AI risk review response",
+        schema_name="risk_review",
+        schema=_RISK_SCHEMA,
+        parse=_parse_risk_payload,
+        tier=profile.tier,
+    )
 
 
 def _parse_risk_payload(payload: dict[str, Any]) -> RiskReviewDecision:

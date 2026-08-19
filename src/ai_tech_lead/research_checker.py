@@ -29,6 +29,16 @@ from .research_code_context import collect_code_context, format_code_context_for
 from .research_sources import collect_local_research_sources
 
 logger = logging.getLogger(LOGGER_NAME)
+_RESEARCH_GAP_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "has_gap": {"type": "boolean"},
+        "gap_question": {"type": "string"},
+        "reason": {"type": "string"},
+    },
+    "required": ["has_gap", "gap_question", "reason"],
+    "additionalProperties": False,
+}
 
 
 @dataclass(frozen=True)
@@ -221,6 +231,8 @@ def _llm_check_knowledge_gap(
         prompt=prompt,
         config=config,
         error_label="Research knowledge-gap response",
+        schema_name="research_knowledge_gap",
+        schema=_RESEARCH_GAP_SCHEMA,
         parse=_parse_knowledge_gap_payload,
         on_result=_log_metric,
         tier=profile.tier,

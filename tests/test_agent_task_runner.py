@@ -747,8 +747,9 @@ class _FakeSnapshot:
 class _FakeResumableGraph:
     """Fake graph that remembers whether it was resumed vs freshly invoked."""
 
-    def __init__(self, pending_value: dict[str, Any]) -> None:
+    def __init__(self, pending_value: dict[str, Any], checkpointer: Any | None = None) -> None:
         self._pending_value = pending_value
+        self._checkpointer = checkpointer
         self.invoke_calls: list[Any] = []
         self.configs: list[dict[str, Any]] = []
         self.resumed = False
@@ -778,6 +779,8 @@ class _FakeResumableGraph:
                 "research_source_titles": [],
                 "coding_agent_performed_by": "none",
             }
+        if self._checkpointer is not None:
+            self._checkpointer.checkpoint.metadata = dict(config.get("metadata", {}))
         return {
             "agent_instruction": "",
             "formulated_task": "",
@@ -791,6 +794,64 @@ class _FakeResumableGraph:
             "research_source_titles": [],
             "coding_agent_performed_by": "none",
         }
+
+
+class _FakeCheckpoint:
+    def __init__(self) -> None:
+        self.metadata: dict[str, Any] = {}
+
+
+class _FakeCheckpointer:
+    def __init__(self) -> None:
+        self.checkpoint = _FakeCheckpoint()
+
+    def get_tuple(self, _config: dict[str, Any]) -> _FakeCheckpoint:
+        return self.checkpoint
+
+
+@pytest.mark.parametrize(
+    ("task_kind", "execution_mode"),
+    [("technical_analysis", "instruction_only"), ("coding_task", "execute")],
+    ids=["technical-analysis", "execute-coding-task"],
+)
+def test_decision_only_resume_reuses_initial_request_metadata(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    task_kind: str,
+    execution_mode: str,
+) -> None:
+    checkpointer = _FakeCheckpointer()
+    graph = _FakeResumableGraph(
+        {"kind": "approval", "reason": "risky", "formulated_task": ""}, checkpointer
+    )
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.build_graph", lambda **_kwargs: graph
+    )
+    monkeypatch.setattr("ai_tech_lead.agent_task_runner.get_checkpointer", lambda: checkpointer)
+    _stub_settings(monkeypatch, {"execute_coding_agent": True})
+
+    request_id = f"req-{task_kind}"
+    initial_input, initial_output = _write_input(
+        tmp_path,
+        {
+            "request_id": request_id,
+            "task": "Review the implementation.",
+            "task_kind": task_kind,
+            "execution_mode": execution_mode,
+        },
+    )
+    assert run_agent_task(initial_input, initial_output) == 0
+    expected_metadata = {"task_kind": task_kind, "execution_mode": execution_mode}
+    assert checkpointer.checkpoint.metadata == expected_metadata
+
+    resume_input, resume_output = _write_input(
+        tmp_path,
+        {"request_id": request_id, "decision": {"option": "cancel"}},
+    )
+    run_agent_task(resume_input, resume_output)
+
+    assert graph.configs[0]["metadata"] == expected_metadata
+    assert graph.configs[1]["metadata"] == expected_metadata
 
 
 def test_execute_workflow_reuses_subprocess_thread_for_initial_and_resume(
@@ -808,12 +869,16 @@ def test_execute_workflow_reuses_subprocess_thread_for_initial_and_resume(
         request_id=request_id,
         task="Do the thing",
         execute_coding_agent=False,
+        task_kind="coding_task",
+        execution_mode="instruction_only",
         target_project_context=None,
     )
     _execute_workflow(
         request_id=request_id,
         task="",
         execute_coding_agent=False,
+        task_kind="coding_task",
+        execution_mode="instruction_only",
         target_project_context=None,
         decision=_parse_decision({"option": "approve"}),
     )
@@ -839,6 +904,8 @@ def test_execute_workflow_resumes_with_command_when_decision_given(
         request_id="req-resume-graph",
         task="",
         execute_coding_agent=False,
+        task_kind="coding_task",
+        execution_mode="instruction_only",
         target_project_context=None,
         decision=decision,
     )
@@ -872,6 +939,8 @@ def test_execute_workflow_rejects_decision_when_nothing_pending(
             request_id="req-nothing-pending",
             task="",
             execute_coding_agent=False,
+            task_kind="coding_task",
+            execution_mode="instruction_only",
             target_project_context=None,
             decision=decision,
         )
@@ -970,6 +1039,71 @@ def test_successful_response_includes_all_required_fields(
     assert result["status"] == STATUS_SUCCESS
     assert result["agent_manifest"]["agent_id"] == "ai-tech-lead"
     assert result["agent_manifest"]["manifest_command"] == "uv run python -m ai_tech_lead manifest"
+
+
+@pytest.mark.parametrize(
+    ("state", "state_snapshot", "execute_coding_agent"),
+    [
+        (
+            {
+                "agent_instruction": "",
+                "coding_agent_success": False,
+                "coding_agent_performed_by": "",
+                "coding_agent_result": "",
+            },
+            _FakeSnapshot({"kind": "approval", "reason": "Needs a decision."}),
+            False,
+        ),
+        (
+            {
+                "agent_instruction": "implement it",
+                "coding_agent_success": None,
+                "coding_agent_performed_by": "",
+                "coding_agent_result": "",
+            },
+            None,
+            False,
+        ),
+        (
+            {
+                "agent_instruction": "run this",
+                "coding_agent_success": False,
+                "coding_agent_performed_by": "",
+                "coding_agent_result": "Git preflight blocked the launch.",
+            },
+            None,
+            True,
+        ),
+    ],
+    ids=["waiting-for-decision", "instruction-only", "terminal-failure"],
+)
+def test_map_state_to_output_reports_no_execution_without_backend_run(
+    state: dict[str, Any], state_snapshot: Any | None, execute_coding_agent: bool
+) -> None:
+    result = _map_state_to_output(
+        "req-no-execution",
+        state,
+        execute_coding_agent,
+        state_snapshot=state_snapshot,
+        thread_id="subprocess-req-no-execution",
+    )
+
+    assert result["execution_performed"] is False
+
+
+def test_map_state_to_output_reports_execution_when_backend_is_recorded() -> None:
+    result = _map_state_to_output(
+        "req-execution",
+        {
+            "agent_instruction": "implement it",
+            "coding_agent_success": True,
+            "coding_agent_performed_by": "codex",
+            "coding_agent_result": "Implemented.",
+        },
+        True,
+    )
+
+    assert result["execution_performed"] is True
 
 
 def test_map_state_to_output_maps_plan_interrupt_to_waiting_decision() -> None:
@@ -1314,6 +1448,83 @@ def test_map_state_to_output_reports_success_when_verification_complete() -> Non
     assert result["result_kind"] == "execution_result"
 
 
+def test_map_state_to_output_reports_success_when_verified_run_requires_restart() -> None:
+    result = _map_state_to_output(
+        "req-verify-complete-restart",
+        {
+            "agent_instruction": "implement it",
+            "formulated_task": "Add a logout button",
+            "brief": "",
+            "orchestrator_input_required": False,
+            "orchestrator_input_question": "",
+            "coding_agent_success": True,
+            "coding_agent_result": "Implemented.",
+            "restart_required": True,
+            "task_feedback": [],
+            "research_source_titles": [],
+            "verification_status": "complete",
+            "verification_reason": "Acceptance criteria satisfied.",
+        },
+        False,
+        state_snapshot=None,
+        thread_id="subprocess-req-verify-complete-restart",
+    )
+
+    assert result["status"] == STATUS_SUCCESS
+    assert result["result_kind"] == "execution_result"
+    assert result["next_action"] == "Restart the AI Tech Lead runtime, then review output."
+
+
+def test_map_state_to_output_reports_failed_when_verification_fails_and_restart_is_required() -> None:
+    result = _map_state_to_output(
+        "req-verify-failed-restart",
+        {
+            "agent_instruction": "implement it",
+            "formulated_task": "Add a logout button",
+            "brief": "",
+            "orchestrator_input_required": False,
+            "orchestrator_input_question": "",
+            "coding_agent_success": True,
+            "coding_agent_result": "Implemented.",
+            "restart_required": True,
+            "task_feedback": [],
+            "research_source_titles": [],
+            "verification_status": "failed",
+            "verification_reason": "The logout button does not sign the user out.",
+        },
+        False,
+        state_snapshot=None,
+        thread_id="subprocess-req-verify-failed-restart",
+    )
+
+    assert result["status"] == STATUS_FAILED
+    assert result["result_kind"] == "terminal_failure"
+    assert "does not sign the user out" in result["summary"]
+
+
+def test_map_state_to_output_reports_failed_when_coding_fails_and_restart_is_required() -> None:
+    result = _map_state_to_output(
+        "req-coding-failed-restart",
+        {
+            "agent_instruction": "run this",
+            "formulated_task": "Fix the task",
+            "brief": "",
+            "orchestrator_input_required": False,
+            "orchestrator_input_question": "",
+            "coding_agent_success": False,
+            "coding_agent_result": "command exited 1",
+            "restart_required": True,
+            "task_feedback": [],
+            "research_source_titles": [],
+        },
+        True,
+    )
+
+    assert result["status"] == STATUS_FAILED
+    assert result["result_kind"] == "terminal_failure"
+    assert "Coding agent failed" in result["summary"]
+
+
 def test_map_state_to_output_dead_end_clarification_has_no_pending_decision() -> None:
     """An unresolved reference ends the graph — there is nothing to resume."""
     result = _map_state_to_output(
@@ -1534,6 +1745,8 @@ def test_execute_workflow_translates_existing_graph_progress_callbacks(
         request_id="req-graph-progress",
         task="Implement the change",
         execute_coding_agent=False,
+        task_kind="coding_task",
+        execution_mode="instruction_only",
         target_project_context=None,
         progress_reporter=reporter,
     )

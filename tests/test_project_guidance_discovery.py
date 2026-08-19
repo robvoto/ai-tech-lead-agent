@@ -68,6 +68,120 @@ def test_docs_index_is_included_when_present(tmp_path: Path) -> None:
     assert any("docs/INDEX.md" in note and "system boundaries" in note for note in notes)
 
 
+def test_docs_index_loads_bounded_referenced_architecture_for_ownership_request(
+    tmp_path: Path,
+) -> None:
+    docs_dir = tmp_path / "docs"
+    docs_dir.mkdir()
+    (docs_dir / "INDEX.md").write_text(
+        "# Documentation Index\n\n"
+        "- `ARCHITECTURE.md` - system architecture, module boundaries, adapter strategy.\n"
+        "- `GRAPH_WORKFLOW.md` - implemented workflow and execution boundary.\n",
+        encoding="utf-8",
+    )
+    (docs_dir / "ARCHITECTURE.md").write_text(
+        "# Architecture\n\n"
+        "AI Tech Lead owns the specialist-internal graph and maps internal pauses "
+        "to the Agent Hub subprocess contract.",
+        encoding="utf-8",
+    )
+    (docs_dir / "GRAPH_WORKFLOW.md").write_text(
+        "# Workflow\n\nExecution routing details.", encoding="utf-8"
+    )
+
+    notes = discover_project_guidance(
+        "Summarize the ownership boundary between AI Tech Lead and Agent Hub",
+        str(tmp_path),
+    )
+
+    architecture = next(note for note in notes if note.startswith("docs/ARCHITECTURE.md:"))
+    assert "Agent Hub subprocess contract" in architecture
+
+
+def test_duplicate_doc_reference_keeps_the_most_relevant_index_description(
+    tmp_path: Path,
+) -> None:
+    docs_dir = tmp_path / "docs"
+    docs_dir.mkdir()
+    (docs_dir / "INDEX.md").write_text(
+        "# Documentation Index\n\n"
+        "- `ARCHITECTURE.md` - general system architecture.\n"
+        "- `OTHER.md` - ownership notes.\n"
+        "- `ARCHITECTURE.md` also contains the Agent Hub subprocess boundary.\n",
+        encoding="utf-8",
+    )
+    (docs_dir / "ARCHITECTURE.md").write_text("ARCHITECTURE DETAIL", encoding="utf-8")
+    (docs_dir / "OTHER.md").write_text("OTHER DETAIL", encoding="utf-8")
+
+    notes = discover_project_guidance("Agent Hub subprocess boundary", str(tmp_path))
+    followed = [
+        note for note in notes if note.startswith("docs/") and not note.startswith("docs/INDEX.md:")
+    ]
+
+    assert followed[0].startswith("docs/ARCHITECTURE.md:")
+
+
+def test_referenced_doc_excerpt_can_reach_relevant_content_late_in_file(
+    tmp_path: Path,
+) -> None:
+    docs_dir = tmp_path / "docs"
+    docs_dir.mkdir()
+    (docs_dir / "INDEX.md").write_text(
+        "# Documentation Index\n\n- `ARCHITECTURE.md` - system boundaries.\n",
+        encoding="utf-8",
+    )
+    filler = "\n".join(f"Unrelated introduction {i}." for i in range(40))
+    (docs_dir / "ARCHITECTURE.md").write_text(
+        filler
+        + "\nAn external caller owns caller-side orchestration and resume UX."
+        + "\nAI Tech Lead owns the specialist-internal graph and maps pauses to the Agent Hub subprocess contract.\n",
+        encoding="utf-8",
+    )
+
+    notes = discover_project_guidance("AI Tech Lead Agent Hub ownership", str(tmp_path))
+    architecture = next(note for note in notes if note.startswith("docs/ARCHITECTURE.md:"))
+
+    assert "external caller owns caller-side orchestration" in architecture
+    assert "owns the specialist-internal graph" in architecture
+    assert "Agent Hub subprocess contract" in architecture
+
+
+def test_docs_index_reference_cannot_escape_docs_directory(tmp_path: Path) -> None:
+    docs_dir = tmp_path / "docs"
+    docs_dir.mkdir()
+    (docs_dir / "INDEX.md").write_text(
+        "# Documentation Index\n\n- `../PRIVATE.md` - private material.\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "PRIVATE.md").write_text("DO NOT LOAD", encoding="utf-8")
+
+    notes = discover_project_guidance("private material", str(tmp_path))
+
+    assert not any("DO NOT LOAD" in note for note in notes)
+    assert not any(note.startswith("PRIVATE.md:") for note in notes)
+
+
+def test_docs_index_reference_loading_is_capped_at_two_documents(tmp_path: Path) -> None:
+    docs_dir = tmp_path / "docs"
+    docs_dir.mkdir()
+    (docs_dir / "INDEX.md").write_text(
+        "# Documentation Index\n\n"
+        "- `ONE.md` - alpha reference.\n"
+        "- `TWO.md` - beta reference.\n"
+        "- `THREE.md` - gamma reference.\n",
+        encoding="utf-8",
+    )
+    for name in ("ONE", "TWO", "THREE"):
+        (docs_dir / f"{name}.md").write_text(f"# {name}\n\n{name} DETAIL", encoding="utf-8")
+
+    notes = discover_project_guidance("alpha beta gamma", str(tmp_path))
+    followed = [
+        note for note in notes if note.startswith("docs/") and not note.startswith("docs/INDEX.md:")
+    ]
+
+    assert len(followed) == 2
+
+
 def test_skills_index_scores_and_drills_into_the_best_match_only(tmp_path: Path) -> None:
     """Uses deliberately arbitrary, non-AI-Tech-Lead skill names to prove nothing
     is hardcoded — relevance comes only from scoring the index's own text."""
