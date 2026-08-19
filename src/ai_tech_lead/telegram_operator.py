@@ -55,6 +55,7 @@ from .coding_agent_runner import CodingAgentCancellationToken
 from .coding_workflow_graph import GraphState, build_graph, build_initial_graph_state
 from .config import PROJECT_ROOT
 from .logging_setup import LOGGER_NAME
+from .request_context import understand_request
 from .run_audit_store import record_run_audit_summary
 from .telegram_agent_graph import (
     TelegramAgentReply,
@@ -811,6 +812,18 @@ class TelegramOperator:
                 chat_id,
                 "A backlog refinement is waiting. Reply /approve or /reject before normal chat.",
             )
+            return
+
+        understanding = understand_request(text)
+        if understanding.execution_requested and len(understanding.detected_references) == 1:
+            backlog_item_id = understanding.detected_references[0]
+            logger.info(
+                "Telegram action: routing plain-text execution request to backlog item %s "
+                "in chat %s.",
+                backlog_item_id,
+                chat_id,
+            )
+            self._run_backlog_task(chat_id, backlog_item_id)
             return
         if not self._settings.orchestrator_ai_enabled:
             self._send_message(

@@ -1327,6 +1327,62 @@ def test_plain_text_goes_to_telegram_agent_when_ai_enabled(monkeypatch: pytest.M
     assert not any(msg[1].startswith("Bot is alive.") for msg in client.messages)
 
 
+def test_plain_text_execution_with_single_backlog_reference_routes_without_chat_llm(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw_settings = valid_settings_dict()
+    raw_settings["orchestrator_ai_enabled"] = True
+    settings = parse_settings(raw_settings)
+    client = _RecordingClient()
+    operator = TelegramOperator("dummy", settings, client=client)
+    routed: list[tuple[str, str]] = []
+
+    monkeypatch.setattr(
+        operator,
+        "_run_backlog_task",
+        lambda chat_id, item_id: routed.append((chat_id, item_id)),
+    )
+    monkeypatch.setattr(
+        "ai_tech_lead.telegram_operator.run_telegram_agent_message",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("chat LLM must not run")),
+    )
+
+    operator._handle_plain_text(
+        "chat-1",
+        "Code ATL-999 for AI Tech Lead",
+        "demo-user",
+    )
+
+    assert routed == [("chat-1", "ATL-999")]
+
+
+def test_plain_text_missing_backlog_reference_stops_without_starting_graph(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw_settings = valid_settings_dict()
+    raw_settings["orchestrator_ai_enabled"] = True
+    settings = parse_settings(raw_settings)
+    client = _RecordingClient()
+    operator = TelegramOperator("dummy", settings, client=client)
+    worksheet = FakeWorksheet([HEADER, _row("ATL-001", "Existing item", status="Backlog")])
+    _install_fake_sheets_repository(monkeypatch, worksheet)
+
+    monkeypatch.setattr(
+        operator,
+        "_run_graph_task",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("graph must not start")),
+    )
+
+    operator._handle_plain_text(
+        "chat-1",
+        "Code ATL-999 for AI Tech Lead",
+        "demo-user",
+    )
+
+    assert "ATL-999" in client.messages[-1][1]
+    assert "was not found" in client.messages[-1][1]
+
+
 def test_plain_text_returns_fallback_when_ai_disabled() -> None:
     settings = parse_settings(valid_settings_dict())
     client = _RecordingClient()
