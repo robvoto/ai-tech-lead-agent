@@ -1141,6 +1141,71 @@ def test_map_state_to_output_maps_plan_interrupt_to_waiting_decision() -> None:
     assert result["pending_decision"]["thread_id"] == "subprocess-req-plan"
 
 
+@pytest.mark.parametrize(
+    ("state", "state_snapshot", "execute_coding_agent"),
+    [
+        (
+            {
+                "agent_instruction": "",
+                "coding_agent_success": False,
+                "coding_agent_performed_by": "",
+                "coding_agent_result": "",
+            },
+            _FakeSnapshot({"kind": "approval", "reason": "Needs a decision."}),
+            False,
+        ),
+        (
+            {
+                "agent_instruction": "implement it",
+                "coding_agent_success": None,
+                "coding_agent_performed_by": "",
+                "coding_agent_result": "",
+            },
+            None,
+            False,
+        ),
+        (
+            {
+                "agent_instruction": "run this",
+                "coding_agent_success": False,
+                "coding_agent_performed_by": "",
+                "coding_agent_result": "Git preflight blocked the launch.",
+            },
+            None,
+            True,
+        ),
+    ],
+    ids=["waiting-for-decision", "instruction-only", "terminal-failure"],
+)
+def test_map_state_to_output_reports_no_execution_without_backend_run(
+    state: dict[str, Any], state_snapshot: Any | None, execute_coding_agent: bool
+) -> None:
+    result = _map_state_to_output(
+        "req-no-execution",
+        state,
+        execute_coding_agent,
+        state_snapshot=state_snapshot,
+        thread_id="subprocess-req-no-execution",
+    )
+
+    assert result["execution_performed"] is False
+
+
+def test_map_state_to_output_reports_execution_when_backend_is_recorded() -> None:
+    result = _map_state_to_output(
+        "req-execution",
+        {
+            "agent_instruction": "implement it",
+            "coding_agent_success": True,
+            "coding_agent_performed_by": "codex",
+            "coding_agent_result": "Implemented.",
+        },
+        True,
+    )
+
+    assert result["execution_performed"] is True
+
+
 def test_map_state_to_output_maps_failure_interrupt_to_waiting_decision() -> None:
     result = _map_state_to_output(
         "req-failure",
