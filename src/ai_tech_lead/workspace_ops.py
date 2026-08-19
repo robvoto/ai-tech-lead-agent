@@ -16,6 +16,7 @@ from ai_tech_lead.knowledge_store import (
     get_knowledge_store,
     get_knowledge_store_statistics,
 )
+from ai_tech_lead.run_audit_store import RunAuditStore
 from ai_tech_lead.storage import initialize_database
 
 
@@ -62,7 +63,8 @@ def bootstrap_workspace(settings_path: Path = SETTINGS_PATH) -> list[str]:
     lines.append(f"Initialised knowledge store: {knowledge_store_path}")
 
     get_checkpointer()
-    lines.append("Initialised app database and checkpointer store.")
+    RunAuditStore().ensure_initialized()
+    lines.append("Initialised app database, checkpointer, and run audit summary store.")
     lines.append(
         "Next step: run `uv run pytest` and then start the app with "
         "`uv run python -m ai_tech_lead --debug`."

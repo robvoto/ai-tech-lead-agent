@@ -55,6 +55,7 @@ from .coding_agent_runner import CodingAgentCancellationToken
 from .coding_workflow_graph import GraphState, build_graph, build_initial_graph_state
 from .config import PROJECT_ROOT
 from .logging_setup import LOGGER_NAME
+from .run_audit_store import record_run_audit_summary
 from .telegram_agent_graph import (
     TelegramAgentReply,
     build_telegram_agent_graph,
@@ -1092,6 +1093,7 @@ class TelegramOperator:
         try:
             active_task.app.invoke(graph_state, config=active_task.thread_config)
             state_snapshot = active_task.app.get_state(active_task.thread_config)
+            self._record_audit_snapshot(active_task, state_snapshot)
             logger.info("Telegram run: background graph invocation finished for chat %s.", chat_id)
         except Exception:
             logger.exception("Telegram graph task failed: %s", task_label)
@@ -1598,6 +1600,7 @@ class TelegramOperator:
         try:
             active_task.app.invoke(Command(resume=resume_value), config=active_task.thread_config)
             state_snapshot = active_task.app.get_state(active_task.thread_config)
+            self._record_audit_snapshot(active_task, state_snapshot)
         except Exception:
             logger.exception(
                 "Failed to resume Telegram task after %s from %s: %s",
@@ -1650,6 +1653,7 @@ class TelegramOperator:
         try:
             active_task.app.invoke(Command(resume=text), config=active_task.thread_config)
             state_snapshot = active_task.app.get_state(active_task.thread_config)
+            self._record_audit_snapshot(active_task, state_snapshot)
         except Exception:
             logger.exception(
                 "Failed to resume from clarification for task: %s", active_task.task_label
@@ -1913,6 +1917,55 @@ class TelegramOperator:
 
     def _get_repository(self):
         return repository_from_settings(self._settings)
+
+    def _record_audit_snapshot(self, active_task: ActiveTelegramTask, state_snapshot: Any) -> None:
+        """Persist a bounded receipt after each Telegram graph invocation/resume."""
+
+        if not active_task.request_id:
+            return
+        state = getattr(state_snapshot, "values", {})
+        if not isinstance(state, Mapping):
+            return
+        if getattr(state_snapshot, "next", ()):
+            result = {
+                "status": "waiting_decision",
+                "result_kind": "decision_required",
+                "summary": "Run paused for operator input.",
+            }
+        elif (
+            state.get("coding_agent_success") is True
+            and state.get("verification_status") != "failed"
+        ):
+            result = {
+                "status": "success",
+                "result_kind": "execution_result",
+                "summary": "Task completed and verified by the AI Tech Lead.",
+            }
+        elif state.get("coding_agent_success") is False:
+            result = {
+                "status": "failed",
+                "result_kind": "terminal_failure",
+                "summary": "The coding workflow did not complete successfully.",
+            }
+        else:
+            result = {
+                "status": "success",
+                "result_kind": "instruction_package",
+                "summary": "Instruction generated.",
+            }
+        try:
+            record_run_audit_summary(
+                request_id=active_task.request_id,
+                thread_id=str(active_task.thread_config["configurable"]["thread_id"]),
+                state=state,
+                result=result,
+                settings=self._settings,
+            )
+        except Exception:
+            logger.exception(
+                "[AUDIT] Could not persist Telegram run summary for request_id=%s",
+                active_task.request_id,
+            )
 
     def _send_message(self, chat_id: str, text: str) -> None:
         self._client.send_message(

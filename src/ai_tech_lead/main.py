@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import subprocess
 import sys
@@ -24,6 +25,7 @@ from ai_tech_lead.knowledge_store import (
 )
 from ai_tech_lead.logging_setup import LOGGER_NAME, configure_logging
 from ai_tech_lead.project_pack_templates import bootstrap_project_pack
+from ai_tech_lead.run_audit_store import RunAuditStore
 from ai_tech_lead.runtime_lock import list_active_project_execution_locks
 from ai_tech_lead.storage import initialize_database
 from ai_tech_lead.telegram_operator import run_telegram_operator
@@ -69,6 +71,10 @@ def main() -> int:
     if getattr(args, "command", None) == "backlog-sync-recover":
         configure_logging(debug=args.debug)
         return _run_backlog_sync_recover()
+
+    if getattr(args, "command", None) == "run-audit":
+        configure_logging(debug=args.debug)
+        return _run_run_audit(args.request_id)
 
     configure_logging(debug=args.debug)
 
@@ -240,6 +246,12 @@ def _parse_args() -> argparse.Namespace:
         help="Retry pending Google Sheets backlog updates that failed to sync.",
     )
 
+    audit_parser = subparsers.add_parser(
+        "run-audit",
+        help="Print the compact audit receipt for one request_id.",
+    )
+    audit_parser.add_argument("request_id", metavar="REQUEST_ID")
+
     return parser.parse_args()
 
 
@@ -372,6 +384,15 @@ def _run_doctor() -> int:
     for line in report.lines:
         print(line)
     return 0 if report.ok else 1
+
+
+def _run_run_audit(request_id: str) -> int:
+    summary = RunAuditStore().get(request_id)
+    if summary is None:
+        print(f"No audit summary found for request_id={request_id}.", file=sys.stderr)
+        return 1
+    print(json.dumps(summary.to_payload(), indent=2, ensure_ascii=False))
+    return 0
 
 
 def _run_bootstrap_project_pack(target_root: str, *, overwrite: bool) -> int:

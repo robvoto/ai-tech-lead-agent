@@ -41,6 +41,7 @@ from langgraph.types import Command
 
 from .agent_manifest import agent_manifest_reference
 from .app_settings import load_settings
+from .backlog_reference import BacklogReferenceError, resolve_backlog_reference
 from .backlog_refinement_capability import (
     BacklogRefinementProposal,
     append_approved_backlog_refinement,
@@ -51,7 +52,6 @@ from .backlog_refinement_capability import (
     render_backlog_refinement_draft_text,
 )
 from .backlog_refinement_store import BacklogRefinementStore
-from .backlog_reference import BacklogReferenceError, resolve_backlog_reference
 from .backlog_repository import BacklogValidationError
 from .backlog_runtime_store import BacklogRuntimeStore, enqueue_and_flush_update
 from .backlog_sheets_repository import (
@@ -67,6 +67,7 @@ from .progress_events import (
     emit_terminal_progress,
     progress_reporter_from_input,
 )
+from .run_audit_store import record_run_audit_summary
 from .runtime_lock import RuntimeLockBusyError, acquire_request_run_lock
 from .target_project_context import (
     BacklogColumnContext,
@@ -801,6 +802,18 @@ def _execute_workflow(
         state_snapshot=state_snapshot,
         thread_id=thread_id,
     )
+    try:
+        record_run_audit_summary(
+            request_id=request_id,
+            thread_id=thread_id,
+            state=final_state,
+            result=result,
+            settings=load_settings(),
+        )
+    except Exception:
+        # Audit is additive observability. Never change the workflow result or
+        # resume contract because the local receipt store is unavailable.
+        logger.exception("[AUDIT] Could not persist run summary for request_id=%s", request_id)
     final_target_project_context = TargetProjectContext.from_payload(
         final_state.get("target_project_context")
     )

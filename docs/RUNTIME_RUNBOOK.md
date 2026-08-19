@@ -63,7 +63,12 @@ uv run python -m ai_tech_lead knowledge-store backup /tmp/knowledge_store.sqlite
 uv run python -m ai_tech_lead knowledge-store restore /tmp/knowledge_store.sqlite3.bak
 uv run python -m ai_tech_lead knowledge-store compact
 uv run python -m ai_tech_lead backlog-sync-recover
+uv run python -m ai_tech_lead run-audit <request_id>
 ```
+
+`run-audit` prints the bounded local receipt for one coding run. It is useful for
+debugging and audit review; it does not print checkpoint state, raw prompts, or
+provider logs.
 
 `backlog-sync-recover` runs a bounded recovery pass over backlog Sheet updates that
 failed to sync (network/API errors during task completion). It also runs

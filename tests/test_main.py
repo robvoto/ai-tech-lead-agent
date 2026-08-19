@@ -10,6 +10,7 @@ from helpers import valid_settings_dict
 import ai_tech_lead.main as main_module
 from ai_tech_lead.app_settings import parse_settings
 from ai_tech_lead.config import PROJECT_ROOT
+from ai_tech_lead.run_audit_store import record_run_audit_summary
 
 
 def test_main_starts_admin_and_telegram_when_enabled(
@@ -177,6 +178,21 @@ def test_main_refreshes_graph_diagrams_in_debug_mode(monkeypatch) -> None:
 
     assert exported_settings == [settings]
     assert started_threads == ["admin-server", "telegram-operator"]
+
+
+def test_run_audit_command_prints_compact_receipt(capsys) -> None:
+    record_run_audit_summary(
+        request_id="cli-audit-test",
+        thread_id="thread-cli",
+        state={"request": "Inspect the receipt."},
+        result={"status": "success", "result_kind": "instruction_package"},
+        settings=parse_settings(valid_settings_dict()),
+    )
+
+    assert main_module._run_run_audit("cli-audit-test") == 0
+    output = json.loads(capsys.readouterr().out)
+    assert output["request_id"] == "cli-audit-test"
+    assert output["result"]["kind"] == "instruction_package"
 
 
 def test_main_setup_mode_bootstraps_workspace(monkeypatch, capsys) -> None:

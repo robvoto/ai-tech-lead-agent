@@ -36,6 +36,11 @@ def test_bootstrap_workspace_initializes_expected_paths(monkeypatch, tmp_path: P
         workspace_ops, "initialize_database", lambda: tmp_data / "ai_tech_lead.sqlite3"
     )
     monkeypatch.setattr(workspace_ops, "get_checkpointer", lambda: object())
+    monkeypatch.setattr(
+        workspace_ops,
+        "RunAuditStore",
+        lambda: SimpleNamespace(ensure_initialized=lambda: None),
+    )
 
     created_backlog_paths: list[Path] = []
 
