@@ -118,8 +118,14 @@ Supporting modules such as `src/ai_tech_lead/backlog_graph_runner.py` call the c
 - The current coding-agent backend is Codex CLI, but the architecture must stay
   backend-neutral. Future backends may include Claude Code, OpenAI tools, local
   agents, or other compatible execution backends.
-- Settings own configurable values, limits, paths, model names, and prices.
-  Human-readable prompt and rule text lives in `data/prompts.json`. Prompt
+- `config/model_registry.json` (`model_registry.py`) is the single authoritative source of
+  supported LLM models: endpoint/capability support, reasoning-effort controls, and
+  pricing. `execution_profiles.py` is the one resolver boundary between that registry and
+  workflow call sites — call sites request a named profile (e.g. `"standard"`) and never
+  inline a raw model ID or reasoning-effort string, so a future model swap changes only
+  these two files. See ATL-035.
+- Settings own configurable values, limits, and paths, plus the active model for the
+  `"standard"` profile. Human-readable prompt and rule text lives in `data/prompts.json`. Prompt
   keys are centralized in `src/ai_tech_lead/prompt_loader.py`, and graph nodes
   or instruction builders load the registry entries on demand when they need
   them. The local admin UI exposes the same registry so prompts can be
