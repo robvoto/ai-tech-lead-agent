@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from dataclasses import replace as dc_replace
 from enum import StrEnum
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any, Callable
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urlparse
@@ -27,8 +28,9 @@ from urllib.request import Request, urlopen
 from langchain_core.runnables import RunnableConfig
 from langgraph.types import Command
 
-from .app_settings import AppSettings, load_settings, save_settings
+from .app_settings import AppSettings, ProjectRegistryEntry, load_settings, save_settings
 from .backlog_loader import backlog_item_to_graph_state
+from .backlog_reference import BacklogReference, local_backlog_reference, resolve_backlog_reference
 from .backlog_refinement_capability import (
     append_approved_backlog_refinement,
     format_backlog_refinement_review,
@@ -47,6 +49,7 @@ from .backlog_runtime_store import (
 )
 from .backlog_sheets_repository import (
     BacklogSourceUnavailableError,
+    SheetsBacklogRepository,
     repository_from_settings,
 )
 from .backlog_status import BacklogStatus, backlog_status_choices, normalize_backlog_status
@@ -67,6 +70,62 @@ from .telegram_secrets import get_telegram_bot_token
 logger = logging.getLogger(LOGGER_NAME)
 ORCHESTRATOR_IDENTITY_PATH = PROJECT_ROOT / "docs" / "ORCHESTRATOR_IDENTITY.md"
 LOG_SEPARATOR = "----------------------------------------"
+
+def _normalized_project_text(value: str) -> str:
+    """Normalize configured project names/keys for bounded text matching."""
+
+    return " ".join(re.findall(r"[a-z0-9]+", value.lower()))
+
+
+def _project_aliases(entry: ProjectRegistryEntry) -> set[str]:
+    aliases = {
+        _normalized_project_text(entry.name),
+        _normalized_project_text(Path(entry.root).name),
+    }
+    return {alias for alias in aliases if alias}
+
+
+def _resolve_project_from_plain_text(
+    settings: AppSettings, text: str
+) -> tuple[ProjectRegistryEntry | None, str]:
+    """Resolve one configured target project without guessing or network search."""
+
+    normalized_request = f" {_normalized_project_text(text)} "
+    matches = [
+        entry
+        for entry in settings.project_registry
+        if any(f" {alias} " in normalized_request for alias in _project_aliases(entry))
+    ]
+    if len(matches) == 1:
+        return matches[0], "named"
+    if len(matches) > 1:
+        return None, "ambiguous"
+
+    default_entry = settings.project_registry_entry_for_root(settings.project_root)
+    if default_entry is not None:
+        return default_entry, "default"
+    return None, "missing"
+
+
+def _backlog_reference_for_project(
+    settings: AppSettings, project: ProjectRegistryEntry, item_id: str
+) -> BacklogReference | None:
+    """Resolve a project backlog only from configured authoritative settings."""
+
+    if str(Path(project.root).resolve()) == str(Path(settings.project_root).resolve()):
+        return local_backlog_reference(settings, item_id=item_id)
+
+    aliases = _project_aliases(project)
+    matching_keys = [
+        key
+        for key in settings.backlog_projects
+        if _normalized_project_text(key) in aliases
+    ]
+    if len(matching_keys) != 1:
+        return None
+    return resolve_backlog_reference(
+        {"project_key": matching_keys[0], "item_id": item_id}, settings
+    )
 
 
 @dataclass(frozen=True)
@@ -689,8 +748,10 @@ class TelegramOperator:
 
         self._send_message(chat_id, self._help_text())
 
-    def _run_backlog_task(self, chat_id: str, task_id: str) -> None:
-        repository = self._get_repository()
+    def _run_backlog_task(
+        self, chat_id: str, task_id: str, *, repository=None
+    ) -> None:
+        repository = repository or self._get_repository()
         try:
             source_record = repository.get_item_with_source(task_id)
         except (ValueError, BacklogValidationError, BacklogSourceUnavailableError) as error:
@@ -818,12 +879,58 @@ class TelegramOperator:
         if understanding.execution_requested and len(understanding.detected_references) == 1:
             backlog_item_id = understanding.detected_references[0]
             logger.info(
-                "Telegram action: routing plain-text execution request to backlog item %s "
+                "Telegram routing: resolving target project for plain-text execution request "
                 "in chat %s.",
-                backlog_item_id,
                 chat_id,
             )
-            self._run_backlog_task(chat_id, backlog_item_id)
+            project, project_resolution = _resolve_project_from_plain_text(self._settings, text)
+            if project is None:
+                message = (
+                    "I could not uniquely resolve the target project from configured project "
+                    "registry entries."
+                )
+                logger.warning(
+                    "Telegram routing: project resolution failed (%s) for backlog item %s "
+                    "in chat %s.",
+                    project_resolution,
+                    backlog_item_id,
+                    chat_id,
+                )
+                self._send_message(chat_id, message)
+                return
+            logger.info(
+                "Telegram routing: project resolved (%s): name=%s root=%s",
+                project_resolution,
+                project.name,
+                project.root,
+            )
+            logger.info(
+                "Telegram routing: resolving configured backlog for project %s.", project.name
+            )
+            reference = _backlog_reference_for_project(
+                self._settings, project, backlog_item_id
+            )
+            if reference is None:
+                logger.warning(
+                    "Telegram routing: no configured backlog resolved for project %s "
+                    "(root=%s).",
+                    project.name,
+                    project.root,
+                )
+                self._send_message(
+                    chat_id, f"No configured backlog was found for project '{project.name}'."
+                )
+                return
+            logger.info(
+                "Telegram routing: backlog resolved: project_key=%s spreadsheet=%s sheet=%s",
+                reference.project_key,
+                reference.spreadsheet_id,
+                reference.sheet_name,
+            )
+            repository = SheetsBacklogRepository(
+                reference, credentials_path=self._settings.backlog_google_credentials_path
+            )
+            self._run_backlog_task(chat_id, backlog_item_id, repository=repository)
             return
         if not self._settings.orchestrator_ai_enabled:
             self._send_message(

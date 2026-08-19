@@ -1335,13 +1335,13 @@ def test_plain_text_execution_with_single_backlog_reference_routes_without_chat_
     settings = parse_settings(raw_settings)
     client = _RecordingClient()
     operator = TelegramOperator("dummy", settings, client=client)
-    routed: list[tuple[str, str]] = []
+    routed: list[tuple[str, str, BacklogReference]] = []
 
-    monkeypatch.setattr(
-        operator,
-        "_run_backlog_task",
-        lambda chat_id, item_id: routed.append((chat_id, item_id)),
-    )
+    def capture_backlog_task(chat_id, item_id, *, repository=None) -> None:
+        assert repository is not None
+        routed.append((chat_id, item_id, repository.reference))
+
+    monkeypatch.setattr(operator, "_run_backlog_task", capture_backlog_task)
     monkeypatch.setattr(
         "ai_tech_lead.telegram_operator.run_telegram_agent_message",
         lambda **_kwargs: (_ for _ in ()).throw(AssertionError("chat LLM must not run")),
@@ -1353,7 +1353,10 @@ def test_plain_text_execution_with_single_backlog_reference_routes_without_chat_
         "demo-user",
     )
 
-    assert routed == [("chat-1", "ATL-999")]
+    assert routed[0][:2] == ("chat-1", "ATL-999")
+    assert routed[0][2].project_key == settings.backlog_project_key
+    assert routed[0][2].spreadsheet_id == settings.backlog_spreadsheet_id
+    assert routed[0][2].sheet_name == settings.backlog_sheet_name
 
 
 def test_plain_text_missing_backlog_reference_stops_without_starting_graph(
@@ -1361,6 +1364,9 @@ def test_plain_text_missing_backlog_reference_stops_without_starting_graph(
 ) -> None:
     raw_settings = valid_settings_dict()
     raw_settings["orchestrator_ai_enabled"] = True
+    raw_settings["backlog_spreadsheet_id"] = SPREADSHEET_ID
+    raw_settings["backlog_sheet_name"] = SHEET_NAME
+    raw_settings["backlog_google_credentials_path"] = CREDENTIALS_PATH
     settings = parse_settings(raw_settings)
     client = _RecordingClient()
     operator = TelegramOperator("dummy", settings, client=client)
@@ -1381,6 +1387,103 @@ def test_plain_text_missing_backlog_reference_stops_without_starting_graph(
 
     assert "ATL-999" in client.messages[-1][1]
     assert "was not found" in client.messages[-1][1]
+
+
+def test_plain_text_resolves_named_project_and_its_configured_backlog(
+    monkeypatch: pytest.MonkeyPatch, tmp_path, caplog
+) -> None:
+    default_root = tmp_path / "default-project"
+    target_root = tmp_path / "widget-service"
+    default_root.mkdir()
+    target_root.mkdir()
+    raw_settings = valid_settings_dict()
+    raw_settings["project_root"] = str(default_root)
+    raw_settings["project_registry"] = [
+        {
+            "root": str(default_root),
+            "name": "Default Project",
+            "platform": "filesystem",
+            "required_credentials_env": [],
+        },
+        {
+            "root": str(target_root),
+            "name": "Widget Service",
+            "platform": "filesystem",
+            "required_credentials_env": [],
+        },
+    ]
+    raw_settings["backlog_projects"] = {
+        "widget-service": {
+            "spreadsheet_id": "widget-sheet-id",
+            "sheet_name": "Widget Backlog",
+        }
+    }
+    settings = parse_settings(raw_settings)
+    client = _RecordingClient()
+    operator = TelegramOperator("dummy", settings, client=client)
+    routed: list[BacklogReference] = []
+
+    def capture_backlog_task(chat_id, item_id, *, repository=None) -> None:
+        assert chat_id == "chat-1"
+        assert item_id == "WID-999"
+        assert repository is not None
+        routed.append(repository.reference)
+
+    monkeypatch.setattr(operator, "_run_backlog_task", capture_backlog_task)
+    monkeypatch.setattr(
+        "ai_tech_lead.telegram_operator.run_telegram_agent_message",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("chat LLM must not run")),
+    )
+    caplog.set_level(logging.INFO)
+
+    operator._handle_plain_text("chat-1", "Code WID-999 for Widget Service", "demo-user")
+
+    assert len(routed) == 1
+    assert routed[0].project_key == "widget-service"
+    assert routed[0].spreadsheet_id == "widget-sheet-id"
+    assert routed[0].sheet_name == "Widget Backlog"
+    assert "resolving target project" in caplog.text
+    assert "project resolved (named): name=Widget Service" in caplog.text
+    assert "resolving configured backlog for project Widget Service" in caplog.text
+    assert "backlog resolved: project_key=widget-service" in caplog.text
+
+
+def test_plain_text_named_project_without_configured_backlog_stops(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    default_root = tmp_path / "default-project"
+    target_root = tmp_path / "widget-service"
+    default_root.mkdir()
+    target_root.mkdir()
+    raw_settings = valid_settings_dict()
+    raw_settings["project_root"] = str(default_root)
+    raw_settings["project_registry"] = [
+        {
+            "root": str(default_root),
+            "name": "Default Project",
+            "platform": "filesystem",
+            "required_credentials_env": [],
+        },
+        {
+            "root": str(target_root),
+            "name": "Widget Service",
+            "platform": "filesystem",
+            "required_credentials_env": [],
+        },
+    ]
+    raw_settings["backlog_projects"] = {}
+    settings = parse_settings(raw_settings)
+    client = _RecordingClient()
+    operator = TelegramOperator("dummy", settings, client=client)
+    monkeypatch.setattr(
+        operator,
+        "_run_backlog_task",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not run")),
+    )
+
+    operator._handle_plain_text("chat-1", "Code WID-999 for Widget Service", "demo-user")
+
+    assert client.messages[-1][1] == "No configured backlog was found for project 'Widget Service'."
 
 
 def test_plain_text_returns_fallback_when_ai_disabled() -> None:
