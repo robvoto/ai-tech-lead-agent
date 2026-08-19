@@ -12,6 +12,7 @@ Use before modifying existing code.
 - Inspect the target file before editing.
 - Check `docs/ARCHITECTURE.md` before changing adapters, graph flow, settings, subprocess execution, or UI boundaries.
 - Touch only files required for the task.
+- When the same mechanical edit applies across many files (e.g. rewiring N call sites to a new function signature), read the target files in parallel and batch the edits per file instead of looping through them one at a time serially.
 - Keep changes small and scoped.
 - Prefer small, single-purpose modules over monoliths.
 - Prefer clear classes/functions with one responsibility over large files with mixed concerns.
