@@ -1139,6 +1139,13 @@ def _map_state_to_output(
             summary = "Instruction generated. Ready for coding agent execution."
             next_action = "Submit instruction to coding backend."
             result_kind = RESULT_KIND_INSTRUCTION_PACKAGE
+    elif restart_required:
+        # Restart is an operational follow-up, not a task result. Preserve the
+        # explicit terminal outcome above when a coding run already reported it.
+        status = STATUS_FAILED
+        summary = "Agent workflow requires a restart."
+        next_action = "Retry the task from scratch."
+        result_kind = RESULT_KIND_TERMINAL_FAILURE
     else:
         status = STATUS_FAILED
         summary = "Workflow completed without producing an instruction."
