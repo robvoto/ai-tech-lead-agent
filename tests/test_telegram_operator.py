@@ -609,6 +609,10 @@ def test_run_graph_task_uses_requested_execution_mode(
 
     assert captured["execute_coding_agent_override"] is True
     assert callable(captured["coding_agent_progress_callback"])
+    graph_state = captured["graph_state"]
+    request_id = graph_state["request_id"]
+    assert request_id
+    assert captured["config"]["configurable"]["thread_id"] == f"telegram-{request_id}"
     assert "----------------------------------------" in caplog.text
     assert "Telegram run: preparing graph task for chat chat-1." in caplog.text
     assert "Telegram run: task label: JH-001 - Local placeholder" in caplog.text
@@ -1005,7 +1009,7 @@ def test_finalize_completed_task_skips_backlog_close_when_verification_failed() 
     client = _RecordingClient()
     operator = TelegramOperator("token", settings, client=client)
     close_calls: list[str] = []
-    operator._close_backlog_item = lambda item_id, values: (  # type: ignore[method-assign]
+    operator._close_backlog_item = lambda item_id, values, *, request_id: (  # type: ignore[method-assign]
         close_calls.append(item_id) or (True, None)
     )
 
@@ -1020,6 +1024,7 @@ def test_finalize_completed_task_skips_backlog_close_when_verification_failed() 
             "verification_reason": "Button is misaligned.",
         },
         "JH-001",
+        request_id="telegram-finalize-failed",
     )
 
     assert close_calls == []
@@ -1033,7 +1038,7 @@ def test_finalize_completed_task_closes_backlog_when_verification_complete() -> 
     client = _RecordingClient()
     operator = TelegramOperator("token", settings, client=client)
     close_calls: list[str] = []
-    operator._close_backlog_item = lambda item_id, values: (  # type: ignore[method-assign]
+    operator._close_backlog_item = lambda item_id, values, *, request_id: (  # type: ignore[method-assign]
         close_calls.append(item_id) or (True, None)
     )
 
@@ -1048,6 +1053,7 @@ def test_finalize_completed_task_closes_backlog_when_verification_complete() -> 
             "verification_reason": "Verified.",
         },
         "JH-001",
+        request_id="telegram-finalize-complete",
     )
 
     assert close_calls == ["JH-001"]
@@ -1074,6 +1080,8 @@ def test_completion_message_flags_verification_failure_even_when_coding_agent_su
 def test_request_changes_command_resumes_with_feedback_and_stays_active() -> None:
     settings = parse_settings(valid_settings_dict())
     client = _RecordingClient()
+    request_id = "request-changes-1"
+    thread_config = {"configurable": {"thread_id": f"telegram-{request_id}"}}
     app = _PausedTaskApp(
         {
             "request": "Backlog item: JH-001",
@@ -1093,8 +1101,9 @@ def test_request_changes_command_resumes_with_feedback_and_stays_active() -> Non
         task_label="JH-001 - Local placeholder",
         request_summary="Local placeholder",
         app=app,
-        thread_config={"configurable": {"thread_id": "telegram-chat-1-request-changes"}},
+        thread_config=thread_config,
         stage=TelegramTaskStage.PRE_RUN_APPROVAL,
+        request_id=request_id,
     )
 
     operator._handle_command(
@@ -1114,6 +1123,8 @@ def test_request_changes_command_resumes_with_feedback_and_stays_active() -> Non
     # Task stays active — the approval interaction is not over.
     assert "chat-1" in operator._active_tasks
     assert operator._active_tasks["chat-1"].stage == TelegramTaskStage.PRE_RUN_APPROVAL
+    assert operator._active_tasks["chat-1"].request_id == request_id
+    assert operator._active_tasks["chat-1"].thread_config == thread_config
 
 
 def test_ask_command_resumes_with_question_and_shows_answer() -> None:
@@ -1417,6 +1428,132 @@ def test_propose_command_creates_and_approves_backlog_item(
     assert "Research Required: yes" in text
 
 
+def test_code_command_saves_backlog_item_before_starting_work(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    backlog_path = tmp_path / "BACKLOG.md"
+    backlog_path.write_text(
+        "# Backlog\n\n## ATL-001 - Existing item\n\nGoal:\nExisting\n",
+        encoding="utf-8",
+    )
+    settings = parse_settings({**valid_settings_dict(), "backlog_path": str(backlog_path)})
+    _patch_markdown_backlog(monkeypatch, backlog_path)
+    client = _RecordingClient()
+    operator = TelegramOperator("token", settings, client=client)
+    proposal = SimpleNamespace(
+        blocked=False,
+        draft=SimpleNamespace(
+            item_id="ATL-002",
+            title="Improve Telegram tracking",
+            priority="Medium",
+            approval_required=True,
+            research_required=False,
+        ),
+        matches=(),
+        skill_path=".skills/backlog-item-authoring/SKILL.md",
+    )
+    prepared: list[str] = []
+    added: list[str] = []
+    graph_calls: list[dict[str, object]] = []
+
+    def fake_prepare_backlog_refinement_proposal(*, text, repository, settings, item_id_prefix):
+        prepared.append(text)
+        assert item_id_prefix == "ATL"
+        return proposal
+
+    def fake_append_approved_backlog_refinement(pending_proposal, repository):
+        added.append(pending_proposal.draft.item_id)
+        return SimpleNamespace(item_id="ATL-002", title="Improve Telegram tracking")
+
+    def fake_run_graph_task(**kwargs):
+        graph_calls.append(kwargs)
+
+    monkeypatch.setattr(
+        "ai_tech_lead.telegram_operator.prepare_backlog_refinement_proposal",
+        fake_prepare_backlog_refinement_proposal,
+    )
+    monkeypatch.setattr(
+        "ai_tech_lead.telegram_operator.append_approved_backlog_refinement",
+        fake_append_approved_backlog_refinement,
+    )
+    monkeypatch.setattr(operator, "_run_graph_task", fake_run_graph_task)
+
+    operator._handle_command(
+        "chat-1",
+        TelegramCommand(name=TelegramCommandName.CODE, argument="Improve Telegram tracking"),
+        "demo-user",
+    )
+
+    assert prepared == ["Improve Telegram tracking"]
+    assert graph_calls == []
+    assert operator._pending_backlog_drafts["chat-1"].code_request == (
+        "Improve Telegram tracking"
+    )
+    assert "After approval, coding starts" in client.messages[-1][1]
+
+    operator._handle_command(
+        "chat-1",
+        TelegramCommand(name=TelegramCommandName.APPROVE),
+        "demo-user",
+    )
+
+    assert added == ["ATL-002"]
+    assert graph_calls[0]["backlog_item_id"] == "ATL-002"
+    assert "Telegram explicit coding request" in graph_calls[0]["graph_state"]["request"]
+
+
+def test_code_command_rejection_does_not_start_work(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    backlog_path = tmp_path / "BACKLOG.md"
+    backlog_path.write_text(
+        "# Backlog\n\n## ATL-001 - Existing item\n\nGoal:\nExisting\n",
+        encoding="utf-8",
+    )
+    settings = parse_settings({**valid_settings_dict(), "backlog_path": str(backlog_path)})
+    _patch_markdown_backlog(monkeypatch, backlog_path)
+    client = _RecordingClient()
+    operator = TelegramOperator("token", settings, client=client)
+    proposal = SimpleNamespace(
+        blocked=False,
+        draft=SimpleNamespace(
+            item_id="ATL-002",
+            title="Improve Telegram tracking",
+            priority="Medium",
+            approval_required=True,
+            research_required=False,
+        ),
+        matches=(),
+        skill_path=".skills/backlog-item-authoring/SKILL.md",
+    )
+    append_calls: list[object] = []
+    graph_calls: list[object] = []
+    monkeypatch.setattr(
+        "ai_tech_lead.telegram_operator.prepare_backlog_refinement_proposal",
+        lambda **_kwargs: proposal,
+    )
+    monkeypatch.setattr(
+        "ai_tech_lead.telegram_operator.append_approved_backlog_refinement",
+        lambda *args: append_calls.append(args),
+    )
+    monkeypatch.setattr(operator, "_run_graph_task", lambda **kwargs: graph_calls.append(kwargs))
+
+    operator._handle_command(
+        "chat-1",
+        TelegramCommand(name=TelegramCommandName.CODE, argument="Improve Telegram tracking"),
+        "demo-user",
+    )
+    operator._handle_command(
+        "chat-1",
+        TelegramCommand(name=TelegramCommandName.REJECT),
+        "demo-user",
+    )
+
+    assert append_calls == []
+    assert graph_calls == []
+    assert "Backlog refinement rejected: ATL-002" in client.messages[-1][1]
+
+
 def test_parse_commands_alias_to_help() -> None:
     command = parse_telegram_command("/commands")
 
@@ -1600,6 +1737,7 @@ def test_run_backlog_task_uses_explicit_item_and_starts_graph(
     operator._run_backlog_task("chat-1", "ATL-001")
 
     assert captured["kwargs"]["backlog_item_id"] == "ATL-001"
+    assert captured["kwargs"]["request_id"]
     assert captured["kwargs"]["task_label"] == "ATL-001 - First item"
     assert captured["kwargs"]["graph_state"]["request"].startswith("Backlog item: ATL-001")
     assert client.messages[-1][1].startswith("ATL-001 — First item")

@@ -204,7 +204,9 @@ Telegram is the human-facing bot for AI Tech Lead and the normal way to talk
 to the coding agent from a phone. Normal text goes through a Telegram intent
 router first; the router may classify the message, but it must not execute the
 configured coding agent or mutate the backlog by itself. Explicit `/run ATL-###`
-selects a backlog task. Explicit `/code` starts the bounded coding workflow.
+selects a backlog task. Explicit `/code` first creates a structured backlog draft;
+only `/approve` saves that item and starts the bounded coding workflow. `/run`
+continues to execute an existing backlog item directly.
 
 Current Telegram constraints:
 

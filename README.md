@@ -43,7 +43,8 @@ AI Tech Lead also has a human-facing Telegram bot for direct use by you. When Te
 
 - use it for direct coding requests from Telegram
 - use `/run ATL-###` to trigger a backlog item
-- use `/code` for an explicit coding workflow
+- use `/code` for an explicit coding workflow; it first creates a backlog draft and
+  waits for `/approve` before saving the item and starting work
 
 The Telegram bot is the interactive human entry point; `run-agent-task` is the non-interactive subprocess entry point.
 

@@ -750,6 +750,7 @@ class _FakeResumableGraph:
     def __init__(self, pending_value: dict[str, Any]) -> None:
         self._pending_value = pending_value
         self.invoke_calls: list[Any] = []
+        self.configs: list[dict[str, Any]] = []
         self.resumed = False
 
     def get_state(self, _config: dict[str, Any]) -> _FakeSnapshot:
@@ -759,6 +760,7 @@ class _FakeResumableGraph:
 
     def invoke(self, value: Any, *, config: dict[str, Any]) -> dict[str, Any]:
         self.invoke_calls.append(value)
+        self.configs.append(config)
         from langgraph.types import Command
 
         if isinstance(value, Command):
@@ -789,6 +791,37 @@ class _FakeResumableGraph:
             "research_source_titles": [],
             "coding_agent_performed_by": "none",
         }
+
+
+def test_execute_workflow_reuses_subprocess_thread_for_initial_and_resume(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request_id = "req-stable-thread"
+    graph = _FakeResumableGraph(
+        {"kind": "approval", "reason": "risky", "formulated_task": "Do the thing"}
+    )
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.build_graph", lambda **_kwargs: graph
+    )
+
+    _execute_workflow(
+        request_id=request_id,
+        task="Do the thing",
+        execute_coding_agent=False,
+        target_project_context=None,
+    )
+    _execute_workflow(
+        request_id=request_id,
+        task="",
+        execute_coding_agent=False,
+        target_project_context=None,
+        decision=_parse_decision({"option": "approve"}),
+    )
+
+    assert [config["configurable"]["thread_id"] for config in graph.configs] == [
+        f"subprocess-{request_id}",
+        f"subprocess-{request_id}",
+    ]
 
 
 def test_execute_workflow_resumes_with_command_when_decision_given(

@@ -17,6 +17,7 @@ import subprocess
 import threading
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 from helpers import valid_settings_dict
 from test_coding_workflow_graph import _research_result
@@ -200,6 +201,40 @@ def _wire_common_workflow_mocks(
     monkeypatch.setattr(
         "ai_tech_lead.coding_workflow_graph.run_git_preflight", run_git_preflight
     )
+    # ATL-015 requires /code to be approved as backlog work before the graph
+    # starts. Keep the simulation focused on the real graph and git preflight;
+    # the Telegram backlog gate has dedicated operator tests.
+    proposal = SimpleNamespace(
+        blocked=False,
+        draft=SimpleNamespace(
+            item_id="ATL-099",
+            title="Telegram simulation coding task",
+            priority="Medium",
+            approval_required=True,
+            research_required=False,
+        ),
+        matches=(),
+        skill_path=".skills/backlog-item-authoring/SKILL.md",
+    )
+    monkeypatch.setattr(
+        "ai_tech_lead.telegram_operator.prepare_backlog_refinement_proposal",
+        lambda **_kwargs: proposal,
+    )
+    monkeypatch.setattr(
+        "ai_tech_lead.telegram_operator.infer_backlog_item_prefix",
+        lambda _repository: "ATL",
+    )
+    monkeypatch.setattr(
+        "ai_tech_lead.telegram_operator.append_approved_backlog_refinement",
+        lambda *_args: SimpleNamespace(
+            item_id="ATL-099", title="Telegram simulation coding task"
+        ),
+    )
+    monkeypatch.setattr(
+        TelegramOperator,
+        "_close_backlog_item",
+        lambda self, backlog_item_id, state_values, *, request_id: (True, None),
+    )
 
 
 def test_telegram_workflow_simulation_happy_path_approve_and_complete(
@@ -309,6 +344,13 @@ def test_telegram_workflow_simulation_happy_path_approve_and_complete(
             argument="Add input validation to the login/service handler.",
         ),
         "rob",
+    )
+
+    # ATL-015 backlog approval happens before the graph's own pre-run approval.
+    assert "chat-1" not in operator._active_tasks
+    assert "chat-1" in operator._pending_backlog_drafts
+    operator._handle_command(
+        "chat-1", TelegramCommand(name=TelegramCommandName.APPROVE), "rob"
     )
 
     # Approval is genuinely pending — nothing has run the coding agent yet.
@@ -461,6 +503,11 @@ def test_telegram_workflow_simulation_preflight_blocks_relevant_dirty_file(
             argument="Add input validation to the login/service handler.",
         ),
         "rob",
+    )
+    assert "chat-1" not in operator._active_tasks
+    assert "chat-1" in operator._pending_backlog_drafts
+    operator._handle_command(
+        "chat-1", TelegramCommand(name=TelegramCommandName.APPROVE), "rob"
     )
     assert operator._active_tasks["chat-1"].stage == TelegramTaskStage.PRE_RUN_APPROVAL
 

@@ -92,7 +92,10 @@ Before research, the graph now separates the original request from the bounded t
 - If a reference cannot be resolved, the workflow pauses at `1b_context_clarification_interrupt` and asks one precise clarification question, instead of ending the run. The human's answer resolves only the single reference that was asked about (never parsed or guessed at — recorded verbatim as trusted human context, the same trust level already given to caller-supplied `TargetProjectContext`), and the workflow loops back to `1b Find Project Context` to retry. This is bounded to one clarification round (`CONTEXT_CLARIFICATION_MAX_RETRIES`); if the reference is still unresolved after that, the workflow ends clearly at `7_end_node` instead of asking again — see "Human interrupt nodes" below.
 - `bounded_request` contains the original request plus verified project/backlog context (and any clarification answer). Research, risk review, tech-lead analysis, completion verification, and operator Q&A use this bounded form rather than the raw ambiguous request.
 
-Backlog context is optional. Plain reviews, explanations, bug investigations, and direct coding requests continue without requiring a backlog reference.
+Backlog context is optional for the graph itself. Telegram `/code` requests first
+produce a structured backlog draft and wait for explicit `/approve`; the item is
+saved before the coding workflow starts. Explicit `/run ATL-###` requests continue
+to resolve and execute the selected existing backlog item directly.
 
 ## Code look node
 
