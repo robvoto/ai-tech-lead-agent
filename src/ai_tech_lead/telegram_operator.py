@@ -1343,31 +1343,44 @@ class TelegramOperator:
             self._send_message(chat_id, f"Failed to update status: {error}")
 
     def _handle_profile_status(self, chat_id: str) -> None:
+        """Show what each purpose actually resolves to.
+
+        Grouped by (model, effort) rather than one line per tier: since
+        ATL-090, individual purposes within a tier can diverge from that
+        tier's default (see execution_profiles.PURPOSE_PROFILE_OVERRIDE), so
+        a tier is no longer guaranteed to be one profile.
+        """
+
         store = ProfileOverrideStore()
         active_overrides = {override.tier: override for override in store.list_overrides()}
-        purposes_by_tier: dict[str, list[str]] = {}
-        for purpose, tier in PURPOSE_TIER.items():
-            purposes_by_tier.setdefault(tier, []).append(purpose)
 
-        lines = ["Orchestrator execution profiles:"]
-        for tier in ("simple", "normal", "strong"):
+        groups: dict[tuple[str, str], list[str]] = {}
+        errors: list[str] = []
+        for purpose in sorted(PURPOSE_TIER):
             try:
-                profile = resolve_profile_for_purpose(
-                    next(iter(purposes_by_tier.get(tier, [])), tier),
-                    settings=self._settings,
-                )
-            except Exception as error:  # noqa: BLE001 — show status even if one tier fails
-                lines.append(f"- {tier}: unavailable ({error})")
+                profile = resolve_profile_for_purpose(purpose, settings=self._settings)
+            except Exception as error:  # noqa: BLE001 — show status even if one purpose fails
+                errors.append(f"- {purpose}: unavailable ({error})")
                 continue
             effort = profile.reasoning_effort or "none"
-            line = f"- {tier}: {profile.model} @ {effort} (ceiling {TIER_CEILING_EFFORT[tier]})"
-            override = active_overrides.get(tier)
-            if override is not None:
-                line += (
-                    f" — OVERRIDDEN to '{override.override_tier}' for "
+            groups.setdefault((profile.model, effort), []).append(purpose)
+
+        lines = ["Orchestrator execution profiles:"]
+        for (model, effort), purposes in sorted(groups.items()):
+            lines.append(f"- {model} @ {effort}: {', '.join(purposes)}")
+        lines.extend(errors)
+        lines.append("")
+        lines.append(
+            "Tier ceilings: " + ", ".join(f"{t}<={c}" for t, c in TIER_CEILING_EFFORT.items())
+        )
+        if active_overrides:
+            lines.append("")
+            lines.append("Active tier overrides:")
+            for tier, override in sorted(active_overrides.items()):
+                lines.append(
+                    f"- {tier} -> {override.override_tier} for "
                     f"{override.remaining_calls} more call(s) by {override.created_by}"
                 )
-            lines.append(line)
         lines.append("")
         lines.append("Override: /profile_override <tier> <override_tier> <calls>")
         lines.append("Clear: /profile_clear <tier>")

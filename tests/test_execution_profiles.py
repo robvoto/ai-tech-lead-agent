@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 from helpers import valid_settings_dict
 
+import ai_tech_lead.execution_profiles as execution_profiles
 from ai_tech_lead.app_settings import parse_settings
 from ai_tech_lead.execution_profiles import (
     NORMAL_PROFILE,
@@ -174,3 +175,101 @@ def test_next_escalation_effort_none_for_a_non_reasoning_model() -> None:
 
 def test_validate_registry_ceilings_passes_for_the_shipped_profiles() -> None:
     validate_registry_ceilings()
+
+
+def test_purpose_profile_override_is_used_when_present(monkeypatch) -> None:
+    override_profile = ExecutionProfile(
+        name="operator_question_luna_none",
+        tier=NORMAL_TIER,
+        model="gpt-5.6-luna",
+        reasoning_effort="none",
+        max_output_tokens=300,
+    )
+    monkeypatch.setitem(
+        execution_profiles.PURPOSE_PROFILE_OVERRIDE, "operator_question", override_profile
+    )
+
+    profile = resolve_profile_for_purpose("operator_question")
+
+    assert profile.model == "gpt-5.6-luna"
+    assert profile.reasoning_effort == "none"
+
+
+def test_purpose_profile_override_min_output_tokens_raises_the_floor(monkeypatch) -> None:
+    override_profile = ExecutionProfile(
+        name="operator_question_luna_none",
+        tier=NORMAL_TIER,
+        model="gpt-5.6-luna",
+        reasoning_effort="none",
+        max_output_tokens=300,
+    )
+    monkeypatch.setitem(
+        execution_profiles.PURPOSE_PROFILE_OVERRIDE, "operator_question", override_profile
+    )
+
+    profile = resolve_profile_for_purpose("operator_question", min_output_tokens=900)
+
+    assert profile.max_output_tokens == 900
+
+
+def test_purpose_profile_override_still_enforces_its_tier_ceiling(monkeypatch) -> None:
+    breaching_profile = ExecutionProfile(
+        name="operator_question_bad",
+        tier=NORMAL_TIER,
+        model="gpt-5.6-luna",
+        reasoning_effort="high",
+        max_output_tokens=2000,
+    )
+    monkeypatch.setitem(
+        execution_profiles.PURPOSE_PROFILE_OVERRIDE, "operator_question", breaching_profile
+    )
+
+    with pytest.raises(ExecutionProfileError):
+        resolve_profile_for_purpose("operator_question")
+
+
+def test_explicit_operator_override_tier_wins_over_purpose_profile_override(monkeypatch) -> None:
+    override_profile = ExecutionProfile(
+        name="operator_question_luna_none",
+        tier=NORMAL_TIER,
+        model="gpt-5.6-luna",
+        reasoning_effort="none",
+        max_output_tokens=300,
+    )
+    monkeypatch.setitem(
+        execution_profiles.PURPOSE_PROFILE_OVERRIDE, "operator_question", override_profile
+    )
+
+    profile = resolve_profile_for_purpose("operator_question", override_tier=STRONG_TIER)
+
+    assert profile.tier == STRONG_TIER
+    assert profile.reasoning_effort == "high"
+
+
+def test_validate_registry_ceilings_rejects_a_breaching_purpose_override(monkeypatch) -> None:
+    breaching_profile = ExecutionProfile(
+        name="operator_question_bad",
+        tier=NORMAL_TIER,
+        model="gpt-5.6-luna",
+        reasoning_effort="high",
+        max_output_tokens=2000,
+    )
+    monkeypatch.setitem(
+        execution_profiles.PURPOSE_PROFILE_OVERRIDE, "operator_question", breaching_profile
+    )
+
+    with pytest.raises(ExecutionProfileError):
+        validate_registry_ceilings()
+
+
+def test_validate_registry_ceilings_rejects_an_override_for_an_unknown_purpose(monkeypatch) -> None:
+    stray_profile = ExecutionProfile(
+        name="stray", tier=NORMAL_TIER, model="gpt-4.1-mini", reasoning_effort=None,
+        max_output_tokens=300,
+    )
+    monkeypatch.setitem(
+        execution_profiles.PURPOSE_PROFILE_OVERRIDE, "not-a-real-purpose", stray_profile
+    )
+
+    with pytest.raises(ExecutionProfileError):
+        validate_registry_ceilings()

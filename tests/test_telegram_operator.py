@@ -1782,7 +1782,10 @@ def test_set_status_command_updates_backlog_item(tmp_path, monkeypatch) -> None:
     assert "Status: In Progress" in backlog_path.read_text(encoding="utf-8")
 
 
-def test_profile_command_shows_active_model_and_effort_per_tier(monkeypatch) -> None:
+def test_profile_command_groups_purposes_by_resolved_model_and_effort(monkeypatch) -> None:
+    # Grouped by (model, effort) rather than one line per tier: since
+    # ATL-090, individual "normal"-tier purposes can diverge from that
+    # tier's settings-driven default (see PURPOSE_PROFILE_OVERRIDE).
     settings = parse_settings(valid_settings_dict())
     client = _RecordingClient()
     operator = TelegramOperator("token", settings, client=client)
@@ -1790,9 +1793,15 @@ def test_profile_command_shows_active_model_and_effort_per_tier(monkeypatch) -> 
     operator._handle_command("chat-1", parse_telegram_command("/profile"), "demo-user")
 
     text = client.messages[-1][1]
-    assert "- simple: gpt-5.6-luna @ none (ceiling low)" in text
-    assert "- normal: gpt-4.1-mini @ none (ceiling medium)" in text
-    assert "- strong: gpt-5.6-luna @ high (ceiling high)" in text
+    assert (
+        "- gpt-4.1-mini @ none: backlog_draft_builder, completion_verification, risk_review"
+        in text
+    )
+    assert "- gpt-5.6-luna @ high: plan_review, tech_lead_analysis" in text
+    assert "- gpt-5.6-luna @ none: " in text
+    assert "telegram_intent_routing" in text
+    assert "operator_question" in text
+    assert "Tier ceilings: simple<=low, normal<=medium, strong<=high" in text
 
 
 def test_profile_override_and_clear_round_trip(tmp_path, monkeypatch) -> None:
@@ -1815,7 +1824,8 @@ def test_profile_override_and_clear_round_trip(tmp_path, monkeypatch) -> None:
     assert "2 call(s)" in client.messages[-1][1]
 
     operator._handle_command("chat-1", parse_telegram_command("/profile"), "demo-user")
-    assert "OVERRIDDEN to 'strong' for 2 more call(s) by demo-user" in client.messages[-1][1]
+    assert "Active tier overrides:" in client.messages[-1][1]
+    assert "- simple -> strong for 2 more call(s) by demo-user" in client.messages[-1][1]
 
     operator._handle_command(
         "chat-1", parse_telegram_command("/profile_clear simple"), "demo-user"

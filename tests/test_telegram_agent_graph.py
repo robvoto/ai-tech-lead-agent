@@ -397,6 +397,11 @@ def test_count_and_list_backlog_tools_return_controlled_source_errors(monkeypatc
 
 
 def test_build_telegram_agent_graph_passes_resolved_profile_to_chat_openai(monkeypatch) -> None:
+    # telegram_chat is pinned to gpt-5.6-luna @ "none" via
+    # execution_profiles.PURPOSE_PROFILE_OVERRIDE (ATL-090) regardless of
+    # settings.orchestrator_ai_model — "none" is not just the benchmarked
+    # cost/accuracy choice, it is the only reasoning effort that works with
+    # this model when tools are bound over the Chat Completions endpoint.
     class _FakeLLM:
         def bind_tools(self, tools):
             return self
@@ -418,9 +423,9 @@ def test_build_telegram_agent_graph_passes_resolved_profile_to_chat_openai(monke
 
     telegram_agent_graph.build_telegram_agent_graph(settings=settings, checkpointer=MemorySaver())
 
-    assert captured["model"] == "gpt-4.1-mini"
-    assert captured["reasoning_effort"] is None
-    assert captured["max_completion_tokens"] == settings.orchestrator_ai_max_output_tokens
+    assert captured["model"] == "gpt-5.6-luna"
+    assert captured["reasoning_effort"] == "none"
+    assert captured["max_completion_tokens"] == 300
 
 
 def test_telegram_agent_graph_survives_unexpected_tool_error(monkeypatch, caplog) -> None:
