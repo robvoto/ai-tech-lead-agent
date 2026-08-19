@@ -131,7 +131,11 @@ Supporting modules such as `src/ai_tech_lead/backlog_graph_runner.py` call the c
   tier to a different model is a one-line change there, not workflow-code surgery (ATL-036).
   `profile_override_store.py` layers a SQLite-backed, bounded, expiring per-tier override on
   top of the resolver (`/profile`, `/profile_override`, `/profile_clear` in Telegram) — the
-  saved default is never rewritten by an override. `llm_json.py`'s JSON-retry path can escalate
+  saved default is never rewritten by an override. `execution_profiles.PURPOSE_PROFILE_OVERRIDE`
+  is the analogous per-*purpose* mechanism (ATL-090): individual purposes inside a tier can
+  diverge from that tier's default model when their own live benchmark supports it — never a
+  tier-wide swap on partial evidence — so `/profile` groups its status output by resolved
+  (model, effort) rather than assuming one profile per tier. `llm_json.py`'s JSON-retry path can escalate
   reasoning effort one step within a tier's own ceiling on an invalid response (never crossing
   into another tier); `main.py` validates every static profile against its tier's ceiling at
   startup and fails closed rather than starting with an invalid one. `run_budget.py` provides a

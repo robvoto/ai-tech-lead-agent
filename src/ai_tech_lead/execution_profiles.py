@@ -153,6 +153,89 @@ _STATIC_PROFILES: dict[str, ExecutionProfile] = {
 }
 
 
+# Purposes whose own live-benchmark evidence supports diverging from their
+# tier's *default* profile (ATL-090). An absent entry means "no evidence
+# yet, stays on the tier default" — adding one here is the one-line,
+# per-purpose change the ticket asks for, never a tier-wide swap. Each entry
+# below is backed by its own real-API, hand-labeled benchmark (3 cases per
+# purpose, 2 for research_discovery/telegram_chat given real tool-call and
+# web-search cost) run on 2026-08-19 — see the ATL-090 backlog row for the
+# raw per-case data. Sample-size caveat applies uniformly: 2-3 cases per
+# purpose is thin for full statistical confidence, same disclosure ATL-036
+# made for the simple tier.
+#
+# completion_verification, backlog_draft_builder: NOT migrated — evidence
+# does not clearly favor Luna. completion_verification saw Luna score 2/3
+# (medium: 2/3, one of them not even valid JSON — a pipeline failure, not a
+# lower-quality answer) against mini's clean 3/3; this purpose is the final
+# gate before marking coding work done, so a mixed reliability signal on a
+# 3-case sample is reason to stay put, not migrate on a favorable cherry-pick
+# of one effort. backlog_draft_builder tied mini on correctness at Luna@low
+# (3/3) but cost 14% MORE and ran 53% SLOWER — its large 17-field JSON output
+# means Luna's lower per-token price is outweighed by materially higher
+# token usage on this purpose specifically; no effort level showed both a
+# cost and latency win. Both purposes stay on gpt-4.1-mini pending further
+# evidence, deliberately left off this dict rather than silently unresolved.
+PURPOSE_PROFILE_OVERRIDE: dict[str, ExecutionProfile] = {
+    # 3/3 correct at every effort (mini and Luna alike); Luna@none was both
+    # cheapest ($0.000352 vs mini's $0.000598, ~41% less) and fastest (1621ms
+    # vs 1852ms) — no evidence any stronger effort helps this single-fact
+    # yes/no gate, so "none" per the same "don't assume medium" instruction
+    # ATL-036 already established.
+    "research_knowledge_gap_check": ExecutionProfile(
+        name="research_knowledge_gap_check_luna",
+        tier=NORMAL_TIER,
+        model="gpt-5.6-luna",
+        reasoning_effort="none",
+        max_output_tokens=250,
+    ),
+    # 3/3 correct at none/low/medium; Luna@none was cheapest (~29% less than
+    # mini) with tied accuracy on this small sample — no evidence favors a
+    # stronger effort for grounding a short factual answer, so "none".
+    "operator_question": ExecutionProfile(
+        name="operator_question_luna",
+        tier=NORMAL_TIER,
+        model="gpt-5.6-luna",
+        reasoning_effort="none",
+        max_output_tokens=300,
+    ),
+    # 2/2 correct at none/low; medium FAILED both cases (empty/truncated
+    # output — its reasoning tokens exhausted the output budget before
+    # producing an answer, exactly the failure mode ATL-035's output-budget
+    # floor exists to catch). none was ~48% cheaper than mini and, on the
+    # deliberately non-existent "Acme Corp" case, returned zero misleading
+    # URLs where mini returned two loosely-related ones — a cleaner result,
+    # not just a cheaper one.
+    "research_discovery": ExecutionProfile(
+        name="research_discovery_luna",
+        tier=NORMAL_TIER,
+        model="gpt-5.6-luna",
+        reasoning_effort="none",
+        max_output_tokens=400,
+    ),
+    # 2/2 correct, correctly selected the same tools mini did. "none" is not
+    # just the cost-optimal choice here — reasoning_effort "low"/"medium"
+    # hard-failed both cases with a 400 API error ("Function tools with
+    # reasoning_effort are not supported for gpt-5.6-luna in
+    # /v1/chat/completions"): LangChain's ChatOpenAI defaults to the Chat
+    # Completions endpoint, which does not support combining tool binding
+    # with any reasoning_effort above "none" for this model — only the
+    # Responses API does (telegram_agent_graph.py does not set
+    # use_responses_api=True). Pinning this purpose here also protects it:
+    # without this override, pointing settings.orchestrator_ai_model at Luna
+    # would make the "normal" tier auto-select Luna's own "medium" default
+    # and hard-crash graph construction. Fixing that properly (switching to
+    # the Responses API) is a separate, scoped follow-up, not folded in here.
+    "telegram_chat": ExecutionProfile(
+        name="telegram_chat_luna",
+        tier=NORMAL_TIER,
+        model="gpt-5.6-luna",
+        reasoning_effort="none",
+        max_output_tokens=300,
+    ),
+}
+
+
 def resolve_profile_for_purpose(
     purpose: str,
     *,
@@ -166,7 +249,9 @@ def resolve_profile_for_purpose(
     override resolved to (see profile_override_store.py) — the caller looks
     that up per purpose's normal tier and passes the result in; this
     function does not read the override store itself, keeping it a pure
-    resolver.
+    resolver. An explicit operator override always wins over a standing
+    PURPOSE_PROFILE_OVERRIDE entry — a human's choice for this run outranks
+    a standing evidence-based default.
     """
 
     try:
@@ -178,11 +263,17 @@ def resolve_profile_for_purpose(
     if resolved_tier not in _TIERS:
         raise ExecutionProfileError(f"Unknown execution tier: '{resolved_tier}'")
 
-    profile = resolve_execution_profile(
-        _profile_name_for_tier(resolved_tier),
-        settings=settings,
-        min_output_tokens=min_output_tokens,
-    )
+    if override_tier is None and purpose in PURPOSE_PROFILE_OVERRIDE:
+        profile = PURPOSE_PROFILE_OVERRIDE[purpose]
+        if min_output_tokens is not None and min_output_tokens > profile.max_output_tokens:
+            profile = replace(profile, max_output_tokens=min_output_tokens)
+        _validate_profile(profile)
+    else:
+        profile = resolve_execution_profile(
+            _profile_name_for_tier(resolved_tier),
+            settings=settings,
+            min_output_tokens=min_output_tokens,
+        )
     _validate_tier_ceiling(resolved_tier, profile)
     return profile
 
@@ -323,9 +414,10 @@ def next_escalation_effort(tier: str, current_effort: str | None) -> str | None:
 
 
 def validate_registry_ceilings() -> None:
-    """Fail closed at startup if any tier's default profile would breach its
-    own ceiling — an invalid or newly-unsupported profile must never fall
-    back to a stronger model silently (ATL-036 acceptance criterion 15)."""
+    """Fail closed at startup if any tier's default profile — or any
+    per-purpose override — would breach its own ceiling. An invalid or
+    newly-unsupported profile must never fall back to a stronger model
+    silently (ATL-036 acceptance criterion 15)."""
 
     for tier in _TIERS:
         profile = _STATIC_PROFILES.get(_profile_name_for_tier(tier))
@@ -333,4 +425,12 @@ def validate_registry_ceilings() -> None:
             # "normal" is settings-driven and validated per-call instead —
             # nothing static to check at startup without settings in hand.
             continue
+        _validate_tier_ceiling(tier, profile)
+
+    for purpose, profile in PURPOSE_PROFILE_OVERRIDE.items():
+        tier = PURPOSE_TIER.get(purpose)
+        if tier is None:
+            raise ExecutionProfileError(
+                f"PURPOSE_PROFILE_OVERRIDE has an entry for unknown purpose '{purpose}'."
+            )
         _validate_tier_ceiling(tier, profile)
