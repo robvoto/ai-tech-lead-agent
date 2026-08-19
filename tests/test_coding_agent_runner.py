@@ -82,7 +82,9 @@ def test_run_coding_agent_calls_configured_command(
     monkeypatch.setattr(
         subprocess,
         "run",
-        lambda *a, **kw: subprocess.CompletedProcess(args=a[0], returncode=0, stdout="", stderr=""),
+        lambda *a, **kw: subprocess.CompletedProcess(
+            args=a[0], returncode=0, stdout="codex-cli 0.148.0", stderr=""
+        ),
     )
     calls = _install_fake_pipe_popen(monkeypatch, stdout="done")
 
@@ -107,6 +109,178 @@ def test_run_coding_agent_calls_configured_command(
     assert result.stdout == "done"
 
 
+def test_run_coding_agent_rejects_missing_backend_before_launch(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    settings = replace(parse_settings(valid_settings_dict()), execute_coding_agent=True)
+
+    def missing_command(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        raise FileNotFoundError("codex")
+
+    monkeypatch.setattr(subprocess, "run", missing_command)
+    monkeypatch.setattr(
+        subprocess,
+        "Popen",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("coding agent must not launch after preflight failure")
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="command not found"):
+        run_coding_agent("Do the task", tmp_path, settings)
+
+
+def test_run_coding_agent_rejects_non_executable_backend_before_launch(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    settings = replace(parse_settings(valid_settings_dict()), execute_coding_agent=True)
+
+    def non_executable(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        raise PermissionError("permission denied")
+
+    monkeypatch.setattr(subprocess, "run", non_executable)
+    monkeypatch.setattr(
+        subprocess,
+        "Popen",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("coding agent must not launch after preflight failure")
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="not executable"):
+        run_coding_agent("Do the task", tmp_path, settings)
+
+
+def test_run_coding_agent_rejects_failed_version_probe_before_launch(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    settings = replace(parse_settings(valid_settings_dict()), execute_coding_agent=True)
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args=args[0], returncode=1, stdout="", stderr="version probe failed"
+        ),
+    )
+    monkeypatch.setattr(
+        subprocess,
+        "Popen",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("coding agent must not launch after preflight failure")
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="preflight failed"):
+        run_coding_agent("Do the task", tmp_path, settings)
+
+
+def test_run_coding_agent_rejects_version_probe_timeout_before_launch(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    settings = replace(parse_settings(valid_settings_dict()), execute_coding_agent=True)
+
+    def timed_out(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        raise subprocess.TimeoutExpired(args[0], timeout=5.0)
+
+    monkeypatch.setattr(subprocess, "run", timed_out)
+    monkeypatch.setattr(
+        subprocess,
+        "Popen",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("coding agent must not launch after preflight timeout")
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="preflight timed out"):
+        run_coding_agent("Do the task", tmp_path, settings)
+
+
+def test_run_coding_agent_rejects_empty_version_output_before_launch(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    settings = replace(parse_settings(valid_settings_dict()), execute_coding_agent=True)
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args=args[0], returncode=0, stdout=" \n", stderr="\t"
+        ),
+    )
+    monkeypatch.setattr(
+        subprocess,
+        "Popen",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("coding agent must not launch after preflight failure")
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="no usable output"):
+        run_coding_agent("Do the task", tmp_path, settings)
+
+
+def test_run_coding_agent_accepts_valid_codex_version_probe(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    settings = replace(parse_settings(valid_settings_dict()), execute_coding_agent=True)
+    run_calls: list[list[str]] = []
+    caplog.set_level("INFO", logger="ai_tech_lead")
+
+    def fake_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        command = args[0]
+        assert isinstance(command, list)
+        run_calls.append(command)
+        return subprocess.CompletedProcess(
+            args=command, returncode=0, stdout="codex-cli 0.148.0", stderr=""
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    calls = _install_fake_pipe_popen(monkeypatch, stdout="done")
+
+    result = run_coding_agent("Do the task", tmp_path, settings)
+
+    assert result.success is True
+    assert run_calls[0] == ["codex", "--version"]
+    assert "codex-cli 0.148.0" in caplog.text
+    assert calls
+
+
+def test_run_coding_agent_health_check_stays_backend_neutral(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    settings = replace(
+        parse_settings(valid_settings_dict()),
+        execute_coding_agent=True,
+        coding_agent_command="other-agent",
+        coding_agent_args=["run"],
+    )
+    run_calls: list[list[str]] = []
+
+    def fake_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        command = args[0]
+        assert isinstance(command, list)
+        run_calls.append(command)
+        return subprocess.CompletedProcess(
+            args=command, returncode=0, stdout="other-agent 1.2.3", stderr=""
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    calls = _install_fake_pipe_popen(monkeypatch, stdout="done")
+
+    result = run_coding_agent("Do the task", tmp_path, settings)
+
+    assert result.success is True
+    assert run_calls[0] == ["other-agent", "--version"]
+    assert calls[0]["args"][:3] == ["stdbuf", "-oL", "other-agent"]
+
+
 def test_run_coding_agent_rejects_empty_instruction_when_enabled(tmp_path: Path) -> None:
     settings = replace(parse_settings(valid_settings_dict()), execute_coding_agent=True)
 
@@ -119,6 +293,13 @@ def test_run_coding_agent_raises_when_project_execution_lock_is_busy(
     tmp_path: Path,
 ) -> None:
     settings = replace(parse_settings(valid_settings_dict()), execute_coding_agent=True)
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args=args[0], returncode=0, stdout="codex-cli 0.148.0", stderr=""
+        ),
+    )
     monkeypatch.setattr(
         "ai_tech_lead.coding_agent_runner.acquire_project_execution_lock",
         lambda _project_root: (_ for _ in ()).throw(
@@ -139,7 +320,9 @@ def test_run_coding_agent_reports_nonzero_exit(
     monkeypatch.setattr(
         subprocess,
         "run",
-        lambda *a, **kw: subprocess.CompletedProcess(args=a[0], returncode=2, stdout="", stderr=""),
+        lambda *a, **kw: subprocess.CompletedProcess(
+            args=a[0], returncode=0, stdout="codex-cli 0.148.0", stderr=""
+        ),
     )
     _install_fake_pipe_popen(monkeypatch, returncode=2, stdout="", stderr="bad args")
 
@@ -159,7 +342,7 @@ def test_run_coding_agent_success_uses_friendly_wording(
         subprocess,
         "run",
         lambda *a, **kw: subprocess.CompletedProcess(
-            args=a[0], returncode=0, stdout="ok", stderr=""
+            args=a[0], returncode=0, stdout="codex-cli 0.148.0", stderr=""
         ),
     )
     _install_fake_pipe_popen(monkeypatch, returncode=0, stdout="ok")
@@ -183,7 +366,7 @@ def test_run_coding_agent_failure_uses_friendly_wording(
         subprocess,
         "run",
         lambda *a, **kw: subprocess.CompletedProcess(
-            args=a[0], returncode=1, stdout="", stderr="err"
+            args=a[0], returncode=0, stdout="codex-cli 0.148.0", stderr=""
         ),
     )
     _install_fake_pipe_popen(monkeypatch, returncode=1, stdout="", stderr="err")
@@ -203,7 +386,9 @@ def test_run_coding_agent_records_duration(
     monkeypatch.setattr(
         subprocess,
         "run",
-        lambda *a, **kw: subprocess.CompletedProcess(args=a[0], returncode=0, stdout="", stderr=""),
+        lambda *a, **kw: subprocess.CompletedProcess(
+            args=a[0], returncode=0, stdout="codex-cli 0.148.0", stderr=""
+        ),
     )
     _install_fake_pipe_popen(monkeypatch, returncode=0, stdout="")
 
@@ -249,7 +434,9 @@ def test_run_coding_agent_emits_progress_heartbeats(
     monkeypatch.setattr(
         subprocess,
         "run",
-        lambda *a, **kw: subprocess.CompletedProcess(args=a[0], returncode=0, stdout="", stderr=""),
+        lambda *a, **kw: subprocess.CompletedProcess(
+            args=a[0], returncode=0, stdout="codex-cli 0.148.0", stderr=""
+        ),
     )
     _install_fake_pipe_popen(
         monkeypatch, returncode=0, stdout="agent output line", poll_calls_before_done=2

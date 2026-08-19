@@ -26,6 +26,10 @@ logger = logging.getLogger(LOGGER_NAME)
 agent_logger = logging.getLogger(AGENT_LOGGER_NAME)
 
 _POLL_INTERVAL_SECONDS = 1.0
+# Protocol-owned startup limits keep backend health diagnostics bounded; the
+# configured coding-agent runtime timeout remains user-owned in AppSettings.
+_BACKEND_PREFLIGHT_TIMEOUT_SECONDS = 5.0
+_BACKEND_PREFLIGHT_OUTPUT_MAX_CHARS = 512
 
 
 @dataclass
@@ -114,6 +118,78 @@ class CodingAgentResult:
         return "\n".join(parts)
 
 
+def _preflight_coding_agent(project_root: Path, settings: AppSettings) -> str:
+    """Verify the configured backend reports a version before it can launch.
+
+    The runner owns this backend health boundary so workflow code stays generic.
+    The reported version is diagnostic only; no compatibility decision is made
+    without an authoritative provider or project rule.
+    """
+    version_command = [settings.coding_agent_command, "--version"]
+    try:
+        completed = subprocess.run(
+            version_command,
+            cwd=project_root.resolve(),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            shell=False,
+            timeout=_BACKEND_PREFLIGHT_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except FileNotFoundError as error:
+        raise RuntimeError(
+            "Coding agent backend preflight failed: command not found: "
+            f"{settings.coding_agent_command}"
+        ) from error
+    except PermissionError as error:
+        raise RuntimeError(
+            "Coding agent backend preflight failed: command is not executable: "
+            f"{settings.coding_agent_command}"
+        ) from error
+    except subprocess.TimeoutExpired as error:
+        raise RuntimeError(
+            "Coding agent backend preflight timed out after "
+            f"{_BACKEND_PREFLIGHT_TIMEOUT_SECONDS:g}s: "
+            f"{settings.coding_agent_command} --version"
+        ) from error
+    except OSError as error:
+        raise RuntimeError(
+            "Coding agent backend preflight could not execute "
+            f"{settings.coding_agent_command}: {error}"
+        ) from error
+
+    diagnostic = _bounded_preflight_output(completed.stdout, completed.stderr)
+    if completed.returncode != 0:
+        detail = f" Diagnostic: {diagnostic}" if diagnostic else ""
+        raise RuntimeError(
+            "Coding agent backend preflight failed: "
+            f"{settings.coding_agent_command} --version exited with "
+            f"{completed.returncode}.{detail}"
+        )
+    if not diagnostic:
+        raise RuntimeError(
+            "Coding agent backend preflight failed: "
+            f"{settings.coding_agent_command} --version returned no usable output."
+        )
+
+    logger.info(
+        "Coding agent backend preflight passed: command=%s version=%s",
+        settings.coding_agent_command,
+        diagnostic,
+    )
+    return diagnostic
+
+
+def _bounded_preflight_output(stdout: str | None, stderr: str | None) -> str:
+    """Normalize and bound version diagnostics without interpreting them."""
+    output = " | ".join(value.strip() for value in (stdout, stderr) if value and value.strip())
+    if len(output) <= _BACKEND_PREFLIGHT_OUTPUT_MAX_CHARS:
+        return output
+    return output[:_BACKEND_PREFLIGHT_OUTPUT_MAX_CHARS] + "..."
+
+
 def run_coding_agent(
     agent_instruction: str,
     project_root: Path,
@@ -142,6 +218,7 @@ def run_coding_agent(
     if not instruction:
         raise ValueError("Agent instruction cannot be empty.")
 
+    _preflight_coding_agent(project_root, settings)
     command = [settings.coding_agent_command, *settings.coding_agent_args]
     if sandbox_override:
         command.extend(["-s", sandbox_override])
