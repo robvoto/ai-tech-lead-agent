@@ -345,6 +345,13 @@ def test_help_text_shows_identity_and_model() -> None:
             "update (1=Backlog 2=Not Done 3=In Progress 4=Needs Review "
             "5=Blocked 6=Done 7=Won't Do 8=Obsolete)"
         ),
+        "Cost & profiles:",
+        "  /profile - show active model/reasoning-effort per tier",
+        (
+            "  /profile_override <tier> <override_tier> <calls> - temporarily route one "
+            "tier's calls to another tier's profile, e.g. /profile_override simple strong 5"
+        ),
+        "  /profile_clear <tier> - cancel an active tier override early",
     ]
     assert "/fix" not in help_text
     assert "/stop" not in help_text
@@ -1327,6 +1334,62 @@ def test_plain_text_goes_to_telegram_agent_when_ai_enabled(monkeypatch: pytest.M
     assert not any(msg[1].startswith("Bot is alive.") for msg in client.messages)
 
 
+def test_plain_text_execution_with_single_backlog_reference_routes_without_chat_llm(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw_settings = valid_settings_dict()
+    raw_settings["orchestrator_ai_enabled"] = True
+    settings = parse_settings(raw_settings)
+    client = _RecordingClient()
+    operator = TelegramOperator("dummy", settings, client=client)
+    routed: list[tuple[str, str]] = []
+
+    monkeypatch.setattr(
+        operator,
+        "_run_backlog_task",
+        lambda chat_id, item_id: routed.append((chat_id, item_id)),
+    )
+    monkeypatch.setattr(
+        "ai_tech_lead.telegram_operator.run_telegram_agent_message",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("chat LLM must not run")),
+    )
+
+    operator._handle_plain_text(
+        "chat-1",
+        "Code ATL-999 for AI Tech Lead",
+        "demo-user",
+    )
+
+    assert routed == [("chat-1", "ATL-999")]
+
+
+def test_plain_text_missing_backlog_reference_stops_without_starting_graph(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw_settings = valid_settings_dict()
+    raw_settings["orchestrator_ai_enabled"] = True
+    settings = parse_settings(raw_settings)
+    client = _RecordingClient()
+    operator = TelegramOperator("dummy", settings, client=client)
+    worksheet = FakeWorksheet([HEADER, _row("ATL-001", "Existing item", status="Backlog")])
+    _install_fake_sheets_repository(monkeypatch, worksheet)
+
+    monkeypatch.setattr(
+        operator,
+        "_run_graph_task",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("graph must not start")),
+    )
+
+    operator._handle_plain_text(
+        "chat-1",
+        "Code ATL-999 for AI Tech Lead",
+        "demo-user",
+    )
+
+    assert "ATL-999" in client.messages[-1][1]
+    assert "was not found" in client.messages[-1][1]
+
+
 def test_plain_text_returns_fallback_when_ai_disabled() -> None:
     settings = parse_settings(valid_settings_dict())
     client = _RecordingClient()
@@ -1717,6 +1780,57 @@ def test_set_status_command_updates_backlog_item(tmp_path, monkeypatch) -> None:
         "Updated ATL-001 - First item: Status is now 'In Progress'.",
     )
     assert "Status: In Progress" in backlog_path.read_text(encoding="utf-8")
+
+
+def test_profile_command_shows_active_model_and_effort_per_tier(monkeypatch) -> None:
+    settings = parse_settings(valid_settings_dict())
+    client = _RecordingClient()
+    operator = TelegramOperator("token", settings, client=client)
+
+    operator._handle_command("chat-1", parse_telegram_command("/profile"), "demo-user")
+
+    text = client.messages[-1][1]
+    assert "- simple: gpt-5.6-luna @ none (ceiling low)" in text
+    assert "- normal: gpt-4.1-mini @ none (ceiling medium)" in text
+    assert "- strong: gpt-5.6-luna @ high (ceiling high)" in text
+
+
+def test_profile_override_and_clear_round_trip(tmp_path, monkeypatch) -> None:
+    from ai_tech_lead.profile_override_store import ProfileOverrideStore
+
+    monkeypatch.setattr(
+        "ai_tech_lead.telegram_operator.ProfileOverrideStore",
+        lambda: ProfileOverrideStore(tmp_path / "overrides.sqlite3"),
+    )
+    settings = parse_settings(valid_settings_dict())
+    client = _RecordingClient()
+    operator = TelegramOperator("token", settings, client=client)
+
+    operator._handle_command(
+        "chat-1",
+        parse_telegram_command("/profile_override simple strong 2"),
+        "demo-user",
+    )
+    assert "Override set: 'simple' calls will use the 'strong' profile" in client.messages[-1][1]
+    assert "2 call(s)" in client.messages[-1][1]
+
+    operator._handle_command("chat-1", parse_telegram_command("/profile"), "demo-user")
+    assert "OVERRIDDEN to 'strong' for 2 more call(s) by demo-user" in client.messages[-1][1]
+
+    operator._handle_command(
+        "chat-1", parse_telegram_command("/profile_clear simple"), "demo-user"
+    )
+    assert "Override cleared for 'simple'" in client.messages[-1][1]
+
+    operator._handle_command("chat-1", parse_telegram_command("/profile"), "demo-user")
+    assert "OVERRIDDEN" not in client.messages[-1][1]
+
+
+def test_profile_override_rejects_malformed_argument_at_parse_time() -> None:
+    with pytest.raises(ValueError):
+        parse_telegram_command("/profile_override simple not-a-tier 2")
+    with pytest.raises(ValueError):
+        parse_telegram_command("/profile_override simple strong 0")
 
 
 def test_run_backlog_task_uses_explicit_item_and_starts_graph(

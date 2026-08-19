@@ -77,6 +77,74 @@ def test_call_llm_for_json_retries_when_parse_itself_rejects_the_shape(monkeypat
     assert value is True
 
 
+def test_call_llm_for_json_escalates_reasoning_effort_within_tier_on_retry(monkeypatch) -> None:
+    seen_configs: list[OrchestratorLlmConfig] = []
+
+    def fake_call(*, prompt, config):
+        seen_configs.append(config)
+        if len(seen_configs) == 1:
+            return OrchestratorLlmResult(text="not json")
+        return OrchestratorLlmResult(text='{"ok": true}')
+
+    monkeypatch.setattr("ai_tech_lead.llm_json.call_orchestrator_llm", fake_call)
+
+    config = OrchestratorLlmConfig(
+        model="test:model", max_output_tokens=100, timeout_seconds=5, reasoning_effort="none"
+    )
+    value = call_llm_for_json(
+        prompt="p", config=config, error_label="test", parse=lambda payload: payload["ok"],
+        tier="simple",
+    )
+
+    assert value is True
+    assert seen_configs[0].reasoning_effort == "none"
+    assert seen_configs[1].reasoning_effort == "low"
+
+
+def test_call_llm_for_json_without_tier_never_escalates(monkeypatch) -> None:
+    seen_configs: list[OrchestratorLlmConfig] = []
+
+    def fake_call(*, prompt, config):
+        seen_configs.append(config)
+        return OrchestratorLlmResult(text="not json")
+
+    monkeypatch.setattr("ai_tech_lead.llm_json.call_orchestrator_llm", fake_call)
+
+    config = OrchestratorLlmConfig(
+        model="test:model", max_output_tokens=100, timeout_seconds=5, reasoning_effort="none"
+    )
+    with pytest.raises(Exception):
+        call_llm_for_json(
+            prompt="p", config=config, error_label="test", parse=lambda payload: payload
+        )
+
+    assert seen_configs[0].reasoning_effort == "none"
+    assert seen_configs[1].reasoning_effort == "none"
+
+
+def test_call_llm_for_json_escalation_never_exceeds_tier_ceiling(monkeypatch) -> None:
+    """"simple"'s ceiling is "low" — already-at-ceiling must not climb to medium."""
+    seen_configs: list[OrchestratorLlmConfig] = []
+
+    def fake_call(*, prompt, config):
+        seen_configs.append(config)
+        return OrchestratorLlmResult(text="not json")
+
+    monkeypatch.setattr("ai_tech_lead.llm_json.call_orchestrator_llm", fake_call)
+
+    config = OrchestratorLlmConfig(
+        model="test:model", max_output_tokens=100, timeout_seconds=5, reasoning_effort="low"
+    )
+    with pytest.raises(Exception):
+        call_llm_for_json(
+            prompt="p", config=config, error_label="test", parse=lambda payload: payload,
+            tier="simple",
+        )
+
+    assert seen_configs[0].reasoning_effort == "low"
+    assert seen_configs[1].reasoning_effort == "low"
+
+
 def test_call_llm_for_json_calls_on_result_for_every_attempt(monkeypatch) -> None:
     monkeypatch.setattr(
         "ai_tech_lead.llm_json.call_orchestrator_llm",

@@ -31,8 +31,8 @@ from ai_tech_lead.backlog_sheets_repository import (
     repository_from_settings,
 )
 from ai_tech_lead.env_loader import load_local_env
-from ai_tech_lead.execution_profiles import STANDARD_PROFILE, resolve_execution_profile
 from ai_tech_lead.model_registry import estimate_cost as _registry_estimate_cost
+from ai_tech_lead.profile_override_store import resolve_profile_with_override
 from ai_tech_lead.prompt_loader import TELEGRAM_AGENT_SYSTEM_PROMPT_KEY, load_prompt
 
 logger = logging.getLogger(__name__)
@@ -101,7 +101,7 @@ def build_telegram_agent_graph(*, settings: AppSettings, checkpointer: Any):
     except Exception as exc:
         logger.warning("Knowledge store unavailable, running without memory tools: %s", exc)
 
-    profile = resolve_execution_profile(STANDARD_PROFILE, settings=settings)
+    profile = resolve_profile_with_override("telegram_chat", settings=settings)
     logger.info(
         "Building Telegram agent graph with model=%s reasoning_effort=%s "
         "max_completion_tokens=%s timeout_seconds=%s",

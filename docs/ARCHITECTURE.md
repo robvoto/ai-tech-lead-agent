@@ -120,12 +120,28 @@ Supporting modules such as `src/ai_tech_lead/backlog_graph_runner.py` call the c
   agents, or other compatible execution backends.
 - `config/model_registry.json` (`model_registry.py`) is the single authoritative source of
   supported LLM models: endpoint/capability support, reasoning-effort controls, and
-  pricing. `execution_profiles.py` is the one resolver boundary between that registry and
-  workflow call sites — call sites request a named profile (e.g. `"standard"`) and never
-  inline a raw model ID or reasoning-effort string, so a future model swap changes only
-  these two files. See ATL-035.
+  pricing (ATL-035). `execution_profiles.py` is the one resolver boundary between that
+  registry and workflow call sites: every orchestrator-LLM call site passes a purpose
+  string (e.g. `"risk_review"`), never a raw model ID or reasoning-effort string.
+  `PURPOSE_TIER` maps each purpose to a `"simple"`/`"normal"`/`"strong"` tier; each tier has
+  a hard reasoning-effort ceiling (low/medium/high) enforced independently of whatever the
+  resolved profile or model's own registry default says, and `"xhigh"`/`"max"` are never
+  selected automatically. `"normal"` mirrors `settings.orchestrator_ai_model` so config-driven
+  model choice keeps working; `"simple"`/`"strong"` are fixed profile definitions — moving a
+  tier to a different model is a one-line change there, not workflow-code surgery (ATL-036).
+  `profile_override_store.py` layers a SQLite-backed, bounded, expiring per-tier override on
+  top of the resolver (`/profile`, `/profile_override`, `/profile_clear` in Telegram) — the
+  saved default is never rewritten by an override. `llm_json.py`'s JSON-retry path can escalate
+  reasoning effort one step within a tier's own ceiling on an invalid response (never crossing
+  into another tier); `main.py` validates every static profile against its tier's ceiling at
+  startup and fails closed rather than starting with an invalid one. `run_budget.py` provides a
+  per-run call/token/cost ceiling tracker with the fail-closed (subprocess) vs. ask (Telegram)
+  behavior decided, but it is not yet wired into `coding_workflow_graph.py` — that graph has no
+  existing per-run usage accumulator, so wiring one in across every orchestrator-calling node is
+  left as a scoped follow-up rather than bolted on here.
 - Settings own configurable values, limits, and paths, plus the active model for the
-  `"standard"` profile. Human-readable prompt and rule text lives in `data/prompts.json`. Prompt
+  `"normal"` profile and the run-budget ceilings. Human-readable prompt and rule text lives
+  in `data/prompts.json`. Prompt
   keys are centralized in `src/ai_tech_lead/prompt_loader.py`, and graph nodes
   or instruction builders load the registry entries on demand when they need
   them. The local admin UI exposes the same registry so prompts can be

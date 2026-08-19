@@ -11,13 +11,13 @@ from __future__ import annotations
 import logging
 
 from .app_settings import AppSettings
-from .execution_profiles import STANDARD_PROFILE, resolve_execution_profile
 from .logging_setup import LOGGER_NAME
 from .orchestrator_llm import (
     OrchestratorLlmConfig,
     OrchestratorLlmError,
     call_orchestrator_llm,
 )
+from .profile_override_store import resolve_profile_with_override
 from .prompt_loader import OPERATOR_QUESTION_ANSWER_PROMPT_KEY, render_prompt
 from .target_project_context import TargetProjectContext
 
@@ -68,7 +68,7 @@ def answer_operator_question(
     )
 
     try:
-        profile = resolve_execution_profile(STANDARD_PROFILE, settings=settings)
+        profile = resolve_profile_with_override("operator_question", settings=settings)
         result = call_orchestrator_llm(
             prompt=prompt,
             config=OrchestratorLlmConfig(
@@ -76,6 +76,8 @@ def answer_operator_question(
                 max_output_tokens=profile.max_output_tokens,
                 timeout_seconds=settings.orchestrator_ai_timeout_seconds,
                 reasoning_effort=profile.reasoning_effort,
+                purpose="operator_question",
+                profile_name=profile.name,
             ),
         )
     except OrchestratorLlmError as error:

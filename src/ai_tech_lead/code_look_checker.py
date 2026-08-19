@@ -13,13 +13,13 @@ from dataclasses import dataclass
 from typing import Any
 
 from .app_settings import AppSettings, load_settings
-from .execution_profiles import STANDARD_PROFILE, resolve_execution_profile
 from .logging_setup import LOGGER_NAME
 from .orchestrator_llm import (
     OrchestratorLlmConfig,
     OrchestratorLlmError,
     call_orchestrator_llm,
 )
+from .profile_override_store import resolve_profile_with_override
 from .prompt_loader import CODE_LOOK_NEED_PROMPT_KEY, render_prompt
 
 logger = logging.getLogger(LOGGER_NAME)
@@ -66,7 +66,7 @@ def check_code_look_need(request: str) -> CodeLookNeedDecision:
 
 def _llm_code_look_decision(request: str, settings: AppSettings) -> CodeLookNeedDecision:
     prompt = render_prompt(CODE_LOOK_NEED_PROMPT_KEY, request=request)
-    profile = resolve_execution_profile(STANDARD_PROFILE, settings=settings)
+    profile = resolve_profile_with_override("code_look_check", settings=settings)
     result = call_orchestrator_llm(
         prompt=prompt,
         config=OrchestratorLlmConfig(
@@ -74,6 +74,8 @@ def _llm_code_look_decision(request: str, settings: AppSettings) -> CodeLookNeed
             max_output_tokens=profile.max_output_tokens,
             timeout_seconds=settings.orchestrator_ai_timeout_seconds,
             reasoning_effort=profile.reasoning_effort,
+            purpose="code_look_check",
+            profile_name=profile.name,
         ),
     )
     payload: dict[str, Any] = json.loads(result.text)

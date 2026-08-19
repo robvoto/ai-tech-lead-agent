@@ -9,13 +9,13 @@ from enum import StrEnum
 from typing import Any
 
 from ai_tech_lead.app_settings import AppSettings
-from ai_tech_lead.execution_profiles import STANDARD_PROFILE, resolve_execution_profile
 from ai_tech_lead.logging_setup import LOGGER_NAME
 from ai_tech_lead.orchestrator_llm import (
     OrchestratorLlmConfig,
     OrchestratorLlmError,
     call_orchestrator_llm,
 )
+from ai_tech_lead.profile_override_store import resolve_profile_with_override
 
 logger = logging.getLogger(LOGGER_NAME)
 
@@ -58,7 +58,7 @@ def route_plain_text_intent(*, text: str, settings: AppSettings) -> TelegramInte
         )
 
     try:
-        profile = resolve_execution_profile(STANDARD_PROFILE, settings=settings)
+        profile = resolve_profile_with_override("telegram_intent_routing", settings=settings)
         result = call_orchestrator_llm(
             prompt=_intent_prompt(normalized_text),
             config=OrchestratorLlmConfig(
@@ -66,6 +66,8 @@ def route_plain_text_intent(*, text: str, settings: AppSettings) -> TelegramInte
                 max_output_tokens=profile.max_output_tokens,
                 timeout_seconds=settings.orchestrator_ai_timeout_seconds,
                 reasoning_effort=profile.reasoning_effort,
+                purpose="telegram_intent_routing",
+                profile_name=profile.name,
             ),
         )
         return _parse_intent_payload(json.loads(_strip_json_fence(result.text)))

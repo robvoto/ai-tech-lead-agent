@@ -20,10 +20,10 @@ from dataclasses import dataclass
 from typing import Any
 
 from .app_settings import AppSettings
-from .execution_profiles import STANDARD_PROFILE, resolve_execution_profile
 from .llm_json import call_llm_for_json
 from .logging_setup import LOGGER_NAME
 from .orchestrator_llm import OrchestratorLlmConfig, OrchestratorLlmError
+from .profile_override_store import resolve_profile_with_override
 from .prompt_loader import RESEARCH_KNOWLEDGE_GAP_PROMPT_KEY, render_prompt
 from .research_code_context import collect_code_context, format_code_context_for_prompt
 from .research_sources import collect_local_research_sources
@@ -198,12 +198,14 @@ def _llm_check_knowledge_gap(
         request=request,
         code_context=code_context_text,
     )
-    profile = resolve_execution_profile(STANDARD_PROFILE, settings=settings)
+    profile = resolve_profile_with_override("research_knowledge_gap_check", settings=settings)
     config = OrchestratorLlmConfig(
         model=profile.model,
         max_output_tokens=profile.max_output_tokens,
         timeout_seconds=settings.orchestrator_ai_timeout_seconds,
         reasoning_effort=profile.reasoning_effort,
+        purpose="research_knowledge_gap_check",
+        profile_name=profile.name,
     )
 
     def _log_metric(result: Any) -> None:
@@ -221,6 +223,7 @@ def _llm_check_knowledge_gap(
         error_label="Research knowledge-gap response",
         parse=_parse_knowledge_gap_payload,
         on_result=_log_metric,
+        tier=profile.tier,
     )
 
 

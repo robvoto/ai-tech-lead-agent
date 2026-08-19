@@ -13,6 +13,23 @@ from ai_tech_lead.config import PROJECT_ROOT
 from ai_tech_lead.run_audit_store import record_run_audit_summary
 
 
+def test_main_fails_closed_when_execution_profile_registry_is_invalid(
+    monkeypatch, capsys
+) -> None:
+    from ai_tech_lead.execution_profiles import ExecutionProfileError
+
+    def _raise() -> None:
+        raise ExecutionProfileError("simulated invalid profile")
+
+    monkeypatch.setattr(main_module, "validate_registry_ceilings", _raise)
+    monkeypatch.setattr("sys.argv", ["ai-tech-lead", "setup"])
+
+    exit_code = main_module.main()
+
+    assert exit_code == 1
+    assert "simulated invalid profile" in capsys.readouterr().err
+
+
 def test_main_starts_admin_and_telegram_when_enabled(
     monkeypatch,
     caplog: pytest.LogCaptureFixture,

@@ -8,10 +8,10 @@ from dataclasses import dataclass
 from typing import Any
 
 from .app_settings import AppSettings
-from .execution_profiles import STANDARD_PROFILE, resolve_execution_profile
 from .llm_json import call_llm_for_json
 from .logging_setup import LOGGER_NAME
 from .orchestrator_llm import OrchestratorLlmConfig, OrchestratorLlmError
+from .profile_override_store import resolve_profile_with_override
 from .prompt_loader import TECH_LEAD_ANALYSIS_PROMPT_KEY, render_prompt
 
 logger = logging.getLogger(LOGGER_NAME)
@@ -105,12 +105,14 @@ def _llm_analyse_task(
         code_recon=code_recon_text,
         project_guidance=project_guidance_text,
     )
-    profile = resolve_execution_profile(STANDARD_PROFILE, settings=settings)
+    profile = resolve_profile_with_override("tech_lead_analysis", settings=settings)
     config = OrchestratorLlmConfig(
         model=profile.model,
         max_output_tokens=profile.max_output_tokens,
         timeout_seconds=settings.orchestrator_ai_timeout_seconds,
         reasoning_effort=profile.reasoning_effort,
+        purpose="tech_lead_analysis",
+        profile_name=profile.name,
     )
 
     def _log_metric(result: Any) -> None:
@@ -128,6 +130,7 @@ def _llm_analyse_task(
         error_label="Tech lead analysis response",
         parse=_parse_analysis,
         on_result=_log_metric,
+        tier=profile.tier,
     )
 
 

@@ -26,6 +26,8 @@ class OrchestratorLlmConfig:
     max_output_tokens: int
     timeout_seconds: int
     reasoning_effort: str | None = None
+    purpose: str = ""
+    profile_name: str = ""
 
 
 @dataclass(frozen=True)
@@ -126,9 +128,13 @@ def call_orchestrator_llm(*, prompt: str, config: OrchestratorLlmConfig) -> Orch
     tokens_total = tokens_in + tokens_out
     cost_usd = _estimate_cost(config.model, tokens_in, tokens_out)
     logger.info(
-        "LLM call elapsed: %.0fms model=%s status=ok in=%d out=%d total=%d cost_total=$%.5f",
+        "LLM call elapsed: %.0fms model=%s purpose=%s profile=%s effort=%s "
+        "status=ok in=%d out=%d total=%d cost_total=$%.5f",
         elapsed_ms,
         config.model,
+        config.purpose or "-",
+        config.profile_name or "-",
+        config.reasoning_effort or "-",
         tokens_in,
         tokens_out,
         tokens_total,
@@ -198,9 +204,13 @@ def call_orchestrator_web_search(
     tokens_out = int(usage.get("output_tokens", 0))
     cost_usd = _estimate_cost(config.model, tokens_in, tokens_out)
     logger.info(
-        "Web search call elapsed: %.0fms model=%s status=ok in=%d out=%d cost_total=$%.5f",
+        "Web search call elapsed: %.0fms model=%s purpose=%s profile=%s effort=%s "
+        "status=ok in=%d out=%d cost_total=$%.5f",
         elapsed_ms,
         config.model,
+        config.purpose or "-",
+        config.profile_name or "-",
+        config.reasoning_effort or "-",
         tokens_in,
         tokens_out,
         cost_usd,
