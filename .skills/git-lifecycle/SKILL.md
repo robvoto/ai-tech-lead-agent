@@ -55,6 +55,23 @@ Never leave the human guessing. End Git-related work with exactly one clear inte
 
 If the state is not `IN MAIN`, say what single action is still required. Do not use `done`, `shipped`, `merged`, or `deployed` ambiguously.
 
-## Cleanup
+## Mandatory post-merge cleanup
 
-After successful integration, remove the task worktree and task branch when it is safe and no longer needed. Never delete a branch/worktree that contains unmerged or unverified work.
+A successful integration is **not complete** until the task worktree/branch cleanup is completed or explicitly reported as blocked.
+
+After the task commit is verified as an ancestor of `origin/main`:
+
+1. Re-check the task worktree with `git status --porcelain`.
+2. If it has modified, staged, conflicted, or untracked files, **do not delete it**. Report the exact worktree path and why cleanup is blocked. Never stash, reset, or discard that work merely to make cleanup pass.
+3. If it is clean, remove the task worktree with `git worktree remove <path>`.
+4. Delete the merged local task branch with `git branch -d <branch>`.
+5. If the same remote task branch exists, is fully merged into `origin/main`, and is not still needed by an active worktree/session, delete it with `git push origin --delete <branch>`.
+6. Run `git worktree prune`.
+7. Verify the task worktree no longer appears in `git worktree list` and the merged task branch no longer appears locally.
+
+Never leave a clean, fully merged task worktree or branch behind "for later". Parallel worktrees are temporary execution spaces, not permanent project folders.
+
+For any integration reported as `IN MAIN`, also report exactly one cleanup state:
+
+- `CLEANUP STATUS: COMPLETE — merged task worktree/branch removed`; or
+- `CLEANUP STATUS: BLOCKED — <exact dirty/unmerged reason and worktree path>`.
