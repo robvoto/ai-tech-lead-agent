@@ -274,7 +274,6 @@ class SheetsBacklogRepository:
             BacklogStatus.DONE,
             BacklogStatus.WONT_DO,
             BacklogStatus.OBSOLETE,
-            BacklogStatus.DEFERRED,
         }:
             raise ValueError(
                 f"Backlog item '{item.item_id}' is Done and cannot be selected for execution."
