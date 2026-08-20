@@ -1459,6 +1459,49 @@ def test_map_state_to_output_maps_completion_verification_interrupt() -> None:
     assert "visual check" in result["pending_decision"]["prompt"]
 
 
+def test_map_state_to_output_maps_integration_approval() -> None:
+    result = _map_state_to_output(
+        "req-integration",
+        {
+            "agent_instruction": "implement it",
+            "formulated_task": "Add a logout button",
+            "brief": "",
+            "orchestrator_input_required": False,
+            "orchestrator_input_question": "",
+            "coding_agent_success": True,
+            "coding_agent_result": "Validated on the task branch.",
+            "restart_required": False,
+            "task_feedback": [],
+            "research_source_titles": [],
+            "verification_status": "complete",
+            "git_lifecycle_enabled": True,
+            "git_task_branch": "atl/task-abc123",
+            "git_task_commit_sha": "task-sha",
+            "git_main_status": "MAIN STATUS: NOT IN MAIN — pushed branch atl/task-abc123",
+            "git_integration_status": "awaiting_approval",
+        },
+        True,
+        state_snapshot=_FakeSnapshot(
+            {
+                "kind": "integration_approval",
+                "task_branch": "atl/task-abc123",
+                "task_commit_sha": "task-sha",
+                "main_status": "MAIN STATUS: NOT IN MAIN — pushed branch atl/task-abc123",
+                "prompt": "Validated work is pushed, but it is NOT in main.",
+            }
+        ),
+        thread_id="subprocess-req-integration",
+    )
+
+    assert result["status"] == STATUS_WAITING_DECISION
+    assert result["pending_decision"]["kind"] == "integration_approval"
+    assert {opt["name"] for opt in result["pending_decision"]["options"]} == {
+        "approve",
+        "cancel",
+    }
+    assert result["main_status"].startswith("MAIN STATUS: NOT IN MAIN")
+
+
 def test_map_state_to_output_reports_failed_when_verification_fails_after_success() -> None:
     """A coding agent that exits cleanly but fails AI Tech Lead verification is not a success."""
     result = _map_state_to_output(
@@ -1537,7 +1580,57 @@ def test_map_state_to_output_reports_success_when_verified_run_requires_restart(
 
     assert result["status"] == STATUS_SUCCESS
     assert result["result_kind"] == "execution_result"
-    assert result["next_action"] == "Restart the AI Tech Lead runtime, then review output."
+
+
+def test_map_state_to_output_distinguishes_pushed_branch_from_main() -> None:
+    result = _map_state_to_output(
+        "req-branch",
+        {
+            "agent_instruction": "Implement the task.",
+            "coding_agent_success": True,
+            "coding_agent_result": "validated",
+            "verification_status": "complete",
+            "git_lifecycle_enabled": True,
+            "git_task_branch": "atl/task-abc123",
+            "git_task_base_sha": "base-sha",
+            "git_task_commit_sha": "task-sha",
+            "git_task_worktree": "/tmp/worktree",
+            "git_task_branch_pushed": True,
+            "git_main_status": "MAIN STATUS: NOT IN MAIN — pushed branch atl/task-abc123",
+            "git_integration_status": "not_requested",
+        },
+        True,
+    )
+
+    assert result["status"] == STATUS_SUCCESS
+    assert "not in main" in result["summary"].lower()
+    assert result["main_status"].startswith("MAIN STATUS: NOT IN MAIN")
+    assert result["git"]["task_commit_sha"] == "task-sha"
+    assert "completed" not in result["summary"].lower()
+
+
+def test_map_state_to_output_reports_verified_main_sha() -> None:
+    result = _map_state_to_output(
+        "req-main",
+        {
+            "agent_instruction": "Implement the task.",
+            "coding_agent_success": True,
+            "coding_agent_result": "validated",
+            "verification_status": "complete",
+            "git_lifecycle_enabled": True,
+            "git_task_branch": "atl/task-abc123",
+            "git_task_commit_sha": "task-sha",
+            "git_task_branch_pushed": True,
+            "git_main_status": "MAIN STATUS: IN MAIN — verified on origin/main at main-sha",
+            "git_main_sha": "main-sha",
+            "git_integration_status": "integrated",
+        },
+        True,
+    )
+
+    assert result["status"] == STATUS_SUCCESS
+    assert result["main_status"] == "MAIN STATUS: IN MAIN — verified on origin/main at main-sha"
+    assert result["git"]["main_sha"] == "main-sha"
 
 
 def test_map_state_to_output_reports_failed_when_verification_fails_and_restart_is_required() -> None:

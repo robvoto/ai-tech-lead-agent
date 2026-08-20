@@ -153,7 +153,7 @@ After `6_run_coding_agent`:
 
 `6c_verify_completion` is the AI Tech Lead's own close-out check, run only after the coding agent has already reported success. It compares the approved task, technical direction (`brief`), plan (`plan_text`), project-level acceptance criteria (`settings.acceptance_criteria`), changed files, and the coding agent's completion report against each other and returns one of three verdicts (`completion_verifier.py`, prompt `completion_verification`):
 
-- `complete` → `7_end_node`. Optional/nice-to-have observations are recorded in `verification_reason` but never block completion.
+- `complete` → `6e_finalize_task_branch` for real execution runs with a request ID. Instruction-only runs retain the direct route to `7_end_node`. Optional/nice-to-have observations are recorded in `verification_reason` but never block completion.
 - `correction_required` → names exactly one unmet requirement in `verification_correction`. If `verification_attempt_count` is below `COMPLETION_VERIFICATION_MAX_CORRECTIONS` (1), it loops back to `5_create_agent_instruction` with that correction folded into the instruction (same mechanism as `coding_agent_correction`) and the attempt count incremented. If the budget is already used, the node instead sets `verification_status` to `failed` and routes to `7_end_node` — no third attempt, the unresolved issue is reported rather than retried again.
 - `human_verification_required` → completion can't be proven automatically (for example, it depends on a visual or subjective check). Routes to `6d_completion_verification_interrupt`.
 
@@ -162,6 +162,24 @@ If the AI review is disabled, the LLM call fails, or it returns a malformed resp
 `6d_completion_verification_interrupt` emits `{"kind": "completion_verification", "reason": "...", "coding_agent_result": "...", "changed_files": [...]}`. Resume with `{"decision": "confirm_complete"}` (marks `complete`) or `{"decision": "reject", "text": "..."}` (marks `failed` with the human's reason). Either resume routes straight to `7_end_node` — a human rejection ends the workflow and reports the issue; it does not start another coding-agent attempt.
 
 The subprocess contract (`agent_task_runner.py`) only reports `status: success` when `coding_agent_success` is true **and** `verification_status == "complete"`; a coding agent that exits cleanly but fails verification is reported as `failed` with the verification reason, not as a success. Telegram's backlog auto-close (`_finalize_completed_task`) applies the same rule before marking a backlog item Done.
+
+## Git lifecycle after verification
+
+For an execution run, `6e_finalize_task_branch` reuses the current request's
+target repository context to commit and push the validated task worktree. The
+graph then pauses at `6f_integration_approval`; a pushed task branch is not
+reported as being in `main`. The structured caller decision is `approve` or
+`cancel`, and Telegram also accepts the exact operator phrases “approved”,
+“merge it”, “put it in main”, and “ship it” while this interrupt is active.
+
+On approval, `git_lifecycle.py` fetches `origin/main`, checks whether it moved
+since the task base, reconciles the task branch with a normal merge, and stops
+if conflict or canonical-branch ownership is ambiguous. It then updates the
+canonical `main` checkout, merges without force, runs the universal Git-boundary
+validation (`git diff --check`), pushes `main` without force, fetches again, and
+proves the exact task commit is an ancestor of `origin/main`. No task worktree
+is removed automatically. Every execution result includes exactly one explicit
+`MAIN STATUS` line; integrating `main` is not a deployment claim.
 
 ## Prompt/module map
 
@@ -191,6 +209,7 @@ These nodes call `interrupt(value)` (LangGraph dynamic breakpoint pattern) to pa
 - `5d_plan_interrupt` — emits `{"kind": "plan_guidance", "plan_text": "...", "reason": "...", "rejection_count": N}`. Resume with a plain text guidance string. Appends to `task_feedback` and resets plan rejection count.
 - `6b_failure_interrupt` — emits `{"kind": "failure_guidance", "coding_agent_result": "...", "retry_count": N}`. Resume with a plain text guidance string. Appends to `task_feedback` and resets retry count to 0.
 - `6d_completion_verification_interrupt` — emits `{"kind": "completion_verification", "reason": "...", "coding_agent_result": "...", "changed_files": [...]}`. Resume with `{"decision": "confirm_complete"}` or `{"decision": "reject", "text": "..."}`. Either resume ends the workflow at `7_end_node` (never restarts the coding agent).
+- `6f_integration_approval` — emits `{"kind": "integration_approval", "task_branch": "...", "task_commit_sha": "...", "main_status": "..."}` after the validated task branch is pushed. Resume with `{"action": "approve", "approved_by": "..."}` to reconcile and integrate, or `{"action": "cancel"}` to preserve the pushed branch outside `main`.
 
 ## Interrupt detection
 
