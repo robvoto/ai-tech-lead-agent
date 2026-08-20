@@ -57,8 +57,11 @@ flowchart TD
     Risk --> Brief
     Brief --> Instruction
     Instruction --> Runner
-    Runner -->|shell=False, timeout, captured output| CodingAgent
+    Runner -->|allocate task worktree| TaskWorktree[Request-owned task worktree/branch]
+    TaskWorktree -->|shell=False, timeout, captured output| CodingAgent
     CodingAgent --> Runner
+    Runner -->|validated branch push| TaskBranch[origin/task branch]
+    TaskBranch -->|explicit approval only| Main[origin/main]
     Runner --> Graph
 
     Graph --> Logs
@@ -73,7 +76,7 @@ The codebase currently implements two LangGraph workflows:
 1. `src/ai_tech_lead/coding_workflow_graph.py`
    - Exported Studio graph: `graph = build_graph()`
    - Purpose: turn an explicit human request into a bounded coding-agent execution. See `GRAPH_WORKFLOW.md` for the node-by-node route and interrupt/resume flow.
-   - Main responsibilities: research gating, risk review, clarification handling, planning, approval routing, agent-instruction creation, and controlled coding-agent execution.
+   - Main responsibilities: research gating, risk review, clarification handling, planning, approval routing, request-owned Git worktree execution, validated task-branch push, and explicit main integration.
    - Studio registration: this is the only graph currently listed in `langgraph.json`.
    - Local PNG export: [graph_diagram.png](diagrams/graph_diagram.png)
 
@@ -107,6 +110,7 @@ Supporting modules such as `src/ai_tech_lead/backlog_graph_runner.py` call the c
 - Backlog loading parses the fetched item into graph state. It must not silently choose work.
 - Worker coding agents must not freely edit backlog storage. Any backlog edit must be explicitly requested, field-bounded, and owned by the human/orchestrator through a controlled repository boundary.
 - The coding workflow graph owns orchestration state, approval routing, brief creation, agent-instruction creation, orchestrator-input request state, and the coding-agent execution node.
+- `git_lifecycle.py` is the single Git side-effect boundary for coding runs. It allocates a request-owned worktree from `origin/main`, tracks the exact task branch/base/tip/commit, pushes only after completion verification, and exposes a separate integration approval interrupt. Integration fetches current `origin/main`, reconciles with a normal merge, stops on conflicts or ambiguous canonical ownership, validates the integrated result, pushes `main` without force, fetches again, and verifies task-commit ancestry. Task worktrees are never deleted automatically.
 - Coding-agent handoffs now have three explicit instruction layers:
   1. AI Tech Lead runtime core, which is reusable across projects.
   2. Reusable runtime skills that travel with the AI Tech Lead runtime.
@@ -178,6 +182,10 @@ Supporting modules such as `src/ai_tech_lead/backlog_graph_runner.py` call the c
   local runtime SQLite database. It records bounded task, model, approval, Git,
   selected-skill-version, result, validation, and available usage metadata. It does
   not duplicate checkpoint state, raw prompts, provider traces, or unbounded logs.
+- Git completion is reported in two distinct states: a validated/pushed task branch
+  is `MAIN STATUS: NOT IN MAIN — pushed branch <branch>`, while only ancestry-verified
+  integration is `MAIN STATUS: IN MAIN — verified on origin/main at <sha>`. Main
+  integration is not deployment.
 - LangChain/LangGraph tools, when added, are executable capabilities exposed to an LLM or graph. They are different from this repository's `.skills`, which are reusable coding-agent instructions.
 - Admin UI is optional local tooling for editing settings. Browser code keeps HTML, CSS, and JavaScript separated. HTML owns structure, CSS owns presentation, and JavaScript owns behaviour. Browser JavaScript uses ES modules.
 - UI field schemas, API paths, labels, and other UI configuration should move to JSON or API-provided configuration when they become shared, large, or reused. Small local constants are acceptable only when they are explicit and easy to replace.

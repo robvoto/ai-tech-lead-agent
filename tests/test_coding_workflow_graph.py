@@ -28,6 +28,7 @@ from ai_tech_lead.coding_workflow_graph import (
     create_agent_instruction_node,
     discover_research_source_node,
     end_node,
+    finalize_task_branch_node,
     project_scope_decision_node,
     read_and_classify_request_node,
     request_plan_node,
@@ -46,6 +47,7 @@ from ai_tech_lead.coding_workflow_graph import (
     route_after_run_coding_agent,
     route_after_tech_lead_analyse,
     route_after_verify_completion,
+    route_after_finalize_task_branch,
     run_coding_agent_node,
     tech_lead_analyse_node,
     verify_completion_node,
@@ -252,6 +254,68 @@ def test_routes_follow_explicit_approval_state() -> None:
         route_after_approval(graph_state(approved=False, approval_action="cancel"))
         == "cancelled"
     )
+
+
+def test_verified_execution_routes_to_task_branch_finalization() -> None:
+    assert (
+        route_after_verify_completion(
+            graph_state(
+                verification_status="complete",
+                coding_agent_success=True,
+                git_lifecycle_enabled=True,
+                git_task_worktree="/tmp/task-worktree",
+            )
+        )
+        == "finalize task branch"
+    )
+
+
+def test_finalized_task_branch_routes_to_integration_approval() -> None:
+    assert (
+        route_after_finalize_task_branch(
+            graph_state(git_integration_status="awaiting_approval")
+        )
+        == "integration approval"
+    )
+
+
+def test_finalize_task_branch_records_pushed_branch_state(monkeypatch) -> None:
+    from ai_tech_lead.git_lifecycle import TaskGitState
+
+    task = TaskGitState(
+        canonical_root="/repo",
+        worktree="/worktree",
+        branch="atl/task-abc",
+        base_sha="base",
+    )
+    pushed = TaskGitState(
+        **{
+            **task.__dict__,
+            "tip_sha": "commit",
+            "task_commit_sha": "commit",
+            "branch_pushed": True,
+            "main_status": "MAIN STATUS: NOT IN MAIN — pushed branch atl/task-abc",
+            "integration_status": "awaiting_approval",
+        }
+    )
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.commit_and_push_task_branch",
+        lambda _task: pushed,
+    )
+
+    state = finalize_task_branch_node(
+        graph_state(
+            git_lifecycle_enabled=True,
+            git_task_canonical_root=task.canonical_root,
+            git_task_worktree=task.worktree,
+            git_task_branch=task.branch,
+            git_task_base_sha=task.base_sha,
+        )
+    )
+
+    assert state["git_task_commit_sha"] == "commit"
+    assert state["git_task_branch_pushed"] is True
+    assert state["git_main_status"].startswith("MAIN STATUS: NOT IN MAIN")
 
 
 def test_route_after_tech_lead_analyse_checks_research_once() -> None:

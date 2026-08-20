@@ -509,8 +509,9 @@ class GitPreflightResult:
     """Read-only inspection of the target worktree, taken right before the
     coding-agent subprocess launches.
 
-    `status` is one of "clean", "proceed_unrelated", "blocked_relevant",
-    "blocked_ambiguous", or "blocked_inspection_failed". This inspection never
+    `status` is one of "clean", "proceed_unrelated", "task_worktree",
+    "blocked_relevant", "blocked_ambiguous", or "blocked_inspection_failed".
+    This inspection never
     resets, stashes, checks out, stages, or otherwise modifies pre-existing
     work — it only reads `git status`/`git rev-parse`.
     """
@@ -523,7 +524,7 @@ class GitPreflightResult:
 
     @property
     def safe_to_proceed(self) -> bool:
-        return self.status in ("clean", "proceed_unrelated")
+        return self.status in ("clean", "proceed_unrelated", "task_worktree")
 
 
 @dataclass(frozen=True)

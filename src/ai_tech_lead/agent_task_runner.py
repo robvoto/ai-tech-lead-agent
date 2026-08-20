@@ -114,6 +114,10 @@ _DECISION_OPTIONS_BY_KIND: dict[str, list[dict[str, Any]]] = {
         {"name": "confirm_complete"},
         {"name": "reject", "needs_text": True},
     ],
+    "integration_approval": [
+        {"name": "approve"},
+        {"name": "cancel"},
+    ],
 }
 
 
@@ -898,6 +902,12 @@ def _map_decision_to_resume_payload(kind: str, decision: _Decision) -> Any:
             return {"decision": "confirm_complete"}
         return {"decision": "reject", "text": decision.text}
 
+    if kind == "integration_approval":
+        payload = {"action": decision.option}
+        if decision.option == "approve":
+            payload["approved_by"] = decision.actor or "agent-caller"
+        return payload
+
     raise _DecisionRejected(f"Unknown pending interrupt kind: {kind}")
 
 
@@ -938,6 +948,10 @@ def _prompt_for_pending_interrupt(kind: str, payload: dict[str, Any]) -> str:
     if kind == "completion_verification":
         reason = str(payload.get("reason", "")).strip()
         return f"Completion cannot be verified automatically and needs human review: {reason}"
+
+    if kind == "integration_approval":
+        prompt = str(payload.get("prompt", "")).strip()
+        return prompt or "Validated work is on a pushed task branch and needs approval to enter main."
 
     if kind == "project_guidance_governance":
         status = str(payload.get("status", "")).strip() or "issue"
@@ -1002,6 +1016,13 @@ def _sync_backlog_completion(
     ):
         return "not_applicable"
 
+    if str(result.get("main_status", "")).strip().startswith("MAIN STATUS: NOT IN MAIN"):
+        logger.info(
+            "Leaving backlog item open because validated task branch is not in main: %s",
+            result.get("main_status", ""),
+        )
+        return "not_applicable"
+
     backlog_item = target_project_context.backlog_item
     if backlog_item is None:
         return "not_applicable"
@@ -1062,6 +1083,8 @@ def _map_state_to_output(
     coding_agent_success = state.get("coding_agent_success")
     coding_agent_result = state.get("coding_agent_result", "")
     restart_required = state.get("restart_required", False)
+    main_status = str(state.get("git_main_status", "")).strip()
+    lifecycle_enabled = bool(state.get("git_lifecycle_enabled"))
 
     pending_interrupt = _pending_interrupt_value(state_snapshot)
     pending_interrupt_kind = (
@@ -1121,13 +1144,27 @@ def _map_state_to_output(
             next_action = "Review the unresolved verification issue."
             result_kind = RESULT_KIND_TERMINAL_FAILURE
         elif coding_agent_success is True:
-            status = STATUS_SUCCESS
-            summary = "Task completed and verified by the AI Tech Lead."
-            next_action = (
-                "Restart the AI Tech Lead runtime, then review output."
-                if restart_required
-                else "Review output."
-            )
+            if lifecycle_enabled and not main_status.startswith("MAIN STATUS: IN MAIN"):
+                status = (
+                    STATUS_FAILED
+                    if state.get("git_integration_status") == "blocked"
+                    else STATUS_SUCCESS
+                )
+                branch = str(state.get("git_task_branch", "")).strip() or "the task branch"
+                summary = f"Task validated on {branch}; it is not in main."
+                next_action = (
+                    "Resolve the integration issue, then retry integration."
+                    if state.get("git_integration_status") == "blocked"
+                    else "Approve integration to current origin/main."
+                )
+            else:
+                status = STATUS_SUCCESS
+                summary = "Task validated and integrated into main."
+                next_action = (
+                    "Restart the AI Tech Lead runtime, then review output."
+                    if restart_required
+                    else "Review output."
+                )
             result_kind = RESULT_KIND_EXECUTION_RESULT
         elif coding_agent_success is False:
             status = STATUS_FAILED
@@ -1167,6 +1204,17 @@ def _map_state_to_output(
         "result_kind": result_kind,
         "backlog_refinement": None,
         "pending_decision": pending_decision,
+        "main_status": main_status or None,
+        "git": {
+            "task_branch": str(state.get("git_task_branch", "")).strip() or None,
+            "task_base_sha": str(state.get("git_task_base_sha", "")).strip() or None,
+            "task_commit_sha": str(state.get("git_task_commit_sha", "")).strip() or None,
+            "task_worktree": str(state.get("git_task_worktree", "")).strip() or None,
+            "branch_pushed": bool(state.get("git_task_branch_pushed", False)),
+            "main_status": main_status or None,
+            "main_sha": str(state.get("git_main_sha", "")).strip() or None,
+            "integration_status": str(state.get("git_integration_status", "")).strip() or None,
+        },
         "backlog_sync_status": "not_applicable",
     }
 

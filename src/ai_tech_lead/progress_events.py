@@ -459,11 +459,17 @@ def emit_terminal_progress(reporter: ProgressReporter, result: Mapping[str, Any]
     summary = _bounded_summary(str(result.get("summary", "AI Tech Lead finished.")))
     if status == "success":
         result_kind = str(result.get("result_kind", ""))
-        completed_summary = (
-            "AI Tech Lead completed the task."
-            if result_kind == "execution_result"
-            else "AI Tech Lead prepared the coding instruction."
-        )
+        main_status = str(result.get("main_status", "")).strip()
+        if result_kind == "execution_result" and main_status.startswith(
+            "MAIN STATUS: NOT IN MAIN"
+        ):
+            completed_summary = "AI Tech Lead validated the task branch; it is not in main."
+        else:
+            completed_summary = (
+                "AI Tech Lead completed the task."
+                if result_kind == "execution_result"
+                else "AI Tech Lead prepared the coding instruction."
+            )
         reporter.completed(completed_summary)
     elif status == "approval_required":
         reporter.waiting("waiting_approval", summary)

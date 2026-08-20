@@ -58,6 +58,7 @@ from .coding_agent_runner import CodingAgentCancellationToken
 from .coding_workflow_graph import GraphState, build_graph, build_initial_graph_state
 from .config import PROJECT_ROOT
 from .execution_profiles import PURPOSE_TIER, TIER_CEILING_EFFORT, resolve_profile_for_purpose
+from .git_lifecycle import parse_integration_approval
 from .logging_setup import LOGGER_NAME
 from .profile_override_store import ProfileOverrideError, ProfileOverrideStore
 from .request_context import understand_request
@@ -261,6 +262,7 @@ class TelegramTaskStage(StrEnum):
     RESEARCH_APPROVAL = "research_approval"
     ORCHESTRATOR_INPUT = "orchestrator_input"
     COMPLETION_VERIFICATION = "completion_verification"
+    INTEGRATION_APPROVAL = "integration_approval"
     RUNNING = "running"
 
 
@@ -273,6 +275,7 @@ _RECOVERABLE_TELEGRAM_INTERRUPT_KINDS = frozenset(
         "plan_guidance",
         "failure_guidance",
         "completion_verification",
+        "integration_approval",
     }
 )
 
@@ -894,6 +897,20 @@ class TelegramOperator:
                     except Exception:
                         logger.exception("Telegram agent graph failed for chat %s", chat_id)
                 self._resume_from_clarification(chat_id, active_task, text)
+                return
+
+            if active_task.stage == TelegramTaskStage.INTEGRATION_APPROVAL:
+                if parse_integration_approval(text):
+                    self._handle_pre_run_approval(
+                        chat_id, sender=sender, action="approve"
+                    )
+                else:
+                    self._send_message(
+                        chat_id,
+                        "Integration is still waiting for explicit approval. "
+                        "Reply 'approved', 'merge it', or 'put it in main', "
+                        "or use /approve or /cancel.",
+                    )
                 return
 
             # For approval/research stages, route to the conversational agent.
@@ -1689,9 +1706,15 @@ class TelegramOperator:
     ) -> None:
         coding_agent_success = bool(state_values.get("coding_agent_success", False))
         verification_status = str(state_values.get("verification_status", "")).strip()
+        main_status = str(state_values.get("git_main_status", "")).strip()
+        lifecycle_enabled = bool(state_values.get("git_lifecycle_enabled", False))
         # The coding agent exiting cleanly is not enough — the backlog only closes once
         # the AI Tech Lead has verified the work against the approved task.
-        success = coding_agent_success and verification_status == "complete"
+        success = (
+            coding_agent_success
+            and verification_status == "complete"
+            and (not lifecycle_enabled or main_status.startswith("MAIN STATUS: IN MAIN"))
+        )
         timed_out = bool(state_values.get("coding_agent_timed_out", False))
         backlog_status_line = "not tracked"
         backlog_update_alert: str | None = None
@@ -1884,6 +1907,7 @@ class TelegramOperator:
             TelegramTaskStage.PRE_RUN_APPROVAL,
             TelegramTaskStage.RESEARCH_APPROVAL,
             TelegramTaskStage.COMPLETION_VERIFICATION,
+            TelegramTaskStage.INTEGRATION_APPROVAL,
         }:
             logger.warning(
                 "Telegram approval: /%s received for chat %s but task '%s' is in stage=%s, "
@@ -1912,6 +1936,11 @@ class TelegramOperator:
                 reason = text.strip() or "Rejected without a stated reason."
                 resume_value: dict[str, Any] = {"decision": "reject", "text": reason}
                 self._send_message(chat_id, "Noted — reporting this as unresolved...")
+            elif active_task.stage == TelegramTaskStage.INTEGRATION_APPROVAL:
+                resume_value = {"action": "cancel"}
+                self._send_message(
+                    chat_id, "Integration not approved. The pushed task branch is preserved."
+                )
             elif active_task.stage != TelegramTaskStage.PRE_RUN_APPROVAL:
                 # Unchanged existing behaviour for other stages: discard without resuming.
                 self._active_tasks.pop(chat_id, None)
@@ -1927,6 +1956,11 @@ class TelegramOperator:
             if active_task.stage == TelegramTaskStage.COMPLETION_VERIFICATION:
                 resume_value = {"decision": "confirm_complete"}
                 self._send_message(chat_id, "Confirmed complete. Closing the task...")
+            elif active_task.stage == TelegramTaskStage.INTEGRATION_APPROVAL:
+                resume_value = {"action": "approve", "approved_by": sender}
+                self._send_message(
+                    chat_id, "Integration approved. Reconciling with current origin/main..."
+                )
             else:
                 resume_value = (
                     {"approved": True}
@@ -2128,6 +2162,20 @@ class TelegramOperator:
                 sections.append(_summarize_text(reason, limit=200))
             sections.append("Reply /approve to confirm complete, or /reject <reason> to flag it.")
             return TelegramTaskStage.COMPLETION_VERIFICATION, "\n\n".join(sections)
+
+        if kind == "integration_approval":
+            branch = str(interrupt_value.get("task_branch", "")).strip() or "the task branch"
+            commit = str(interrupt_value.get("task_commit_sha", "")).strip()
+            sections = [
+                f"Validated work is pushed on {branch}, but it is NOT in main: {task_label}"
+            ]
+            if commit:
+                sections.append(f"Task commit: {commit}")
+            sections.append(
+                "Reply 'approved', 'merge it', or 'put it in main' to integrate, "
+                "or use /approve or /cancel."
+            )
+            return TelegramTaskStage.INTEGRATION_APPROVAL, "\n\n".join(sections)
 
         # Fallback: unrecognised interrupt kind — use state values for best-effort message
         logger.warning(
@@ -2801,8 +2849,12 @@ def _completion_message(
     coding_agent_result = str(state_values.get("coding_agent_result", "")).strip()
     verification_status = str(state_values.get("verification_status", "")).strip()
     verification_reason = str(state_values.get("verification_reason", "")).strip()
+    main_status = str(state_values.get("git_main_status", "")).strip()
+    lifecycle_enabled = bool(state_values.get("git_lifecycle_enabled", False))
     if timed_out:
         header = f"Task timed out: {task_label}"
+    elif lifecycle_enabled and main_status.startswith("MAIN STATUS: NOT IN MAIN"):
+        header = f"Task validated on a pushed branch: {task_label}"
     elif verification_status == "failed":
         header = f"Task needs attention: {task_label}"
     else:
@@ -2822,6 +2874,8 @@ def _completion_message(
 
     body = "\n".join(summary_lines).strip() or coding_agent_result.splitlines()[0]
     lines = [header, body]
+    if main_status:
+        lines.append(main_status)
     if verification_status == "failed" and verification_reason:
         lines.append(f"Verification: {_summarize_text(verification_reason, limit=200)}")
     if backlog_status_line:

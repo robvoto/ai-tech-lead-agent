@@ -38,6 +38,14 @@ CREATE TABLE IF NOT EXISTS run_audit_summaries (
     git_head                      TEXT NOT NULL,
     git_dirty                     INTEGER,
     git_dirty_paths               TEXT NOT NULL,
+    git_task_worktree             TEXT NOT NULL DEFAULT '',
+    git_task_branch               TEXT NOT NULL DEFAULT '',
+    git_task_base_sha             TEXT NOT NULL DEFAULT '',
+    git_task_commit_sha           TEXT NOT NULL DEFAULT '',
+    git_task_branch_pushed        INTEGER,
+    git_main_status               TEXT NOT NULL DEFAULT '',
+    git_main_sha                  TEXT NOT NULL DEFAULT '',
+    git_integration_status        TEXT NOT NULL DEFAULT '',
     tools_used                    TEXT NOT NULL,
     files_used                    TEXT NOT NULL,
     selected_skill_paths          TEXT NOT NULL,
@@ -88,6 +96,14 @@ class RunAuditSummary:
     git_head: str
     git_dirty: bool | None
     git_dirty_paths: tuple[str, ...]
+    git_task_worktree: str
+    git_task_branch: str
+    git_task_base_sha: str
+    git_task_commit_sha: str
+    git_task_branch_pushed: bool | None
+    git_main_status: str
+    git_main_sha: str
+    git_integration_status: str
     tools_used: tuple[str, ...]
     files_used: tuple[str, ...]
     selected_skill_paths: tuple[str, ...]
@@ -125,6 +141,14 @@ class RunAuditSummary:
                 "head": self.git_head,
                 "dirty": self.git_dirty,
                 "dirty_paths": list(self.git_dirty_paths),
+                "task_worktree": self.git_task_worktree,
+                "task_branch": self.git_task_branch,
+                "task_base_sha": self.git_task_base_sha,
+                "task_commit_sha": self.git_task_commit_sha,
+                "task_branch_pushed": self.git_task_branch_pushed,
+                "main_status": self.git_main_status,
+                "main_sha": self.git_main_sha,
+                "integration_status": self.git_integration_status,
             },
             "tools_used": list(self.tools_used),
             "files_used": list(self.files_used),
@@ -170,14 +194,17 @@ class RunAuditStore:
                     request_id, thread_id, task, model, profile,
                     approval_required, approved, approved_by, approval_action,
                     approval_revision_count, git_branch, git_head, git_dirty,
-                    git_dirty_paths, tools_used, files_used, selected_skill_paths,
+                    git_dirty_paths, git_task_worktree, git_task_branch, git_task_base_sha,
+                    git_task_commit_sha, git_task_branch_pushed, git_main_status, git_main_sha,
+                    git_integration_status, tools_used, files_used, selected_skill_paths,
                     selected_skill_hashes, project_guidance_paths, project_guidance_hash,
                     guidance_changed_on_resume, rubric_status, result_status, result_kind,
                     result_summary, validation_status, validation_reason, tokens_in,
                     tokens_out, cost_usd, created_at, updated_at
                 ) VALUES (
                     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?, ?, ?, ?, ?
                 )
                 ON CONFLICT(request_id) DO UPDATE SET
                     thread_id=excluded.thread_id, task=excluded.task, model=excluded.model,
@@ -187,6 +214,14 @@ class RunAuditStore:
                     approval_revision_count=excluded.approval_revision_count,
                     git_branch=excluded.git_branch, git_head=excluded.git_head,
                     git_dirty=excluded.git_dirty, git_dirty_paths=excluded.git_dirty_paths,
+                    git_task_worktree=excluded.git_task_worktree,
+                    git_task_branch=excluded.git_task_branch,
+                    git_task_base_sha=excluded.git_task_base_sha,
+                    git_task_commit_sha=excluded.git_task_commit_sha,
+                    git_task_branch_pushed=excluded.git_task_branch_pushed,
+                    git_main_status=excluded.git_main_status,
+                    git_main_sha=excluded.git_main_sha,
+                    git_integration_status=excluded.git_integration_status,
                     tools_used=excluded.tools_used, files_used=excluded.files_used,
                     selected_skill_paths=excluded.selected_skill_paths,
                     selected_skill_hashes=excluded.selected_skill_hashes,
@@ -215,7 +250,30 @@ class RunAuditStore:
         conn = sqlite3.connect(str(self._db_path))
         conn.row_factory = sqlite3.Row
         conn.executescript(_SCHEMA)
+        _ensure_schema_columns(conn)
         return _ManagedConnection(conn)
+
+
+def _ensure_schema_columns(conn: sqlite3.Connection) -> None:
+    """Add bounded lifecycle columns to databases created by ATL-038 v1."""
+
+    columns = {
+        row[1]
+        for row in conn.execute("PRAGMA table_info(run_audit_summaries)").fetchall()
+    }
+    additions = {
+        "git_task_worktree": "TEXT NOT NULL DEFAULT ''",
+        "git_task_branch": "TEXT NOT NULL DEFAULT ''",
+        "git_task_base_sha": "TEXT NOT NULL DEFAULT ''",
+        "git_task_commit_sha": "TEXT NOT NULL DEFAULT ''",
+        "git_task_branch_pushed": "INTEGER",
+        "git_main_status": "TEXT NOT NULL DEFAULT ''",
+        "git_main_sha": "TEXT NOT NULL DEFAULT ''",
+        "git_integration_status": "TEXT NOT NULL DEFAULT ''",
+    }
+    for name, definition in additions.items():
+        if name not in columns:
+            conn.execute(f"ALTER TABLE run_audit_summaries ADD COLUMN {name} {definition}")
 
 
 class _ManagedConnection:
@@ -279,6 +337,16 @@ def record_run_audit_summary(
         git_head=_bounded_text(state.get("git_preflight_head", ""), max_chars=160),
         git_dirty=_git_dirty_value(state, preflight_status),
         git_dirty_paths=tuple(dirty_paths),
+        git_task_worktree=_bounded_text(state.get("git_task_worktree", ""), max_chars=240),
+        git_task_branch=_bounded_text(state.get("git_task_branch", ""), max_chars=160),
+        git_task_base_sha=_bounded_text(state.get("git_task_base_sha", ""), max_chars=160),
+        git_task_commit_sha=_bounded_text(state.get("git_task_commit_sha", ""), max_chars=160),
+        git_task_branch_pushed=_optional_bool(state, "git_task_branch_pushed"),
+        git_main_status=_bounded_text(state.get("git_main_status", ""), max_chars=240),
+        git_main_sha=_bounded_text(state.get("git_main_sha", ""), max_chars=160),
+        git_integration_status=_bounded_text(
+            state.get("git_integration_status", ""), max_chars=100
+        ),
         tools_used=tuple(tools_used),
         files_used=tuple(files_used),
         selected_skill_paths=tuple(selected_paths),
@@ -322,6 +390,14 @@ def _summary_values(summary: RunAuditSummary) -> tuple[Any, ...]:
         summary.git_head,
         _db_bool(summary.git_dirty),
         json.dumps(list(summary.git_dirty_paths)),
+        summary.git_task_worktree,
+        summary.git_task_branch,
+        summary.git_task_base_sha,
+        summary.git_task_commit_sha,
+        _db_bool(summary.git_task_branch_pushed),
+        summary.git_main_status,
+        summary.git_main_sha,
+        summary.git_integration_status,
         json.dumps(list(summary.tools_used)),
         json.dumps(list(summary.files_used)),
         json.dumps(list(summary.selected_skill_paths)),
@@ -359,6 +435,14 @@ def _row_to_summary(row: sqlite3.Row) -> RunAuditSummary:
         git_head=row["git_head"],
         git_dirty=_from_db_bool(row["git_dirty"]),
         git_dirty_paths=tuple(json.loads(row["git_dirty_paths"])),
+        git_task_worktree=row["git_task_worktree"],
+        git_task_branch=row["git_task_branch"],
+        git_task_base_sha=row["git_task_base_sha"],
+        git_task_commit_sha=row["git_task_commit_sha"],
+        git_task_branch_pushed=_from_db_bool(row["git_task_branch_pushed"]),
+        git_main_status=row["git_main_status"],
+        git_main_sha=row["git_main_sha"],
+        git_integration_status=row["git_integration_status"],
         tools_used=tuple(json.loads(row["tools_used"])),
         files_used=tuple(json.loads(row["files_used"])),
         selected_skill_paths=tuple(json.loads(row["selected_skill_paths"])),

@@ -26,8 +26,23 @@ from .backlog_sheets_repository import (
     repository_for,
 )
 from .code_look_checker import check_code_look_need
-from .coding_agent_runner import CodingAgentCancellationToken, run_coding_agent, run_git_preflight
+from .coding_agent_runner import (
+    CodingAgentCancellationToken,
+    GitPreflightResult,
+    run_coding_agent,
+    run_git_preflight,
+)
 from .completion_verifier import CompletionVerificationUnavailable, verify_completion
+from .git_lifecycle import (
+    GitLifecycleBlocked,
+    GitLifecycleError,
+    TaskGitState,
+    commit_and_push_task_branch,
+    integrate_task_branch,
+    not_in_main_status,
+    prepare_task_worktree,
+    validate_integrated_git_result,
+)
 from .instruction_assembler import build_agent_instruction, selected_instruction_hashes
 from .logging_setup import LOGGER_NAME
 from .operator_question import answer_operator_question
@@ -86,6 +101,8 @@ class NodeName(StrEnum):
     FAILURE_INTERRUPT = "6b Handle Coding Failure"
     VERIFY_COMPLETION = "6c_verify_completion"
     COMPLETION_VERIFICATION_INTERRUPT = "6d_completion_verification_interrupt"
+    FINALIZE_TASK_BRANCH = "6e_finalize_task_branch"
+    INTEGRATION_APPROVAL = "6f_integration_approval"
     END_NODE = "7_end_node"
 
 
@@ -166,6 +183,18 @@ class GraphState(TypedDict):
     git_preflight_head: str
     git_preflight_dirty_paths: tuple[str, ...]
     git_preflight_reason: str
+    git_lifecycle_enabled: bool
+    git_task_canonical_root: str
+    git_task_worktree: str
+    git_task_branch: str
+    git_task_base_sha: str
+    git_task_tip_sha: str
+    git_task_commit_sha: str
+    git_task_branch_pushed: bool
+    git_main_status: str
+    git_main_sha: str
+    git_integration_status: str
+    git_integration_reason: str
     coding_agent_result: str
     coding_agent_success: bool
     coding_agent_changed_files: tuple[str, ...]
@@ -273,6 +302,18 @@ def build_initial_graph_state(
         "git_preflight_head": "",
         "git_preflight_dirty_paths": (),
         "git_preflight_reason": "",
+        "git_lifecycle_enabled": False,
+        "git_task_canonical_root": "",
+        "git_task_worktree": "",
+        "git_task_branch": "",
+        "git_task_base_sha": "",
+        "git_task_tip_sha": "",
+        "git_task_commit_sha": "",
+        "git_task_branch_pushed": False,
+        "git_main_status": "",
+        "git_main_sha": "",
+        "git_integration_status": "",
+        "git_integration_reason": "",
         "coding_agent_result": "",
         "coding_agent_success": False,
         "coding_agent_changed_files": (),
@@ -1767,6 +1808,25 @@ def _log_decision_start(step: str, decision_name: str, description: str) -> None
     logger.info("DECISION [%s] %s - %s", step, decision_name, description)
 
 
+def _task_git_state_from_state(state: GraphState) -> TaskGitState | None:
+    worktree = str(state.get("git_task_worktree", "")).strip()
+    if not worktree:
+        return None
+    return TaskGitState(
+        canonical_root=str(state.get("git_task_canonical_root", "")).strip(),
+        worktree=worktree,
+        branch=str(state.get("git_task_branch", "")).strip(),
+        base_sha=str(state.get("git_task_base_sha", "")).strip(),
+        tip_sha=str(state.get("git_task_tip_sha", "")).strip(),
+        task_commit_sha=str(state.get("git_task_commit_sha", "")).strip(),
+        branch_pushed=bool(state.get("git_task_branch_pushed", False)),
+        main_status=str(state.get("git_main_status", "")).strip(),
+        main_sha=str(state.get("git_main_sha", "")).strip(),
+        integration_status=str(state.get("git_integration_status", "")).strip(),
+        integration_reason=str(state.get("git_integration_reason", "")).strip(),
+    )
+
+
 def _single_line_preview(text: str, limit: int = 240) -> str:
     normalized_text = " ".join(text.split())
     if len(normalized_text) <= limit:
@@ -1893,7 +1953,71 @@ def run_coding_agent_node(
         )
         if text
     )
-    preflight = run_git_preflight(target_project_root, relevance_text)
+    lifecycle_enabled = bool(settings.execute_coding_agent and state.get("request_id"))
+    existing_task_git_state = _task_git_state_from_state(state) if lifecycle_enabled else None
+    execution_root = target_project_root
+    lifecycle_fields: dict[str, Any] = {"git_lifecycle_enabled": lifecycle_enabled}
+
+    # The canonical preflight remains the authoritative dirty-work boundary.
+    # The coding subprocess itself is then moved to the request-owned worktree.
+    canonical_preflight = run_git_preflight(target_project_root, relevance_text)
+    if not canonical_preflight.safe_to_proceed:
+        preflight = canonical_preflight
+    elif lifecycle_enabled:
+        try:
+            task_git_state = prepare_task_worktree(
+                target_project_root,
+                str(state.get("request_id", "")),
+                existing=existing_task_git_state,
+            )
+            execution_root = Path(task_git_state.worktree)
+            lifecycle_fields.update(
+                {
+                    "git_task_canonical_root": task_git_state.canonical_root,
+                    "git_task_worktree": task_git_state.worktree,
+                    "git_task_branch": task_git_state.branch,
+                    "git_task_base_sha": task_git_state.base_sha,
+                    "git_task_tip_sha": task_git_state.tip_sha,
+                    "git_task_commit_sha": task_git_state.task_commit_sha,
+                    "git_task_branch_pushed": task_git_state.branch_pushed,
+                    "git_main_status": task_git_state.main_status,
+                    "git_main_sha": task_git_state.main_sha,
+                    "git_integration_status": task_git_state.integration_status,
+                    "git_integration_reason": task_git_state.integration_reason,
+                }
+            )
+            task_head = task_git_state.tip_sha or task_git_state.base_sha
+            preflight = GitPreflightResult(
+                status="task_worktree",
+                branch=task_git_state.branch,
+                head=task_head,
+                dirty_paths=canonical_preflight.dirty_paths,
+                reason=(
+                    "Coding agent will run in the request-owned task worktree. "
+                    f"Canonical preflight: {canonical_preflight.reason}"
+                ),
+            )
+        except (GitLifecycleBlocked, GitLifecycleError) as error:
+            logger.warning("Git lifecycle blocked coding-agent launch: %s", error)
+            return {
+                **lifecycle_fields,
+                "git_preflight_status": "blocked_lifecycle",
+                "git_preflight_branch": "",
+                "git_preflight_head": "",
+                "git_preflight_dirty_paths": canonical_preflight.dirty_paths,
+                "git_preflight_reason": str(error),
+                "coding_agent_result": str(error),
+                "coding_agent_success": False,
+                "coding_agent_changed_files": (),
+                "restart_required": False,
+                "coding_agent_correction": str(error),
+                "coding_agent_command": "",
+                "coding_agent_returncode": None,
+                "coding_agent_timed_out": False,
+                "coding_agent_performed_by": "",
+            }
+    else:
+        preflight = canonical_preflight
     logger.info(
         "[LEARN] Git preflight: status=%s branch=%s head=%s dirty_paths=%d",
         preflight.status,
@@ -1902,6 +2026,7 @@ def run_coding_agent_node(
         len(preflight.dirty_paths),
     )
     preflight_fields = {
+        **lifecycle_fields,
         "git_preflight_status": preflight.status,
         "git_preflight_branch": preflight.branch,
         "git_preflight_head": preflight.head,
@@ -1954,7 +2079,7 @@ def run_coding_agent_node(
 
     runner_kwargs = {
         "agent_instruction": state["agent_instruction"],
-        "project_root": target_project_root,
+        "project_root": execution_root,
         "settings": settings,
         "progress_callback": progress_callback,
         "use_pty": True,
@@ -2190,8 +2315,112 @@ def route_after_verify_completion(state: GraphState) -> str:
         logger.info("Decision: correction_required -> CREATE_AGENT_INSTRUCTION")
         return "correction needed"
 
+    if (
+        status == "complete"
+        and state.get("git_lifecycle_enabled")
+        and state.get("git_task_worktree")
+    ):
+        logger.info("Decision: verified task branch -> FINALIZE_TASK_BRANCH")
+        return "finalize task branch"
+
     logger.info("Decision: %s -> END_NODE", status or "complete")
     return "verification finished"
+
+
+def _task_git_state_updates(task: TaskGitState) -> dict[str, Any]:
+    return {
+        "git_task_canonical_root": task.canonical_root,
+        "git_task_worktree": task.worktree,
+        "git_task_branch": task.branch,
+        "git_task_base_sha": task.base_sha,
+        "git_task_tip_sha": task.tip_sha,
+        "git_task_commit_sha": task.task_commit_sha,
+        "git_task_branch_pushed": task.branch_pushed,
+        "git_main_status": task.main_status,
+        "git_main_sha": task.main_sha,
+        "git_integration_status": task.integration_status,
+        "git_integration_reason": task.integration_reason,
+    }
+
+
+def finalize_task_branch_node(state: GraphState) -> dict[str, Any]:
+    """Commit and push the validated task branch before asking about main."""
+
+    _log_node_start("6e", "FINALIZE_TASK_BRANCH", "Commit and push validated task branch")
+    task = _task_git_state_from_state(state)
+    if task is None:
+        return {
+            "git_integration_status": "blocked",
+            "git_integration_reason": "No request-owned task worktree was recorded.",
+        }
+    try:
+        pushed = commit_and_push_task_branch(task)
+    except GitLifecycleError as error:
+        logger.warning("Task branch finalization blocked: %s", error)
+        return {
+            "git_integration_status": "blocked",
+            "git_integration_reason": str(error),
+            "git_main_status": not_in_main_status(task.branch),
+        }
+    return _task_git_state_updates(pushed)
+
+
+def route_after_finalize_task_branch(state: GraphState) -> str:
+    if state.get("git_integration_status") == "awaiting_approval":
+        return "integration approval"
+    return "integration blocked"
+
+
+def integration_approval_node(state: GraphState) -> dict[str, Any]:
+    """Pause after validation and branch push until main integration is approved."""
+
+    _log_node_start("6f", "INTEGRATION_APPROVAL", "Await approval to integrate into main")
+    task = _task_git_state_from_state(state)
+    if task is None:
+        return {
+            "git_integration_status": "blocked",
+            "git_integration_reason": "No request-owned task worktree was recorded.",
+        }
+    result = interrupt(
+        {
+            "kind": "integration_approval",
+            "task_branch": task.branch,
+            "task_commit_sha": task.task_commit_sha,
+            "main_status": not_in_main_status(task.branch),
+            "prompt": (
+                f"Validated work is pushed on {task.branch}, but it is NOT in main. "
+                "Approve integration to current origin/main?"
+            ),
+        }
+    )
+    action = _parse_approval_action(result)
+    if action == "cancel":
+        logger.info("Integration approval declined for branch=%s", task.branch)
+        return {
+            "git_integration_status": "not_requested",
+            "git_integration_reason": "Integration was not approved.",
+            "git_main_status": not_in_main_status(task.branch),
+        }
+    if action != "approve":
+        return {
+            "git_integration_status": "blocked",
+            "git_integration_reason": "Integration approval was not recognised.",
+            "git_main_status": not_in_main_status(task.branch),
+        }
+
+    try:
+        integrated = integrate_task_branch(
+            task,
+            validate_integrated=validate_integrated_git_result,
+        )
+    except GitLifecycleError as error:
+        logger.warning("Main integration stopped: %s", error)
+        return {
+            "git_integration_status": "blocked",
+            "git_integration_reason": str(error),
+            "git_main_status": not_in_main_status(task.branch),
+        }
+    return _task_git_state_updates(integrated)
 
 
 def end_node(state: GraphState) -> dict[str, Any]:
@@ -2217,6 +2446,9 @@ def end_node(state: GraphState) -> dict[str, Any]:
             verification_status,
             _short_reason(state.get("verification_reason", "")),
         )
+    main_status = str(state.get("git_main_status", "")).strip()
+    if main_status:
+        logger.info(main_status)
     logger.info("---END---")
 
     context_clarification_exhausted = bool(
@@ -2312,6 +2544,8 @@ def build_graph(
     workflow.add_node(
         NodeName.COMPLETION_VERIFICATION_INTERRUPT, completion_verification_interrupt_node
     )
+    workflow.add_node(NodeName.FINALIZE_TASK_BRANCH, finalize_task_branch_node)
+    workflow.add_node(NodeName.INTEGRATION_APPROVAL, integration_approval_node)
     workflow.add_node(NodeName.END_NODE, with_progress(end_node, "finalising", "Finalising the specialist result."))
 
     workflow.add_edge(START, NodeName.READ_REQUEST)
@@ -2437,9 +2671,19 @@ def build_graph(
             "verification finished": NodeName.END_NODE,
             "correction needed": NodeName.CREATE_AGENT_INSTRUCTION,
             "human verification needed": NodeName.COMPLETION_VERIFICATION_INTERRUPT,
+            "finalize task branch": NodeName.FINALIZE_TASK_BRANCH,
         },
     )
     workflow.add_edge(NodeName.COMPLETION_VERIFICATION_INTERRUPT, NodeName.END_NODE)
+    workflow.add_conditional_edges(
+        NodeName.FINALIZE_TASK_BRANCH,
+        route_after_finalize_task_branch,
+        {
+            "integration approval": NodeName.INTEGRATION_APPROVAL,
+            "integration blocked": NodeName.END_NODE,
+        },
+    )
+    workflow.add_edge(NodeName.INTEGRATION_APPROVAL, NodeName.END_NODE)
     workflow.add_edge(NodeName.END_NODE, END)
 
     return workflow.compile(checkpointer=checkpointer_storage)
