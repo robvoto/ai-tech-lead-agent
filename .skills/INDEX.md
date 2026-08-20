@@ -9,6 +9,7 @@ Pick the smallest skill that matches the requested outcome or the files being ch
 ## Skills
 
 - `code-change/SKILL.md` - code, runtime, test, graph, or integration implementation changes.
+- `git-lifecycle/SKILL.md` - branch/worktree, commit, push, PR, merge, and verified `main` integration.
 - `langgraph-node-change/SKILL.md` - LangGraph nodes, routers, graph state, checkpoints, interrupts, or persistence behaviour.
 - `backlog-management/SKILL.md` - backlog loading, parsing, selection, status, evidence, or task handoff.
 - `backlog-item-authoring/SKILL.md` - drafting or validating a new backlog item.

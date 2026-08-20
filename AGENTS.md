@@ -10,7 +10,8 @@ This file is a routing layer only. It is not the project manual, backlog process
 2. Use `.skills/INDEX.md` to choose one relevant task skill.
 3. Inspect the current files before giving code-specific advice or editing.
 4. If changing project setup, architecture, runtime behaviour, documentation, backlog, automation, config, tests, environment examples, packaging, templates, AI model/provider defaults, cost logging, approval workflows, long-running workflows, `AGENTS.md`, or skills, read `docs/STANDARDS_INDEX.md` first.
-5. Do not load the whole repository unless the task explicitly requires a broad audit.
+5. Before any branch/worktree, commit, push, PR, merge, or `main`-integration action, use `.skills/git-lifecycle/SKILL.md`.
+6. Do not load the whole repository unless the task explicitly requires a broad audit.
 
 ## Navigation
 
