@@ -821,7 +821,6 @@ class TelegramOperator:
             BacklogStatus.DONE,
             BacklogStatus.WONT_DO,
             BacklogStatus.OBSOLETE,
-            BacklogStatus.DEFERRED,
         }:
             message = (
                 f"Backlog item '{backlog_item.item_id}' is Done and cannot be selected "

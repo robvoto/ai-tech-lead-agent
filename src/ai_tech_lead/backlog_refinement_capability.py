@@ -196,9 +196,9 @@ def analyze_backlog_refinement_matches(
             if item.status == BacklogStatus.DONE:
                 kind = "already_done_equivalent"
                 reason = "Very similar title to a completed backlog item."
-            elif item.status in {BacklogStatus.OBSOLETE, BacklogStatus.WONT_DO, BacklogStatus.DEFERRED}:
+            elif item.status in {BacklogStatus.OBSOLETE, BacklogStatus.WONT_DO}:
                 kind = "obsolete_equivalent"
-                reason = "Very similar title to an obsolete, deferred, or rejected backlog item."
+                reason = "Very similar title to an obsolete or rejected backlog item."
             else:
                 kind = "likely_duplicate"
                 reason = "Very similar title to an existing backlog item."

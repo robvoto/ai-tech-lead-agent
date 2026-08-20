@@ -14,7 +14,11 @@ from ai_tech_lead.backlog_repository import (
     validate_backlog_draft,
     validate_backlog_refinement_draft,
 )
-from ai_tech_lead.backlog_status import BacklogStatus
+from ai_tech_lead.backlog_status import (
+    BacklogStatus,
+    backlog_status_choices,
+    normalize_backlog_status,
+)
 
 
 def test_repository_lists_gets_and_adds_markdown_items(tmp_path: Path) -> None:
@@ -44,6 +48,27 @@ def test_repository_lists_gets_and_adds_markdown_items(tmp_path: Path) -> None:
     assert added_item.status == BacklogStatus.BACKLOG
     assert repository.get_item("ATL-002").body
     assert "Approval Required: yes" in backlog_path.read_text(encoding="utf-8")
+
+
+def test_deferred_is_not_an_allowed_backlog_status() -> None:
+    assert normalize_backlog_status("Deferred") is None
+    assert "Deferred" not in backlog_status_choices()
+    assert len(BacklogStatus) == 8
+
+
+def test_repository_rejects_legacy_deferred_status(tmp_path: Path) -> None:
+    backlog_path = tmp_path / "BACKLOG.md"
+    backlog_path.write_text(
+        "# Backlog\n\n"
+        "## ATL-001 - Legacy item\n\n"
+        "Status: Deferred\n\n"
+        "Goal:\nDo the thing.\n",
+        encoding="utf-8",
+    )
+    repository = MarkdownBacklogRepository(backlog_path)
+
+    with pytest.raises(BacklogValidationError, match="Unknown backlog status 'Deferred'"):
+        repository.list_items()
 
 
 def test_list_open_items_excludes_done_items(tmp_path: Path) -> None:
