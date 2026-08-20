@@ -57,6 +57,32 @@ def test_review_plan_rejects_verbose_plan_without_calling_llm(monkeypatch) -> No
     assert "3 to 5 short bullets" in decision.correction
 
 
+def test_review_plan_allows_five_bullets_plus_done_when(monkeypatch) -> None:
+    settings = replace(parse_settings(valid_settings_dict()), orchestrator_ai_enabled=True)
+
+    monkeypatch.setattr(
+        "ai_tech_lead.llm_json.call_orchestrator_llm",
+        lambda **_kw: OrchestratorLlmResult(
+            text='{"approved": true, "reason": "Plan shape is valid.", "correction": ""}'
+        ),
+    )
+
+    plan_text = "\n".join(
+        [
+            "- Fix the shared parser.",
+            "- Fix execution reporting.",
+            "- Fix resumed task kind.",
+            "- Fix bounded guidance discovery.",
+            "- Add focused tests.",
+            "Done when: targeted tests pass.",
+        ]
+    )
+
+    decision = review_plan("Fix the defects", plan_text, settings)
+
+    assert decision.approved is True
+
+
 def test_review_plan_accepts_markdown_fenced_json(monkeypatch) -> None:
     """The live failure this guards against: gpt-4.1-mini sometimes wraps its
     review reply in a ```json fence, which used to crash with

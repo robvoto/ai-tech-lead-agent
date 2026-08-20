@@ -26,6 +26,7 @@ from .orchestrator_llm import (
 logger = logging.getLogger(LOGGER_NAME)
 
 DEFAULT_JSON_CALL_ATTEMPTS = 2
+JSON_RETRY_MIN_OUTPUT_TOKENS = 800
 
 T = TypeVar("T")
 
@@ -76,10 +77,13 @@ def call_llm_for_json(
     """
     last_error: Exception = ValueError(f"{error_label}: produced no attempts")
     for attempt in range(1, attempts + 1):
+        attempt_config = config
+        if attempt > 1 and config.max_output_tokens < JSON_RETRY_MIN_OUTPUT_TOKENS:
+            attempt_config = replace(config, max_output_tokens=JSON_RETRY_MIN_OUTPUT_TOKENS)
         try:
             result = call_orchestrator_llm(
                 prompt=prompt,
-                config=config,
+                config=attempt_config,
                 json_schema_name=schema_name,
                 json_schema=schema,
             )

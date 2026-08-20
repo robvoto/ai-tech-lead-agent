@@ -16,7 +16,7 @@ from .prompt_loader import PLAN_REVIEW_PROMPT_KEY, render_prompt
 
 logger = logging.getLogger(LOGGER_NAME)
 MAX_PLAN_REVIEW_WORDS = 120
-MAX_PLAN_REVIEW_LINES = 5
+MAX_PLAN_REVIEW_BULLETS = 5
 _PLAN_REVIEW_SCHEMA = {
     "type": "object",
     "properties": {
@@ -159,4 +159,6 @@ def _parse_review_payload(payload: dict[str, Any]) -> PlanReviewDecision:
 
 def _plan_is_too_verbose(plan_text: str) -> bool:
     lines = [line.strip() for line in plan_text.splitlines() if line.strip()]
-    return len(lines) > MAX_PLAN_REVIEW_LINES or len(plan_text.split()) > MAX_PLAN_REVIEW_WORDS
+    if lines and lines[-1].lower().startswith("done when"):
+        lines = lines[:-1]
+    return len(lines) > MAX_PLAN_REVIEW_BULLETS or len(plan_text.split()) > MAX_PLAN_REVIEW_WORDS

@@ -233,3 +233,27 @@ def test_call_llm_for_json_retries_incomplete_response(monkeypatch) -> None:
     assert len(calls) == 2
     assert calls[0]["json_schema_name"] == "test_response"
     assert calls[0]["json_schema"] == _SCHEMA
+
+
+def test_call_llm_for_json_increases_output_budget_on_retry(monkeypatch) -> None:
+    seen_budgets: list[int] = []
+
+    def fake_call(*, config, **_kwargs):
+        seen_budgets.append(config.max_output_tokens)
+        if len(seen_budgets) == 1:
+            return OrchestratorLlmResult(text="not json")
+        return OrchestratorLlmResult(text='{"ok": true}')
+
+    monkeypatch.setattr("ai_tech_lead.llm_json.call_orchestrator_llm", fake_call)
+
+    value = call_llm_for_json(
+        prompt="p",
+        config=_config(),
+        error_label="test",
+        schema_name="test_response",
+        schema=_SCHEMA,
+        parse=lambda payload: payload["ok"],
+    )
+
+    assert value is True
+    assert seen_budgets == [100, 800]
