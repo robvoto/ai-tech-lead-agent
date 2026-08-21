@@ -76,10 +76,11 @@ TIER_CEILING_EFFORT: dict[str, str] = {
 # dedicated normal-tier benchmark is a scoped follow-up, not something to
 # fold into this pass.
 #
-# STRONG_PROFILE targets Luna at "high" because ATL-035 registered it for
-# validation only; it is not yet wired to tech_lead_analysis/plan_review and
-# was not part of this benchmark (open-ended reasoning has no cheap
-# ground-truth labels the way single-label classification does).
+# STRONG_PROFILE stays on the approved gpt-4.1-mini baseline until
+# tech_lead_analysis and plan_review have their own live benchmark. ATL-035
+# registered Luna @ "high" only as an unused validation profile; ATL-036 then
+# accidentally activated it when these purposes were mapped to STRONG_TIER.
+# ATL-090 explicitly left both strong-tier purposes unbenchmarked/out of scope.
 SIMPLE_PROFILE = "simple"
 NORMAL_PROFILE = "normal"
 STRONG_PROFILE = "strong"
@@ -132,9 +133,9 @@ class ExecutionProfile:
 
 
 # "simple" moved to Luna @ "none" per the live-benchmark evidence above.
-# "normal" (settings-driven) stays on gpt-4.1-mini, which has no reasoning
-# control at all — inherently within its ceiling. "strong" targets Luna at
-# "high" — validated against the "strong" ceiling below, not assumed safe.
+# "normal" (settings-driven) stays on gpt-4.1-mini by default. "strong" also
+# stays on the approved gpt-4.1-mini baseline until its two open-ended purposes
+# are benchmarked independently; its larger output budget remains available.
 _STATIC_PROFILES: dict[str, ExecutionProfile] = {
     SIMPLE_PROFILE: ExecutionProfile(
         name=SIMPLE_PROFILE,
@@ -146,8 +147,8 @@ _STATIC_PROFILES: dict[str, ExecutionProfile] = {
     STRONG_PROFILE: ExecutionProfile(
         name=STRONG_PROFILE,
         tier=STRONG_TIER,
-        model="gpt-5.6-luna",
-        reasoning_effort="high",
+        model="gpt-4.1-mini",
+        reasoning_effort=None,
         max_output_tokens=2000,
     ),
 }

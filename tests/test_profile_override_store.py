@@ -82,7 +82,8 @@ def test_resolve_profile_with_override_uses_active_override(tmp_path: Path) -> N
     profile = resolve_profile_with_override("request_relevance", store=store)
 
     assert profile.tier == STRONG_TIER
-    assert profile.model == "gpt-5.6-luna"
+    assert profile.model == "gpt-4.1-mini"
+    assert profile.reasoning_effort is None
     # Consumed — a second resolution falls back to the purpose's normal tier.
     profile_after = resolve_profile_with_override("request_relevance", store=store)
     assert profile_after.tier == SIMPLE_TIER
