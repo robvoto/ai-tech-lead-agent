@@ -1993,10 +1993,11 @@ def test_profile_command_groups_purposes_by_resolved_model_and_effort(monkeypatc
 
     text = client.messages[-1][1]
     assert (
-        "- gpt-4.1-mini @ none: backlog_draft_builder, completion_verification, risk_review"
+        "- gpt-4.1-mini @ none: backlog_draft_builder, completion_verification, "
+        "plan_review, risk_review, tech_lead_analysis"
         in text
     )
-    assert "- gpt-5.6-luna @ high: plan_review, tech_lead_analysis" in text
+    assert "- gpt-5.6-luna @ high:" not in text
     assert "- gpt-5.6-luna @ none: " in text
     assert "telegram_intent_routing" in text
     assert "operator_question" in text

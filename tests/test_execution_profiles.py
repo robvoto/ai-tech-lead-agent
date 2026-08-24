@@ -68,11 +68,11 @@ def test_simple_profile_uses_luna_at_none_effort_per_live_benchmark() -> None:
     assert profile.reasoning_effort == "none"
 
 
-def test_strong_profile_uses_luna_with_explicit_high_reasoning_effort() -> None:
+def test_strong_profile_stays_on_unbenchmarked_mini_baseline() -> None:
     profile = resolve_execution_profile(STRONG_PROFILE)
-    assert profile.model == "gpt-5.6-luna"
+    assert profile.model == "gpt-4.1-mini"
     assert profile.tier == STRONG_TIER
-    assert profile.reasoning_effort == "high"
+    assert profile.reasoning_effort is None
     assert profile.max_output_tokens >= 1024
 
 
@@ -117,9 +117,12 @@ def test_resolve_profile_for_purpose_simple_call_site_stays_simple() -> None:
     assert profile.tier == SIMPLE_TIER
 
 
-def test_resolve_profile_for_purpose_strong_call_site_stays_strong() -> None:
-    profile = resolve_profile_for_purpose("tech_lead_analysis")
+@pytest.mark.parametrize("purpose", ["tech_lead_analysis", "plan_review"])
+def test_resolve_strong_purposes_stay_on_unbenchmarked_mini_baseline(purpose: str) -> None:
+    profile = resolve_profile_for_purpose(purpose)
     assert profile.tier == STRONG_TIER
+    assert profile.model == "gpt-4.1-mini"
+    assert profile.reasoning_effort is None
 
 
 def test_validate_tier_ceiling_rejects_an_effort_above_the_tier_ceiling() -> None:
@@ -152,7 +155,8 @@ def test_validate_tier_ceiling_rejects_never_automatic_efforts() -> None:
 def test_resolve_profile_for_purpose_with_override_tier_uses_the_override() -> None:
     profile = resolve_profile_for_purpose("request_relevance", override_tier=STRONG_TIER)
     assert profile.tier == STRONG_TIER
-    assert profile.model == "gpt-5.6-luna"
+    assert profile.model == "gpt-4.1-mini"
+    assert profile.reasoning_effort is None
 
 
 def test_next_escalation_effort_steps_up_within_tier_ceiling() -> None:
@@ -243,7 +247,8 @@ def test_explicit_operator_override_tier_wins_over_purpose_profile_override(monk
     profile = resolve_profile_for_purpose("operator_question", override_tier=STRONG_TIER)
 
     assert profile.tier == STRONG_TIER
-    assert profile.reasoning_effort == "high"
+    assert profile.model == "gpt-4.1-mini"
+    assert profile.reasoning_effort is None
 
 
 def test_validate_registry_ceilings_rejects_a_breaching_purpose_override(monkeypatch) -> None:
