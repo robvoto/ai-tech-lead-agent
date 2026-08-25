@@ -15,6 +15,7 @@ import logging
 from langchain_core.runnables import RunnableConfig
 
 from .backlog_loader import backlog_item_to_graph_state, load_backlog_item_by_id
+from .app_settings import load_settings
 from .backlog_sheets_repository import BacklogSourceUnavailableError
 from .checkpointer_store import get_checkpointer
 from .coding_workflow_graph import build_graph
@@ -35,6 +36,14 @@ def run_backlog_graph(
         logger.error("%s", error)
         return
     backlog_input = backlog_item_to_graph_state(backlog_item)
+    settings = load_settings()
+    backlog_input.update(
+        {
+            "orchestrator_run_max_calls": settings.orchestrator_run_max_calls,
+            "orchestrator_run_max_tokens": settings.orchestrator_run_max_tokens,
+            "orchestrator_run_max_cost_usd": settings.orchestrator_run_max_cost_usd,
+        }
+    )
 
     app = build_graph(
         checkpointer_storage=get_checkpointer(),

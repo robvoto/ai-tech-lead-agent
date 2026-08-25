@@ -364,9 +364,21 @@ def record_run_audit_summary(
         validation_reason=_bounded_text(
             state.get("verification_reason", "") or state.get("git_preflight_reason", "")
         ),
-        tokens_in=_optional_int(state.get("tokens_in", result.get("tokens_in"))),
-        tokens_out=_optional_int(state.get("tokens_out", result.get("tokens_out"))),
-        cost_usd=_optional_float(state.get("cost_usd", result.get("cost_usd"))),
+        tokens_in=_optional_int(
+            state.get(
+                "orchestrator_tokens_in_used",
+                state.get("tokens_in", result.get("tokens_in")),
+            )
+        ),
+        tokens_out=_optional_int(
+            state.get(
+                "orchestrator_tokens_out_used",
+                state.get("tokens_out", result.get("tokens_out")),
+            )
+        ),
+        cost_usd=_optional_float(
+            state.get("orchestrator_cost_usd_used", state.get("cost_usd", result.get("cost_usd")))
+        ),
         created_at=now,
         updated_at=now,
     )

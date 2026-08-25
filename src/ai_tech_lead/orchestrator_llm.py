@@ -13,6 +13,10 @@ from urllib.request import Request, urlopen
 from ai_tech_lead.env_loader import load_local_env
 from ai_tech_lead.logging_setup import LOGGER_NAME
 from ai_tech_lead.model_registry import estimate_cost as _registry_estimate_cost
+from ai_tech_lead.run_budget import (
+    begin_active_run_budget_call,
+    record_active_run_budget_usage,
+)
 
 OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses"
 OPENAI_API_KEY_ENV = "OPENAI_API_KEY"
@@ -109,6 +113,7 @@ def call_orchestrator_llm(
         method="POST",
     )
 
+    begin_active_run_budget_call()
     try:
         with urlopen(request, timeout=config.timeout_seconds) as response:
             body = response.read().decode("utf-8")
@@ -133,6 +138,10 @@ def call_orchestrator_llm(
         raise OrchestratorLlmError(f"OpenAI API request failed: {error.reason}") from error
 
     data = json.loads(body)
+    tokens_in, tokens_out, cost_usd = _response_usage(data, config.model)
+    record_active_run_budget_usage(
+        tokens_in=tokens_in, tokens_out=tokens_out, cost_usd=cost_usd
+    )
     if data.get("status") == "incomplete":
         details = data.get("incomplete_details")
         reason = (
@@ -141,10 +150,6 @@ def call_orchestrator_llm(
             else "unknown"
         )
         elapsed_ms = (time.perf_counter() - start_time) * 1000
-        usage = data.get("usage", {})
-        tokens_in = int(usage.get("input_tokens", 0))
-        tokens_out = int(usage.get("output_tokens", 0))
-        cost_usd = _estimate_cost(config.model, tokens_in, tokens_out)
         logger.info(
             "LLM call elapsed: %.0fms model=%s purpose=%s profile=%s effort=%s "
             "status=incomplete reason=%s in=%d out=%d total=%d cost_total=$%.5f",
@@ -172,11 +177,7 @@ def call_orchestrator_llm(
         raise OrchestratorLlmError("OpenAI response did not contain output text.")
 
     elapsed_ms = (time.perf_counter() - start_time) * 1000
-    usage = data.get("usage", {})
-    tokens_in = int(usage.get("input_tokens", 0))
-    tokens_out = int(usage.get("output_tokens", 0))
     tokens_total = tokens_in + tokens_out
-    cost_usd = _estimate_cost(config.model, tokens_in, tokens_out)
     logger.info(
         "LLM call elapsed: %.0fms model=%s purpose=%s profile=%s effort=%s "
         "status=ok in=%d out=%d total=%d cost_total=$%.5f",
@@ -231,6 +232,7 @@ def call_orchestrator_web_search(
         method="POST",
     )
 
+    begin_active_run_budget_call()
     try:
         with urlopen(request, timeout=config.timeout_seconds) as response:
             body = response.read().decode("utf-8")
@@ -249,10 +251,10 @@ def call_orchestrator_web_search(
 
     text = _extract_response_text(data)
     elapsed_ms = (time.perf_counter() - start_time) * 1000
-    usage = data.get("usage", {})
-    tokens_in = int(usage.get("input_tokens", 0))
-    tokens_out = int(usage.get("output_tokens", 0))
-    cost_usd = _estimate_cost(config.model, tokens_in, tokens_out)
+    tokens_in, tokens_out, cost_usd = _response_usage(data, config.model)
+    record_active_run_budget_usage(
+        tokens_in=tokens_in, tokens_out=tokens_out, cost_usd=cost_usd
+    )
     logger.info(
         "Web search call elapsed: %.0fms model=%s purpose=%s profile=%s effort=%s "
         "status=ok in=%d out=%d cost_total=$%.5f",
@@ -268,6 +270,15 @@ def call_orchestrator_web_search(
     return OrchestratorWebSearchResult(
         data=data, text=text, tokens_in=tokens_in, tokens_out=tokens_out, cost_usd=cost_usd
     )
+
+
+def _response_usage(data: dict, model: str) -> tuple[int, int, float]:
+    """Return provider-reported usage and the registry-estimated cost."""
+
+    usage = data.get("usage", {})
+    tokens_in = int(usage.get("input_tokens", 0))
+    tokens_out = int(usage.get("output_tokens", 0))
+    return tokens_in, tokens_out, _estimate_cost(model, tokens_in, tokens_out)
 
 
 def _estimate_cost(model: str, tokens_in: int, tokens_out: int) -> float:
