@@ -77,6 +77,11 @@ START
 -> END
 ```
 
+Every orchestrator-calling node also has a side route to `6c1_run_budget_interrupt` when the
+run's persisted provider-call/token/cost budget is exhausted. That guard applies to request
+relevance, code-look need, project-guidance governance, task analysis, research-gap checking,
+research source discovery, risk review, plan review, approval Q&A, and completion verification.
+It is a guardrail around the existing path, not another normal sequential step.
 
 ## Request understanding and context resolution
 
@@ -210,6 +215,15 @@ These nodes call `interrupt(value)` (LangGraph dynamic breakpoint pattern) to pa
 - `6b_failure_interrupt` — emits `{"kind": "failure_guidance", "coding_agent_result": "...", "retry_count": N}`. Resume with a plain text guidance string. Appends to `task_feedback` and resets retry count to 0.
 - `6d_completion_verification_interrupt` — emits `{"kind": "completion_verification", "reason": "...", "coding_agent_result": "...", "changed_files": [...]}`. Resume with `{"decision": "confirm_complete"}` or `{"decision": "reject", "text": "..."}`. Either resume ends the workflow at `7_end_node` (never restarts the coding agent).
 - `6f_integration_approval` — emits `{"kind": "integration_approval", "task_branch": "...", "task_commit_sha": "...", "main_status": "..."}` after the validated task branch is pushed. Resume with `{"action": "approve", "approved_by": "..."}` to reconcile and integrate, or `{"action": "cancel"}` to preserve the pushed branch outside `main`.
+- `6c1_run_budget_interrupt` — the shared orchestrator-budget side gate. Non-interactive/subprocess runs never pause here: they fail closed and return a structured terminal failure with the persisted usage. Telegram emits `{"kind": "run_budget", "reason": "...", "calls_used": N, "tokens_used": N, "cost_usd_used": N, "max_calls": N, "max_tokens": N, "max_cost_usd": N}`. The operator may change the run-budget settings and `/approve` to resume with `{"action": "retry"}`; the node reloads the current configured limits and retries only the provider-blocked graph step. `/cancel` stops the task. No budget is raised automatically.
+
+## Run-budget guardrail
+
+The run budget is part of durable graph state, not process-local memory. New Telegram and Agent Hub coding runs snapshot `orchestrator_run_max_calls`, `orchestrator_run_max_tokens`, and `orchestrator_run_max_cost_usd`; the graph checkpoints cumulative provider attempts, input/output tokens, and estimated cost after each orchestrator-calling node. A Telegram process restart/resume therefore continues from the same usage counters.
+
+Counting happens at the low-level OpenAI Responses API boundary, not only at the JSON helper. This is deliberate: internal structured-output retries, incomplete Responses API replies, direct approval-question calls, and hosted web-search calls all consume the same run budget. Calls outside the coding workflow (for example Telegram intent routing) are not part of this coding-run budget.
+
+The call-attempt ceiling is exact before network I/O. Token/cost are metered from provider-reported usage and cannot be known exactly in advance without inventing an estimate; therefore the completed response that reaches or crosses one of those ceilings is retained, and the next provider attempt is blocked. This is the documented stop condition—there is no hidden retry or automatic limit expansion.
 
 ## Interrupt detection
 

@@ -1,66 +1,77 @@
-"""Per-run orchestrator cost/token/call ceiling tracker (ATL-036 acceptance
-criterion 11).
+"""Per-run orchestrator call/token/cost budget enforcement.
 
-Deliberately NOT wired into coding_workflow_graph.py yet: that graph has no
-existing per-run cost accumulator to hook into today (checked while building
-this — no node currently sums tokens/cost across the run), so wiring a
-ceiling into every orchestrator-calling node is a separate, reviewed change,
-not something to bolt on inside this ticket's pass. This module is built and
-tested so that follow-up is plumbing, not design — the two open questions
-below are answered here, not left for whoever wires it in.
+The coding workflow persists usage counters in LangGraph state.  During one
+orchestrator-calling node, that persisted usage is loaded into a
+:class:`RunBudgetTracker` and activated only for the provider call(s) made by
+that node.  The low-level Responses API boundary records every actual provider
+attempt, including internal JSON retries and web-search calls.
 
-Entry-point behavior, decided up front:
-  - Telegram (interactive): the caller catches RunBudgetExceededError and
-    tells the operator the run stopped, with instructions to raise the
-    ceiling in settings and resume — no automatic mid-run expansion of the
-    budget, ever.
-  - Agent Hub / subprocess (run-agent-task): there is no one to ask
-    synchronously, so the same exception must propagate and fail the
-    subprocess closed (a clear error status through the JSON contract),
-    never hang waiting for input that will never arrive.
-Both paths raise the same exception; only how each caller responds differs.
+Budget semantics are deliberately explicit:
+- The call-attempt ceiling is a true pre-call hard limit.  Once ``max_calls``
+  attempts have started, another provider request is not sent.
+- Token and estimated-cost ceilings are metered from provider-reported usage.
+  The response size/cost of a call cannot be known exactly before it runs, so a
+  completed call may be the call that reaches or crosses either ceiling.  Once
+  that happens, no subsequent provider request is sent.
+- No ceiling is ever raised automatically.
+
+Entry-point behaviour is owned by the graph: interactive Telegram runs pause on
+an explicit budget interrupt so the operator can change settings and retry the
+blocked step; non-interactive Agent Hub/subprocess runs fail closed.
 """
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
+from typing import Iterator
 
 from .app_settings import AppSettings
 
 
 class RunBudgetExceededError(RuntimeError):
-    """Raised when the next orchestrator call would exceed this run's ceiling.
-
-    Never raised retroactively for a call already made — checked before each
-    call so the budget is never silently expanded past its ceiling.
-    """
+    """Raised before a provider request when the persisted run budget is exhausted."""
 
 
 @dataclass
 class RunBudgetTracker:
-    """Accumulates one run's orchestrator call/token/cost usage and enforces
-    its ceilings. One instance per run (e.g. per request_id); not shared
-    across runs or threads."""
+    """Track one coding workflow run's orchestrator usage against configured ceilings."""
 
     max_calls: int
     max_tokens: int
     max_cost_usd: float
     calls_used: int = field(default=0)
-    tokens_used: int = field(default=0)
+    tokens_in_used: int = field(default=0)
+    tokens_out_used: int = field(default=0)
     cost_usd_used: float = field(default=0.0)
 
     @classmethod
-    def from_settings(cls, settings: AppSettings) -> "RunBudgetTracker":
+    def from_settings(
+        cls,
+        settings: AppSettings,
+        *,
+        calls_used: int = 0,
+        tokens_in_used: int = 0,
+        tokens_out_used: int = 0,
+        cost_usd_used: float = 0.0,
+    ) -> "RunBudgetTracker":
         return cls(
             max_calls=settings.orchestrator_run_max_calls,
             max_tokens=settings.orchestrator_run_max_tokens,
             max_cost_usd=settings.orchestrator_run_max_cost_usd,
+            calls_used=calls_used,
+            tokens_in_used=tokens_in_used,
+            tokens_out_used=tokens_out_used,
+            cost_usd_used=cost_usd_used,
         )
 
+    @property
+    def tokens_used(self) -> int:
+        return self.tokens_in_used + self.tokens_out_used
+
     def check_before_call(self) -> None:
-        """Raise RunBudgetExceededError if the ceiling is already reached —
-        called before making the next call, so a run stops at its ceiling
-        rather than one call past it."""
+        """Reject a new provider request when any already-metered ceiling is exhausted."""
 
         if self.calls_used >= self.max_calls:
             raise RunBudgetExceededError(
@@ -76,11 +87,55 @@ class RunBudgetTracker:
                 f"${self.max_cost_usd:.4f} used."
             )
 
-    def record_call(self, *, tokens_in: int, tokens_out: int, cost_usd: float) -> None:
-        """Record a completed call's usage. Does not itself raise — the next
-        check_before_call() catches a ceiling this call just reached/passed,
-        so a run stops before its *next* call rather than mid-call."""
+    def begin_call(self) -> None:
+        """Reserve one provider-call attempt after checking all current ceilings."""
 
+        self.check_before_call()
         self.calls_used += 1
-        self.tokens_used += tokens_in + tokens_out
-        self.cost_usd_used += cost_usd
+
+    def record_usage(self, *, tokens_in: int, tokens_out: int, cost_usd: float) -> None:
+        """Record provider-reported usage for an attempt that already began.
+
+        Recording is retrospective and therefore never rejects the response
+        that produced the usage.  A subsequent :meth:`begin_call` is what
+        prevents any further provider request after a token/cost ceiling has
+        been reached or crossed.
+        """
+
+        self.tokens_in_used += max(0, tokens_in)
+        self.tokens_out_used += max(0, tokens_out)
+        self.cost_usd_used += max(0.0, cost_usd)
+
+
+_ACTIVE_RUN_BUDGET: ContextVar[RunBudgetTracker | None] = ContextVar(
+    "ai_tech_lead_active_run_budget", default=None
+)
+
+
+@contextmanager
+def use_run_budget(tracker: RunBudgetTracker) -> Iterator[RunBudgetTracker]:
+    """Activate ``tracker`` only for the current execution context."""
+
+    token = _ACTIVE_RUN_BUDGET.set(tracker)
+    try:
+        yield tracker
+    finally:
+        _ACTIVE_RUN_BUDGET.reset(token)
+
+
+def begin_active_run_budget_call() -> None:
+    """Count/check one actual provider attempt when a coding-run budget is active."""
+
+    tracker = _ACTIVE_RUN_BUDGET.get()
+    if tracker is not None:
+        tracker.begin_call()
+
+
+def record_active_run_budget_usage(
+    *, tokens_in: int, tokens_out: int, cost_usd: float
+) -> None:
+    """Meter provider-reported usage when a coding-run budget is active."""
+
+    tracker = _ACTIVE_RUN_BUDGET.get()
+    if tracker is not None:
+        tracker.record_usage(tokens_in=tokens_in, tokens_out=tokens_out, cost_usd=cost_usd)

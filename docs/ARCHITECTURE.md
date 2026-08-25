@@ -142,11 +142,17 @@ Supporting modules such as `src/ai_tech_lead/backlog_graph_runner.py` call the c
   (model, effort) rather than assuming one profile per tier. `llm_json.py`'s JSON-retry path can escalate
   reasoning effort one step within a tier's own ceiling on an invalid response (never crossing
   into another tier); `main.py` validates every static profile against its tier's ceiling at
-  startup and fails closed rather than starting with an invalid one. `run_budget.py` provides a
-  per-run call/token/cost ceiling tracker with the fail-closed (subprocess) vs. ask (Telegram)
-  behavior decided, but it is not yet wired into `coding_workflow_graph.py` — that graph has no
-  existing per-run usage accumulator, so wiring one in across every orchestrator-calling node is
-  left as a scoped follow-up rather than bolted on here.
+  startup and fails closed rather than starting with an invalid one. `run_budget.py` provides the
+  coding workflow's per-run call/token/cost guardrail. The configured ceilings are snapshotted into
+  `GraphState` at the runtime boundary and the accumulated call/input-token/output-token/cost counters
+  are checkpointed after every orchestrator-calling node, so Telegram interrupt/resume cannot reset
+  usage. The low-level Responses API boundary meters every real provider attempt, including JSON
+  retries, incomplete responses and hosted web-search calls. The provider-call ceiling is exact
+  before a request is sent; token and estimated-cost ceilings use provider-reported usage, so the
+  response that reaches/crosses one of those metered ceilings is retained but no later provider
+  request is allowed. Budget limits are never increased automatically. A non-interactive subprocess
+  run fails closed with structured usage; Telegram pauses at `run_budget` and can retry the blocked
+  step only after the operator explicitly changes settings and approves the retry.
   **Current model assignment** (as of ATL-090, 2026-08-19): `gpt-4.1-mini` remains the base model
   — it backs the entire `"strong"` tier (`tech_lead_analysis`, `plan_review`, unbenchmarked) and
   is `"normal"` tier's settings-driven fallback. `gpt-5.6-luna` was adopted only where a live

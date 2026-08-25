@@ -12,7 +12,7 @@ from collections.abc import Callable
 from dataclasses import replace
 from enum import StrEnum
 from pathlib import Path
-from typing import Annotated, Any, TypedDict
+from typing import Annotated, Any, TypeVar, TypedDict
 
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
@@ -63,12 +63,15 @@ from .research_discovery import discover_official_source
 from .research_policy import select_research_policy
 from .research_sources import collect_online_research_sources
 from .risk_reviewer import review_task_risk
+from .run_budget import RunBudgetExceededError, RunBudgetTracker, use_run_budget
 from .target_project_context import BacklogItemContext, BacklogProjectContext, TargetProjectContext
 from .tech_lead_analyst import analyse_task
 
 APPROVAL_MAX_REVISION_CYCLES = 5
 COMPLETION_VERIFICATION_MAX_CORRECTIONS = 1
 CONTEXT_CLARIFICATION_MAX_RETRIES = 1
+
+T = TypeVar("T")
 
 logger = logging.getLogger(LOGGER_NAME)
 
@@ -100,6 +103,7 @@ class NodeName(StrEnum):
     RUN_CODING_AGENT = "6_run_coding_agent"
     FAILURE_INTERRUPT = "6b Handle Coding Failure"
     VERIFY_COMPLETION = "6c_verify_completion"
+    RUN_BUDGET_INTERRUPT = "6c1_run_budget_interrupt"
     COMPLETION_VERIFICATION_INTERRUPT = "6d_completion_verification_interrupt"
     FINALIZE_TASK_BRANCH = "6e_finalize_task_branch"
     INTEGRATION_APPROVAL = "6f_integration_approval"
@@ -148,6 +152,19 @@ class GraphState(TypedDict):
     orchestrator_input_required: bool
     orchestrator_input_reason: str
     orchestrator_input_question: str
+    orchestrator_run_max_calls: int | None
+    orchestrator_run_max_tokens: int | None
+    orchestrator_run_max_cost_usd: float | None
+    orchestrator_calls_used: int
+    orchestrator_tokens_in_used: int
+    orchestrator_tokens_out_used: int
+    orchestrator_tokens_used: int
+    orchestrator_cost_usd_used: float
+    run_budget_exceeded: bool
+    run_budget_exceeded_reason: str
+    run_budget_resume_node: str
+    run_budget_interactive: bool
+    run_budget_terminated: bool
     task_feedback: Annotated[list[str], operator.add]
     needs_approval: bool
     approval_reason: str
@@ -267,6 +284,19 @@ def build_initial_graph_state(
         "orchestrator_input_required": False,
         "orchestrator_input_reason": "",
         "orchestrator_input_question": "",
+        "orchestrator_run_max_calls": None,
+        "orchestrator_run_max_tokens": None,
+        "orchestrator_run_max_cost_usd": None,
+        "orchestrator_calls_used": 0,
+        "orchestrator_tokens_in_used": 0,
+        "orchestrator_tokens_out_used": 0,
+        "orchestrator_tokens_used": 0,
+        "orchestrator_cost_usd_used": 0.0,
+        "run_budget_exceeded": False,
+        "run_budget_exceeded_reason": "",
+        "run_budget_resume_node": "",
+        "run_budget_interactive": False,
+        "run_budget_terminated": False,
         "task_feedback": list(task_feedback or []),
         "needs_approval": False,
         "approval_reason": approval_reason,
@@ -331,6 +361,182 @@ def build_initial_graph_state(
     }
 
 
+
+def _run_budget_tracker(
+    state: GraphState, settings: Any | None
+) -> RunBudgetTracker | None:
+    max_calls = state.get("orchestrator_run_max_calls")
+    max_tokens = state.get("orchestrator_run_max_tokens")
+    max_cost_usd = state.get("orchestrator_run_max_cost_usd")
+    usage = {
+        "calls_used": int(state.get("orchestrator_calls_used", 0)),
+        "tokens_in_used": int(state.get("orchestrator_tokens_in_used", 0)),
+        "tokens_out_used": int(state.get("orchestrator_tokens_out_used", 0)),
+        "cost_usd_used": float(state.get("orchestrator_cost_usd_used", 0.0)),
+    }
+    if (
+        isinstance(max_calls, int)
+        and max_calls > 0
+        and isinstance(max_tokens, int)
+        and max_tokens > 0
+        and isinstance(max_cost_usd, (int, float))
+        and float(max_cost_usd) > 0
+    ):
+        return RunBudgetTracker(
+            max_calls=max_calls,
+            max_tokens=max_tokens,
+            max_cost_usd=float(max_cost_usd),
+            **usage,
+        )
+    if settings is not None:
+        return RunBudgetTracker.from_settings(settings, **usage)
+    return None
+
+
+def _run_budget_usage_update(tracker: RunBudgetTracker) -> dict[str, Any]:
+    return {
+        "orchestrator_calls_used": tracker.calls_used,
+        "orchestrator_tokens_in_used": tracker.tokens_in_used,
+        "orchestrator_tokens_out_used": tracker.tokens_out_used,
+        "orchestrator_tokens_used": tracker.tokens_used,
+        "orchestrator_cost_usd_used": tracker.cost_usd_used,
+    }
+
+
+def _run_budgeted_orchestrator_call(
+    state: GraphState,
+    settings: Any | None,
+    *,
+    resume_node: NodeName,
+    operation: Callable[[], T],
+) -> tuple[T | None, Exception | None, dict[str, Any]]:
+    """Run one logical orchestrator operation and return its persisted usage delta.
+
+    The low-level provider boundary counts every real request made inside the
+    operation, so JSON retries, incomplete responses, plain-text calls and web
+    search all use the same run budget.  Budget exhaustion is returned as graph
+    state rather than escaping as an exception so the checkpoint can preserve
+    the counters before an interactive pause/resume.
+    """
+
+    tracker = _run_budget_tracker(state, settings)
+    if tracker is None:
+        try:
+            return operation(), None, {}
+        except Exception as error:
+            return None, error, {}
+
+    try:
+        with use_run_budget(tracker):
+            value = operation()
+    except RunBudgetExceededError as error:
+        logger.warning("Run budget blocked %s: %s", resume_node.value, error)
+        return (
+            None,
+            error,
+            {
+                **_run_budget_usage_update(tracker),
+                "run_budget_exceeded": True,
+                "run_budget_exceeded_reason": str(error),
+                "run_budget_resume_node": resume_node.value,
+                "run_budget_terminated": False,
+            },
+        )
+    except Exception as error:
+        return None, error, _run_budget_usage_update(tracker)
+
+    return (
+        value,
+        None,
+        {
+            **_run_budget_usage_update(tracker),
+            "run_budget_exceeded": False,
+            "run_budget_exceeded_reason": "",
+            "run_budget_resume_node": "",
+            "run_budget_terminated": False,
+        },
+    )
+
+
+def _budget_blocked(error: Exception | None) -> bool:
+    return isinstance(error, RunBudgetExceededError)
+
+
+def _route_to_run_budget_interrupt(state: GraphState) -> bool:
+    if not state.get("run_budget_exceeded", False):
+        return False
+    logger.info(
+        "Decision: run budget exceeded at %s -> RUN_BUDGET_INTERRUPT",
+        state.get("run_budget_resume_node", "unknown"),
+    )
+    return True
+
+
+def run_budget_interrupt_node(state: GraphState) -> dict[str, Any]:
+    """Fail closed for non-interactive runs or pause Telegram until the operator retries."""
+
+    _log_node_start("budget", "RUN_BUDGET_INTERRUPT", "Handle orchestrator run budget")
+    reason = str(state.get("run_budget_exceeded_reason", "")).strip() or "Run budget reached."
+    resume_node = str(state.get("run_budget_resume_node", "")).strip()
+    allowed_resume_nodes = {
+        NodeName.READ_REQUEST.value,
+        NodeName.CHECK_CODE_LOOK_NEED.value,
+        NodeName.CHECK_PROJECT_GUIDANCE.value,
+        NodeName.TECH_LEAD_ANALYSE.value,
+        NodeName.CHECK_RESEARCH.value,
+        NodeName.DISCOVER_RESEARCH_SOURCE.value,
+        NodeName.REVIEW_RISK.value,
+        NodeName.REVIEW_PLAN.value,
+        NodeName.APPROVAL_INTERRUPT.value,
+        NodeName.VERIFY_COMPLETION.value,
+    }
+    if resume_node not in allowed_resume_nodes:
+        logger.error("Run budget has invalid resume node %r; failing closed.", resume_node)
+        return {
+            "run_budget_terminated": True,
+            "run_budget_exceeded_reason": (
+                f"{reason} Invalid resume target: {resume_node or '<empty>'}."
+            ),
+        }
+
+    if not state.get("run_budget_interactive", False):
+        logger.warning("Run budget reached in non-interactive workflow; failing closed: %s", reason)
+        return {"run_budget_terminated": True}
+
+    settings = load_settings()
+    result = interrupt(
+        {
+            "kind": "run_budget",
+            "reason": reason,
+            "calls_used": int(state.get("orchestrator_calls_used", 0)),
+            "tokens_used": int(state.get("orchestrator_tokens_used", 0)),
+            "cost_usd_used": float(state.get("orchestrator_cost_usd_used", 0.0)),
+            "max_calls": settings.orchestrator_run_max_calls,
+            "max_tokens": settings.orchestrator_run_max_tokens,
+            "max_cost_usd": settings.orchestrator_run_max_cost_usd,
+        }
+    )
+    action = str(result.get("action", "")).strip().lower() if isinstance(result, dict) else ""
+    if action != "retry":
+        logger.info("Run budget interrupt resumed without retry; stopping task.")
+        return {"run_budget_terminated": True}
+
+    logger.info("Run budget interrupt resumed: retrying blocked step %s", resume_node)
+    return {
+        "run_budget_exceeded": False,
+        "run_budget_terminated": False,
+        "orchestrator_run_max_calls": settings.orchestrator_run_max_calls,
+        "orchestrator_run_max_tokens": settings.orchestrator_run_max_tokens,
+        "orchestrator_run_max_cost_usd": settings.orchestrator_run_max_cost_usd,
+    }
+
+
+def route_after_run_budget_interrupt(state: GraphState) -> str:
+    if state.get("run_budget_terminated", False):
+        return "end"
+    return str(state.get("run_budget_resume_node", ""))
+
+
 def read_and_classify_request_node(state: GraphState) -> dict[str, Any]:
     """Validate the request, then check it's actually AI Tech Lead's job.
 
@@ -345,7 +551,17 @@ def read_and_classify_request_node(state: GraphState) -> dict[str, Any]:
         raise ValueError("Request cannot be empty.")
     logger.info("Task: %s", _request_title(request))
 
-    decision = classify_request_relevance(request)
+    decision, error, budget_updates = _run_budgeted_orchestrator_call(
+        state,
+        None,
+        resume_node=NodeName.READ_REQUEST,
+        operation=lambda: classify_request_relevance(request),
+    )
+    if _budget_blocked(error):
+        return budget_updates
+    if error is not None:
+        raise error
+    assert decision is not None
     logger.info("ATL relevance: %s (%s)", decision.is_atl_relevant, decision.reason)
 
     return {
@@ -353,6 +569,7 @@ def read_and_classify_request_node(state: GraphState) -> dict[str, Any]:
         "restart_required": False,
         "atl_relevant": decision.is_atl_relevant,
         "atl_relevance_reason": decision.reason,
+        **budget_updates,
     }
 
 
@@ -360,6 +577,8 @@ def route_after_read_and_classify_request(state: GraphState) -> str:
     """Route to the normal path, or end early if this isn't ATL's job at all."""
 
     _log_decision_start("1", "ROUTE_AFTER_READ_AND_CLASSIFY", "Route after request classification")
+    if _route_to_run_budget_interrupt(state):
+        return "budget exceeded"
     if not state.get("atl_relevant", True):
         logger.info("Decision: not relevant -> END_NODE")
         return "not relevant"
@@ -644,11 +863,24 @@ def check_research_node(state: GraphState) -> dict[str, Any]:
             code_context_root,
         )
 
-    result = check_research_requirements(
-        state.get("formulated_task", "") or state.get("bounded_request", "") or state["request"],
-        settings,
-        code_context_root=code_context_root,
+    research_request = (
+        state.get("formulated_task", "")
+        or state.get("bounded_request", "")
+        or state["request"]
     )
+    result, error, budget_updates = _run_budgeted_orchestrator_call(
+        state,
+        settings,
+        resume_node=NodeName.CHECK_RESEARCH,
+        operation=lambda: check_research_requirements(
+            research_request, settings, code_context_root=code_context_root
+        ),
+    )
+    if _budget_blocked(error):
+        return budget_updates
+    if error is not None:
+        raise error
+    assert result is not None
 
     partial: dict[str, Any] = {
         "research_checked": True,
@@ -658,6 +890,7 @@ def check_research_node(state: GraphState) -> dict[str, Any]:
         "research_source_locations": list(result.usable_source_locations),
         "research_source_summaries": list(result.usable_source_summaries),
         "online_research_approved": not result.online_research_needed,
+        **budget_updates,
     }
 
     if result.online_research_needed:
@@ -729,12 +962,21 @@ def discover_research_source_node(state: GraphState) -> dict[str, Any]:
         len(policy.seed_urls),
     )
 
-    candidate = discover_official_source(
-        gap_question, settings, trusted_domains=policy.trusted_domains
+    candidate, error, budget_updates = _run_budgeted_orchestrator_call(
+        state,
+        settings,
+        resume_node=NodeName.DISCOVER_RESEARCH_SOURCE,
+        operation=lambda: discover_official_source(
+            gap_question, settings, trusted_domains=policy.trusted_domains
+        ),
     )
+    if _budget_blocked(error):
+        return {**policy_state, **budget_updates}
+    if error is not None:
+        raise error
     if candidate is None:
         logger.info("[LEARN] No discovered source candidate; keeping bounded-registry question.")
-        return policy_state
+        return {**policy_state, **budget_updates}
 
     question = (
         "I found a candidate official documentation page for this knowledge gap:\n"
@@ -749,7 +991,14 @@ def discover_research_source_node(state: GraphState) -> dict[str, Any]:
         "discovered_source_url": candidate.url,
         "discovered_source_title": candidate.title,
         "orchestrator_input_question": question,
+        **budget_updates,
     }
+
+
+def route_after_discover_research_source(state: GraphState) -> str:
+    if _route_to_run_budget_interrupt(state):
+        return "budget exceeded"
+    return "research interrupt"
 
 
 def research_interrupt_node(state: GraphState) -> dict[str, Any]:
@@ -774,6 +1023,8 @@ def route_after_check_research(state: GraphState) -> str:
 
     _log_decision_start("2a", "ROUTE_AFTER_CHECK_RESEARCH", "Route after research evidence check")
 
+    if _route_to_run_budget_interrupt(state):
+        return "budget exceeded"
     if state.get("research_evidence_required") and not state.get("online_research_approved", True):
         logger.info("Decision: research interrupt needed -> DISCOVER_RESEARCH_SOURCE")
         return "research needed"
@@ -906,7 +1157,17 @@ def review_risk_node(state: GraphState) -> dict[str, Any]:
     else:
         risk_review_input = state.get("bounded_request", "") or state["request"]
 
-    decision = review_task_risk(risk_review_input)
+    decision, error, budget_updates = _run_budgeted_orchestrator_call(
+        state,
+        settings,
+        resume_node=NodeName.REVIEW_RISK,
+        operation=lambda: review_task_risk(risk_review_input),
+    )
+    if _budget_blocked(error):
+        return budget_updates
+    if error is not None:
+        raise error
+    assert decision is not None
     needs_approval = decision.needs_approval
     approval_reason = decision.approval_reason
     risk_level = decision.risk_level
@@ -943,6 +1204,7 @@ def review_risk_node(state: GraphState) -> dict[str, Any]:
         "needs_approval": needs_approval,
         "approval_reason": approval_reason,
         "risk_level": risk_level,
+        **budget_updates,
     }
 
 
@@ -955,11 +1217,23 @@ def check_code_look_need_node(state: GraphState) -> dict[str, Any]:
     """
 
     _log_node_start("1c", "CHECK_CODE_LOOK_NEED", "Check if code look is needed")
-    decision = check_code_look_need(state.get("bounded_request", "") or state["request"])
+    request_text = state.get("bounded_request", "") or state["request"]
+    decision, error, budget_updates = _run_budgeted_orchestrator_call(
+        state,
+        None,
+        resume_node=NodeName.CHECK_CODE_LOOK_NEED,
+        operation=lambda: check_code_look_need(request_text),
+    )
+    if _budget_blocked(error):
+        return budget_updates
+    if error is not None:
+        raise error
+    assert decision is not None
     logger.info("Code look needed: %s (%s)", decision.needs_code_look, decision.reason)
     return {
         "code_look_needed": decision.needs_code_look,
         "code_look_need_reason": decision.reason,
+        **budget_updates,
     }
 
 
@@ -967,6 +1241,8 @@ def route_after_check_code_look_need(state: GraphState) -> str:
     """Route to Codex's read-only look, or straight to analysis if not needed."""
 
     _log_decision_start("1c", "ROUTE_AFTER_CHECK_CODE_LOOK_NEED", "Route after code-look decision")
+    if _route_to_run_budget_interrupt(state):
+        return "budget exceeded"
     if state.get("code_look_needed"):
         logger.info("Decision: code look needed -> CODEX_READS_CODE")
         return "needed"
@@ -1061,7 +1337,17 @@ def check_project_guidance_node(state: GraphState) -> dict[str, Any]:
 
     request_text = state.get("bounded_request", "") or state["request"]
     notes = discover_project_guidance(request_text, _soft_target_project_root(state, settings))
-    decision = review_project_guidance(request_text, list(notes), settings)
+    decision, error, budget_updates = _run_budgeted_orchestrator_call(
+        state,
+        settings,
+        resume_node=NodeName.CHECK_PROJECT_GUIDANCE,
+        operation=lambda: review_project_guidance(request_text, list(notes), settings),
+    )
+    if _budget_blocked(error):
+        return budget_updates
+    if error is not None:
+        raise error
+    assert decision is not None
     paths, guidance_hash = _guidance_paths_and_hash(list(notes))
 
     logger.info(
@@ -1084,6 +1370,7 @@ def check_project_guidance_node(state: GraphState) -> dict[str, Any]:
         "project_guidance_paths": paths,
         "project_guidance_hash": guidance_hash,
         "project_guidance_changed_on_resume": False,
+        **budget_updates,
     }
 
 
@@ -1093,6 +1380,8 @@ def route_after_check_project_guidance(state: GraphState) -> str:
     _log_decision_start(
         "1d", "ROUTE_AFTER_CHECK_PROJECT_GUIDANCE", "Route after project guidance check"
     )
+    if _route_to_run_budget_interrupt(state):
+        return "budget exceeded"
     if state.get("project_guidance_requires_review"):
         logger.info(
             "Decision: guidance status=%s requires review -> PROJECT_GUIDANCE_INTERRUPT",
@@ -1189,15 +1478,25 @@ def tech_lead_analyse_node(state: GraphState) -> dict[str, Any]:
     # re-running it on every later pass (research loop, approval revision).
     project_guidance = list(state.get("project_guidance_notes", []))
 
-    analysis = analyse_task(
-        request=state.get("bounded_request", "") or state["request"],
-        task_feedback=list(state.get("task_feedback", [])),
-        approval_reason=state.get("approval_reason", ""),
-        research_evidence=research_evidence,
-        settings=settings,
-        code_recon_report=state.get("code_recon_report", ""),
-        project_guidance=project_guidance,
+    analysis, error, budget_updates = _run_budgeted_orchestrator_call(
+        state,
+        settings,
+        resume_node=NodeName.TECH_LEAD_ANALYSE,
+        operation=lambda: analyse_task(
+            request=state.get("bounded_request", "") or state["request"],
+            task_feedback=list(state.get("task_feedback", [])),
+            approval_reason=state.get("approval_reason", ""),
+            research_evidence=research_evidence,
+            settings=settings,
+            code_recon_report=state.get("code_recon_report", ""),
+            project_guidance=project_guidance,
+        ),
     )
+    if _budget_blocked(error):
+        return budget_updates
+    if error is not None:
+        raise error
+    assert analysis is not None
 
     logger.info(
         "Task statement (%d chars): %s",
@@ -1209,7 +1508,11 @@ def tech_lead_analyse_node(state: GraphState) -> dict[str, Any]:
         len(analysis.tech_direction),
         _single_line_preview(analysis.tech_direction),
     )
-    return {"formulated_task": analysis.task_statement, "brief": analysis.tech_direction}
+    return {
+        "formulated_task": analysis.task_statement,
+        "brief": analysis.tech_direction,
+        **budget_updates,
+    }
 
 
 def route_after_tech_lead_analyse(state: GraphState) -> str:
@@ -1225,6 +1528,8 @@ def route_after_tech_lead_analyse(state: GraphState) -> str:
 
     _log_decision_start("2", "ROUTE_AFTER_TECH_LEAD_ANALYSE", "Route after tech lead analysis")
 
+    if _route_to_run_budget_interrupt(state):
+        return "budget exceeded"
     if not state.get("research_checked"):
         logger.info("Decision: research not yet checked -> CHECK_RESEARCH")
         return "check research"
@@ -1243,6 +1548,8 @@ def route_after_review_risk(state: GraphState) -> str:
 
     _log_decision_start("3", "ROUTE_AFTER_REVIEW_RISK", "Route after risk review")
 
+    if _route_to_run_budget_interrupt(state):
+        return "budget exceeded"
     if state.get("approved"):
         logger.info("Decision: already approved -> REQUEST_PLAN")
         return "already approved"
@@ -1262,6 +1569,8 @@ def route_after_approval(state: GraphState) -> str:
         "approval", "ROUTE_AFTER_APPROVAL", "Choose next graph path after human decision"
     )
 
+    if _route_to_run_budget_interrupt(state):
+        return "budget exceeded"
     action = state.get("approval_action", "approve")
 
     if action == "cancel":
@@ -1472,23 +1781,33 @@ def review_plan_node(
         )
         guidance_updates["project_guidance_notes"] = project_guidance
 
-    try:
-        decision = review_plan(
+    decision, error, budget_updates = _run_budgeted_orchestrator_call(
+        state,
+        settings,
+        resume_node=NodeName.REVIEW_PLAN,
+        operation=lambda: review_plan(
             formulated_task=formulated_task,
             plan_text=plan_text,
             agent_error=plan_agent_stderr,
             settings=settings,
             project_guidance=project_guidance,
-        )
-    except PlanReviewUnavailable as exc:
-        logger.warning("Plan reviewer unavailable: %s — routing to human interrupt.", exc)
+        ),
+    )
+    if _budget_blocked(error):
+        return {**guidance_updates, **budget_updates}
+    if isinstance(error, PlanReviewUnavailable):
+        logger.warning("Plan reviewer unavailable: %s — routing to human interrupt.", error)
         return {
             "plan_approved": False,
-            "plan_review_reason": str(exc),
+            "plan_review_reason": str(error),
             "plan_correction": "",
             "plan_needs_human_review": True,
             **guidance_updates,
+            **budget_updates,
         }
+    if error is not None:
+        raise error
+    assert decision is not None
 
     logger.info("Plan review decision: approved=%s reason=%s", decision.approved, decision.reason)
     if not decision.approved:
@@ -1504,6 +1823,7 @@ def review_plan_node(
             "plan_needs_human_review": False,
             "plan_rejection_count": new_rejection_count,
             **guidance_updates,
+            **budget_updates,
         }
 
     logger.info("Plan approved.")
@@ -1515,6 +1835,7 @@ def review_plan_node(
         "plan_correction": "",
         "plan_needs_human_review": False,
         **guidance_updates,
+        **budget_updates,
     }
 
 
@@ -1552,6 +1873,8 @@ def route_after_review_plan(state: GraphState) -> str:
 
     _log_decision_start("5c", "ROUTE_AFTER_REVIEW_PLAN", "Route after plan review")
 
+    if _route_to_run_budget_interrupt(state):
+        return "budget exceeded"
     if state.get("plan_needs_human_review"):
         logger.info("Decision: plan reviewer unavailable -> PLAN_INTERRUPT")
         return "human review needed"
@@ -1717,19 +2040,35 @@ def approval_interrupt_node(state: GraphState) -> dict[str, Any]:
         state.get("research_source_locations", []),
         state.get("research_source_summaries", []),
     )
-    answer = answer_operator_question(
-        question=question,
-        request=request_text,
-        target_project_context=context,
-        code_context=code_context_text,
-        research_evidence=research_evidence,
-        settings=settings,
+    answer, error, budget_updates = _run_budgeted_orchestrator_call(
+        state,
+        settings,
+        resume_node=NodeName.APPROVAL_INTERRUPT,
+        operation=lambda: answer_operator_question(
+            question=question,
+            request=request_text,
+            target_project_context=context,
+            code_context=code_context_text,
+            research_evidence=research_evidence,
+            settings=settings,
+        ),
     )
+    if _budget_blocked(error):
+        return {
+            "approval_action": "ask_question",
+            "approval_last_question": question,
+            "approval_last_answer": "",
+            **budget_updates,
+        }
+    if error is not None:
+        raise error
+    assert answer is not None
     logger.info("Approval interrupt resumed: action=ask_question")
     return {
         "approval_action": "ask_question",
         "approval_last_question": question,
         "approval_last_answer": answer,
+        **budget_updates,
     }
 
 
@@ -2209,8 +2548,11 @@ def verify_completion_node(state: GraphState) -> dict[str, Any]:
     prior_correction = state.get("verification_correction", "")
     target_project_context = _target_project_context_from_state(state)
 
-    try:
-        decision = verify_completion(
+    decision, error, budget_updates = _run_budgeted_orchestrator_call(
+        state,
+        settings,
+        resume_node=NodeName.VERIFY_COMPLETION,
+        operation=lambda: verify_completion(
             bounded_request=state.get("bounded_request", "") or state["request"],
             formulated_task=state.get("formulated_task", ""),
             brief=state.get("brief", ""),
@@ -2222,14 +2564,21 @@ def verify_completion_node(state: GraphState) -> dict[str, Any]:
             settings=settings,
             prior_correction=prior_correction,
             project_guidance=list(state.get("project_guidance_notes", [])),
-        )
-    except CompletionVerificationUnavailable as error:
+        ),
+    )
+    if _budget_blocked(error):
+        return budget_updates
+    if isinstance(error, CompletionVerificationUnavailable):
         logger.warning("Completion verification unavailable: %s", error)
         return {
             "verification_status": "human_verification_required",
             "verification_reason": f"Verification unavailable: {error}",
             "verification_correction": "",
+            **budget_updates,
         }
+    if error is not None:
+        raise error
+    assert decision is not None
 
     logger.info(
         "Completion verification decision: status=%s attempt_count=%d reason=%s",
@@ -2250,9 +2599,11 @@ def verify_completion_node(state: GraphState) -> dict[str, Any]:
             "verification_status": "failed",
             "verification_reason": decision.reason,
             "verification_correction": "",
+            **budget_updates,
         }
 
     updates: dict[str, Any] = {
+        **budget_updates,
         "verification_status": decision.status,
         "verification_reason": decision.reason,
         "verification_correction": (
@@ -2305,6 +2656,8 @@ def route_after_verify_completion(state: GraphState) -> str:
     _log_decision_start(
         "6c", "ROUTE_AFTER_VERIFY_COMPLETION", "Route after completion verification"
     )
+    if _route_to_run_budget_interrupt(state):
+        return "budget exceeded"
     status = state.get("verification_status", "")
 
     if status == "human_verification_required":
@@ -2541,6 +2894,7 @@ def build_graph(
     )
     workflow.add_node(NodeName.FAILURE_INTERRUPT, failure_interrupt_node)
     workflow.add_node(NodeName.VERIFY_COMPLETION, with_progress(verify_completion_node, "validating", "Validating the completed work."))
+    workflow.add_node(NodeName.RUN_BUDGET_INTERRUPT, run_budget_interrupt_node)
     workflow.add_node(
         NodeName.COMPLETION_VERIFICATION_INTERRUPT, completion_verification_interrupt_node
     )
@@ -2555,6 +2909,7 @@ def build_graph(
         {
             "relevant": NodeName.PROJECT_SCOPE_DECISION,
             "not relevant": NodeName.END_NODE,
+            "budget exceeded": NodeName.RUN_BUDGET_INTERRUPT,
         },
     )
     workflow.add_edge(NodeName.PROJECT_SCOPE_DECISION, NodeName.RESOLVE_CONTEXT)
@@ -2575,6 +2930,7 @@ def build_graph(
         {
             "needed": NodeName.CODEX_READS_CODE,
             "not needed": NodeName.CHECK_PROJECT_GUIDANCE,
+            "budget exceeded": NodeName.RUN_BUDGET_INTERRUPT,
         },
     )
     workflow.add_edge(NodeName.CODEX_READS_CODE, NodeName.CHECK_PROJECT_GUIDANCE)
@@ -2584,6 +2940,7 @@ def build_graph(
         {
             "review needed": NodeName.PROJECT_GUIDANCE_INTERRUPT,
             "no review needed": NodeName.TECH_LEAD_ANALYSE,
+            "budget exceeded": NodeName.RUN_BUDGET_INTERRUPT,
         },
     )
     workflow.add_conditional_edges(
@@ -2600,6 +2957,7 @@ def build_graph(
         {
             "check research": NodeName.CHECK_RESEARCH,
             "analysis complete": NodeName.REVIEW_RISK,
+            "budget exceeded": NodeName.RUN_BUDGET_INTERRUPT,
         },
     )
     workflow.add_conditional_edges(
@@ -2608,9 +2966,17 @@ def build_graph(
         {
             "research needed": NodeName.DISCOVER_RESEARCH_SOURCE,
             "no research needed": NodeName.TECH_LEAD_ANALYSE,
+            "budget exceeded": NodeName.RUN_BUDGET_INTERRUPT,
         },
     )
-    workflow.add_edge(NodeName.DISCOVER_RESEARCH_SOURCE, NodeName.RESEARCH_INTERRUPT)
+    workflow.add_conditional_edges(
+        NodeName.DISCOVER_RESEARCH_SOURCE,
+        route_after_discover_research_source,
+        {
+            "research interrupt": NodeName.RESEARCH_INTERRUPT,
+            "budget exceeded": NodeName.RUN_BUDGET_INTERRUPT,
+        },
+    )
     workflow.add_conditional_edges(
         NodeName.RESEARCH_INTERRUPT,
         route_after_research_interrupt,
@@ -2627,6 +2993,7 @@ def build_graph(
             "approval required": NodeName.APPROVAL_INTERRUPT,
             "already approved": NodeName.REQUEST_PLAN,
             "low risk": NodeName.REQUEST_PLAN,
+            "budget exceeded": NodeName.RUN_BUDGET_INTERRUPT,
         },
     )
     workflow.add_conditional_edges(
@@ -2639,6 +3006,7 @@ def build_graph(
             "cancelled": NodeName.END_NODE,
             "revision limit reached": NodeName.END_NODE,
             "guidance changed": NodeName.CHECK_PROJECT_GUIDANCE,
+            "budget exceeded": NodeName.RUN_BUDGET_INTERRUPT,
         },
     )
     workflow.add_edge(NodeName.REQUEST_PLAN, NodeName.REVIEW_PLAN)
@@ -2649,6 +3017,7 @@ def build_graph(
             "plan approved": NodeName.CREATE_AGENT_INSTRUCTION,
             "revise plan": NodeName.REQUEST_PLAN,
             "human review needed": NodeName.PLAN_INTERRUPT,
+            "budget exceeded": NodeName.RUN_BUDGET_INTERRUPT,
         },
     )
     workflow.add_edge(NodeName.PLAN_INTERRUPT, NodeName.REQUEST_PLAN)
@@ -2672,6 +3041,7 @@ def build_graph(
             "correction needed": NodeName.CREATE_AGENT_INSTRUCTION,
             "human verification needed": NodeName.COMPLETION_VERIFICATION_INTERRUPT,
             "finalize task branch": NodeName.FINALIZE_TASK_BRANCH,
+            "budget exceeded": NodeName.RUN_BUDGET_INTERRUPT,
         },
     )
     workflow.add_edge(NodeName.COMPLETION_VERIFICATION_INTERRUPT, NodeName.END_NODE)
@@ -2684,6 +3054,23 @@ def build_graph(
         },
     )
     workflow.add_edge(NodeName.INTEGRATION_APPROVAL, NodeName.END_NODE)
+    workflow.add_conditional_edges(
+        NodeName.RUN_BUDGET_INTERRUPT,
+        route_after_run_budget_interrupt,
+        {
+            "end": NodeName.END_NODE,
+            NodeName.READ_REQUEST.value: NodeName.READ_REQUEST,
+            NodeName.CHECK_CODE_LOOK_NEED.value: NodeName.CHECK_CODE_LOOK_NEED,
+            NodeName.CHECK_PROJECT_GUIDANCE.value: NodeName.CHECK_PROJECT_GUIDANCE,
+            NodeName.TECH_LEAD_ANALYSE.value: NodeName.TECH_LEAD_ANALYSE,
+            NodeName.CHECK_RESEARCH.value: NodeName.CHECK_RESEARCH,
+            NodeName.DISCOVER_RESEARCH_SOURCE.value: NodeName.DISCOVER_RESEARCH_SOURCE,
+            NodeName.REVIEW_RISK.value: NodeName.REVIEW_RISK,
+            NodeName.REVIEW_PLAN.value: NodeName.REVIEW_PLAN,
+            NodeName.APPROVAL_INTERRUPT.value: NodeName.APPROVAL_INTERRUPT,
+            NodeName.VERIFY_COMPLETION.value: NodeName.VERIFY_COMPLETION,
+        },
+    )
     workflow.add_edge(NodeName.END_NODE, END)
 
     return workflow.compile(checkpointer=checkpointer_storage)

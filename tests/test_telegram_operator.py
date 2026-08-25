@@ -2358,3 +2358,34 @@ def test_detect_stage_for_context_clarification_interrupt(
     assert message == "What does ATL-999 refer to?"
     assert "interrupt kind=context_clarification" in caplog.text
     assert "unrecognised interrupt kind='context_clarification'" not in caplog.text
+
+
+def test_stage_and_message_from_snapshot_run_budget_is_explicit_and_resumable() -> None:
+    settings = parse_settings(valid_settings_dict())
+    operator = TelegramOperator("token", settings, client=_RecordingClient())
+    app = _PausedTaskApp(
+        {"request": "Backlog item: ATL-999"},
+        next_nodes=(NodeName.RUN_BUDGET_INTERRUPT,),
+        interrupt_value={
+            "kind": "run_budget",
+            "reason": "Run call ceiling reached: 40/40 calls used.",
+            "calls_used": 40,
+            "tokens_used": 12345,
+            "cost_usd_used": 0.75,
+            "max_calls": 40,
+            "max_tokens": 400000,
+            "max_cost_usd": 2.0,
+        },
+    )
+    snapshot = app.get_state({"configurable": {"thread_id": "t"}})
+
+    stage, message = operator._stage_and_message_from_snapshot(
+        task_label="ATL-999 - Budget test",
+        request_summary="Budget test",
+        state_snapshot=snapshot,
+    )
+
+    assert stage == TelegramTaskStage.RUN_BUDGET
+    assert "40/40 calls" in message
+    assert "No budget was increased automatically" in message
+    assert "/approve" in message and "/cancel" in message

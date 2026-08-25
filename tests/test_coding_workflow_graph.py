@@ -3597,3 +3597,102 @@ def test_request_plan_node_does_not_fall_back_to_runtime_root_when_boundary_root
                 target_project_context=TargetProjectContext(project_key="agent-hub").to_payload()
             )
         )
+
+
+def test_run_budget_wrapper_persists_usage_and_blocks_provider_attempt_at_call_ceiling() -> None:
+    from ai_tech_lead.coding_workflow_graph import (
+        NodeName,
+        _run_budgeted_orchestrator_call,
+    )
+    from ai_tech_lead.run_budget import begin_active_run_budget_call
+
+    provider_attempt_reached = False
+
+    def operation() -> str:
+        nonlocal provider_attempt_reached
+        begin_active_run_budget_call()
+        provider_attempt_reached = True
+        return "should not happen"
+
+    value, error, updates = _run_budgeted_orchestrator_call(
+        graph_state(
+            orchestrator_run_max_calls=1,
+            orchestrator_run_max_tokens=1_000,
+            orchestrator_run_max_cost_usd=10.0,
+            orchestrator_calls_used=1,
+            orchestrator_tokens_in_used=25,
+            orchestrator_tokens_out_used=5,
+            orchestrator_tokens_used=30,
+            orchestrator_cost_usd_used=0.01,
+        ),
+        None,
+        resume_node=NodeName.READ_REQUEST,
+        operation=operation,
+    )
+
+    assert value is None
+    assert error is not None
+    assert provider_attempt_reached is False
+    assert updates["run_budget_exceeded"] is True
+    assert updates["run_budget_resume_node"] == NodeName.READ_REQUEST.value
+    assert updates["orchestrator_calls_used"] == 1
+    assert updates["orchestrator_tokens_used"] == 30
+
+
+def test_run_budget_interrupt_noninteractive_fails_closed_without_prompt(monkeypatch) -> None:
+    from ai_tech_lead.coding_workflow_graph import NodeName, run_budget_interrupt_node
+
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.interrupt",
+        lambda _payload: (_ for _ in ()).throw(AssertionError("must not interrupt")),
+    )
+    result = run_budget_interrupt_node(
+        graph_state(
+            run_budget_exceeded=True,
+            run_budget_exceeded_reason="Run call ceiling reached: 1/1 calls used.",
+            run_budget_resume_node=NodeName.READ_REQUEST.value,
+            run_budget_interactive=False,
+        )
+    )
+
+    assert result == {"run_budget_terminated": True}
+
+
+def test_run_budget_interrupt_retry_refreshes_limits_from_current_settings(monkeypatch) -> None:
+    from dataclasses import replace
+
+    from ai_tech_lead.coding_workflow_graph import NodeName, run_budget_interrupt_node
+
+    settings = replace(
+        parse_settings(valid_settings_dict()),
+        orchestrator_run_max_calls=8,
+        orchestrator_run_max_tokens=12_000,
+        orchestrator_run_max_cost_usd=3.5,
+    )
+    seen_payload: dict[str, object] = {}
+    monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.load_settings", lambda: settings)
+
+    def fake_interrupt(payload):
+        seen_payload.update(payload)
+        return {"action": "retry"}
+
+    monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.interrupt", fake_interrupt)
+    result = run_budget_interrupt_node(
+        graph_state(
+            run_budget_exceeded=True,
+            run_budget_exceeded_reason="Run call ceiling reached: 3/3 calls used.",
+            run_budget_resume_node=NodeName.REVIEW_RISK.value,
+            run_budget_interactive=True,
+            orchestrator_calls_used=3,
+            orchestrator_tokens_used=900,
+            orchestrator_cost_usd_used=0.25,
+        )
+    )
+
+    assert seen_payload["kind"] == "run_budget"
+    assert seen_payload["calls_used"] == 3
+    assert result["run_budget_exceeded"] is False
+    assert result["run_budget_terminated"] is False
+    assert result["orchestrator_run_max_calls"] == 8
+    assert result["orchestrator_run_max_tokens"] == 12_000
+    assert result["orchestrator_run_max_cost_usd"] == 3.5

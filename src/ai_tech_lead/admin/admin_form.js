@@ -479,6 +479,9 @@ export function bootstrapAdminForm() {
     setField("orchestrator_ai_model", settings.orchestrator_ai_model);
     setField("orchestrator_ai_max_output_tokens", settings.orchestrator_ai_max_output_tokens);
     setField("orchestrator_ai_timeout_seconds", settings.orchestrator_ai_timeout_seconds);
+    setField("orchestrator_run_max_calls", settings.orchestrator_run_max_calls);
+    setField("orchestrator_run_max_tokens", settings.orchestrator_run_max_tokens);
+    setField("orchestrator_run_max_cost_usd", settings.orchestrator_run_max_cost_usd);
     setField("telegram_transport", settings.telegram_transport);
     setField("telegram_api_base_url", settings.telegram_api_base_url);
     setField("telegram_long_poll_timeout_seconds", settings.telegram_long_poll_timeout_seconds);
@@ -518,6 +521,17 @@ export function bootstrapAdminForm() {
       orchestrator_ai_timeout_seconds: Number.parseInt(
         form.elements.orchestrator_ai_timeout_seconds.value,
         10,
+      ),
+      orchestrator_run_max_calls: Number.parseInt(
+        form.elements.orchestrator_run_max_calls.value,
+        10,
+      ),
+      orchestrator_run_max_tokens: Number.parseInt(
+        form.elements.orchestrator_run_max_tokens.value,
+        10,
+      ),
+      orchestrator_run_max_cost_usd: Number.parseFloat(
+        form.elements.orchestrator_run_max_cost_usd.value,
       ),
       telegram_transport: form.elements.telegram_transport.value.trim(),
       telegram_api_base_url: form.elements.telegram_api_base_url.value.trim(),

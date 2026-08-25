@@ -119,3 +119,32 @@ def test_compact_skill_versions_and_guidance_state_are_retrievable(tmp_path: Pat
     assert payload["rubric_status"] == "passed"
     assert payload["usage"] == {"tokens_in": 120, "tokens_out": 30, "cost_usd": 0.004}
     assert "SKILL CONTENT" not in json.dumps(payload)
+
+
+def test_audit_prefers_persisted_orchestrator_run_usage(tmp_path: Path) -> None:
+    store = RunAuditStore(tmp_path / "audit.sqlite3")
+    record_run_audit_summary(
+        request_id="budget-usage-test",
+        thread_id="thread-budget",
+        state={
+            "request": "Use persisted run usage.",
+            "orchestrator_tokens_in_used": 321,
+            "orchestrator_tokens_out_used": 79,
+            "orchestrator_cost_usd_used": 0.0123,
+        },
+        result={
+            "status": "failed",
+            "result_kind": "terminal_failure",
+            "tokens_in": 1,
+            "tokens_out": 1,
+            "cost_usd": 0.0001,
+        },
+        settings=_settings(),
+        store=store,
+    )
+
+    assert store.get("budget-usage-test").to_payload()["usage"] == {
+        "tokens_in": 321,
+        "tokens_out": 79,
+        "cost_usd": 0.0123,
+    }

@@ -92,6 +92,21 @@
         <span class="field-help">How long to wait for the risk-review call before falling back to human approval. Example: <code>20</code>.</span>
         <input name="orchestrator_ai_timeout_seconds" type="number" min="1" placeholder="20">
       </label>
+      <label>
+        Run max model calls
+        <span class="field-help">Maximum orchestrator provider-call attempts in one coding workflow run. The limit is never raised automatically.</span>
+        <input name="orchestrator_run_max_calls" type="number" min="1" placeholder="40">
+      </label>
+      <label>
+        Run max tokens
+        <span class="field-help">Maximum metered input + output tokens for one coding workflow run. Provider-reported usage is accumulated across retries and web search.</span>
+        <input name="orchestrator_run_max_tokens" type="number" min="1" placeholder="400000">
+      </label>
+      <label>
+        Run max estimated cost (USD)
+        <span class="field-help">Maximum metered orchestrator cost for one coding workflow run, estimated from the model registry. Example: <code>2.00</code>.</span>
+        <input name="orchestrator_run_max_cost_usd" type="number" min="0.0001" step="0.0001" placeholder="2.00">
+      </label>
     </fieldset>
     <fieldset>
       <legend>Research</legend>

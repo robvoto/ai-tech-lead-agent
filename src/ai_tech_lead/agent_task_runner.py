@@ -362,6 +362,7 @@ def run_agent_task(input_path: str | Path, output_path: str | Path) -> int:
                         decision=decision,
                         progress_reporter=progress_reporter,
                         target_project_context=target_project_context,
+                        settings=settings,
                     )
         except (KeyboardInterrupt, SystemExit):
             progress_reporter.cancelled()
@@ -767,6 +768,7 @@ def _execute_workflow(
     decision: _Decision | None = None,
     progress_reporter: ProgressReporter | None = None,
     target_project_context: TargetProjectContext | None = None,
+    settings: Any | None = None,
 ) -> tuple[dict[str, Any], TargetProjectContext | None]:
     """Run the graph and return (output, final target_project_context).
 
@@ -831,6 +833,14 @@ def _execute_workflow(
             force_approval=False,
             target_project_context=target_project_context,
         )
+        if settings is not None:
+            initial_state.update(
+                {
+                    "orchestrator_run_max_calls": settings.orchestrator_run_max_calls,
+                    "orchestrator_run_max_tokens": settings.orchestrator_run_max_tokens,
+                    "orchestrator_run_max_cost_usd": settings.orchestrator_run_max_cost_usd,
+                }
+            )
         final_state = graph.invoke(initial_state, config=config)
 
     state_snapshot = graph.get_state(config)
@@ -848,7 +858,7 @@ def _execute_workflow(
             thread_id=thread_id,
             state=final_state,
             result=result,
-            settings=load_settings(),
+            settings=settings or load_settings(),
         )
     except Exception:
         # Audit is additive observability. Never change the workflow result or
@@ -1095,7 +1105,18 @@ def _map_state_to_output(
 
     pending_decision: dict[str, Any] | None = None
 
-    if pending_interrupt_kind in _DECISION_OPTIONS_BY_KIND:
+    if state.get("run_budget_terminated", False):
+        status = STATUS_FAILED
+        summary = (
+            str(state.get("run_budget_exceeded_reason", "")).strip()
+            or "Orchestrator run budget reached."
+        )
+        next_action = (
+            "Review orchestrator run-budget settings and submit a new run; "
+            "the subprocess will not raise its own budget automatically."
+        )
+        result_kind = RESULT_KIND_TERMINAL_FAILURE
+    elif pending_interrupt_kind in _DECISION_OPTIONS_BY_KIND:
         pending_decision = _pending_decision_from_snapshot(state_snapshot, thread_id)
         status = STATUS_WAITING_DECISION
         summary = pending_decision["prompt"] if pending_decision else "A decision is required."
@@ -1204,6 +1225,13 @@ def _map_state_to_output(
         "result_kind": result_kind,
         "backlog_refinement": None,
         "pending_decision": pending_decision,
+        "orchestrator_usage": {
+            "calls": int(state.get("orchestrator_calls_used", 0)),
+            "tokens_in": int(state.get("orchestrator_tokens_in_used", 0)),
+            "tokens_out": int(state.get("orchestrator_tokens_out_used", 0)),
+            "tokens_total": int(state.get("orchestrator_tokens_used", 0)),
+            "cost_usd": float(state.get("orchestrator_cost_usd_used", 0.0)),
+        },
         "main_status": main_status or None,
         "git": {
             "task_branch": str(state.get("git_task_branch", "")).strip() or None,

@@ -250,3 +250,98 @@ def test_call_orchestrator_llm_rejects_incomplete_response(monkeypatch) -> None:
             prompt="hello",
             config=OrchestratorLlmConfig(model="test-model", max_output_tokens=10, timeout_seconds=5),
         )
+
+
+def test_active_run_budget_records_successful_plain_and_web_search_calls(monkeypatch) -> None:
+    from ai_tech_lead.run_budget import RunBudgetTracker, use_run_budget
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    responses = iter(
+        [
+            _FakeResponse(
+                json.dumps(
+                    {
+                        "output_text": "done",
+                        "usage": {"input_tokens": 10, "output_tokens": 4},
+                    }
+                )
+            ),
+            _FakeResponse(
+                json.dumps(
+                    {
+                        "output_text": "found",
+                        "usage": {"input_tokens": 12, "output_tokens": 6},
+                    }
+                )
+            ),
+        ]
+    )
+    monkeypatch.setattr(
+        "ai_tech_lead.orchestrator_llm.urlopen",
+        lambda _request, timeout: next(responses),
+    )
+    tracker = RunBudgetTracker(max_calls=5, max_tokens=1_000, max_cost_usd=10.0)
+    config = OrchestratorLlmConfig(model="test-model", max_output_tokens=20, timeout_seconds=5)
+
+    with use_run_budget(tracker):
+        call_orchestrator_llm(prompt="hello", config=config)
+        call_orchestrator_web_search(query="official docs", config=config)
+
+    assert tracker.calls_used == 2
+    assert tracker.tokens_in_used == 22
+    assert tracker.tokens_out_used == 10
+    assert tracker.tokens_used == 32
+
+
+def test_active_run_budget_records_incomplete_response_usage_and_blocks_retry(monkeypatch) -> None:
+    from ai_tech_lead.llm_json import call_llm_for_json
+    from ai_tech_lead.run_budget import (
+        RunBudgetExceededError,
+        RunBudgetTracker,
+        use_run_budget,
+    )
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    urlopen_calls = 0
+
+    def fake_urlopen(_request, timeout):
+        nonlocal urlopen_calls
+        urlopen_calls += 1
+        return _FakeResponse(
+            json.dumps(
+                {
+                    "status": "incomplete",
+                    "incomplete_details": {"reason": "max_output_tokens"},
+                    "output_text": '{"ok":',
+                    "usage": {"input_tokens": 10, "output_tokens": 10},
+                }
+            )
+        )
+
+    monkeypatch.setattr("ai_tech_lead.orchestrator_llm.urlopen", fake_urlopen)
+    tracker = RunBudgetTracker(max_calls=1, max_tokens=1_000, max_cost_usd=10.0)
+    config = OrchestratorLlmConfig(model="test-model", max_output_tokens=20, timeout_seconds=5)
+    schema = {
+        "type": "object",
+        "properties": {"ok": {"type": "boolean"}},
+        "required": ["ok"],
+        "additionalProperties": False,
+    }
+
+    with use_run_budget(tracker):
+        with pytest.raises(RunBudgetExceededError, match="call ceiling"):
+            call_llm_for_json(
+                prompt="hello",
+                config=config,
+                error_label="budget retry test",
+                schema_name="budget_retry_test",
+                schema=schema,
+                parse=lambda payload: payload["ok"],
+            )
+
+    # First incomplete provider reply is metered; the JSON retry is blocked
+    # before a second network request is sent.
+    assert urlopen_calls == 1
+    assert tracker.calls_used == 1
+    assert tracker.tokens_in_used == 10
+    assert tracker.tokens_out_used == 10

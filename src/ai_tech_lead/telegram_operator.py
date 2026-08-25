@@ -263,6 +263,7 @@ class TelegramTaskStage(StrEnum):
     ORCHESTRATOR_INPUT = "orchestrator_input"
     COMPLETION_VERIFICATION = "completion_verification"
     INTEGRATION_APPROVAL = "integration_approval"
+    RUN_BUDGET = "run_budget"
     RUNNING = "running"
 
 
@@ -276,6 +277,7 @@ _RECOVERABLE_TELEGRAM_INTERRUPT_KINDS = frozenset(
         "failure_guidance",
         "completion_verification",
         "integration_approval",
+        "run_budget",
     }
 )
 
@@ -899,6 +901,15 @@ class TelegramOperator:
                 self._resume_from_clarification(chat_id, active_task, text)
                 return
 
+            if active_task.stage == TelegramTaskStage.RUN_BUDGET:
+                self._send_message(
+                    chat_id,
+                    "This task is paused because its orchestrator run budget was reached. "
+                    "Change the run-budget limits in Settings if you want to continue, then "
+                    "use /approve to retry the blocked step or /cancel to stop.",
+                )
+                return
+
             if active_task.stage == TelegramTaskStage.INTEGRATION_APPROVAL:
                 if parse_integration_approval(text):
                     self._handle_pre_run_approval(
@@ -1237,7 +1248,14 @@ class TelegramOperator:
 
         logger.info(LOG_SEPARATOR)
         request_id = request_id or uuid.uuid4().hex
-        graph_state = {**graph_state, "request_id": request_id}
+        graph_state = {
+            **graph_state,
+            "request_id": request_id,
+            "run_budget_interactive": True,
+            "orchestrator_run_max_calls": self._settings.orchestrator_run_max_calls,
+            "orchestrator_run_max_tokens": self._settings.orchestrator_run_max_tokens,
+            "orchestrator_run_max_cost_usd": self._settings.orchestrator_run_max_cost_usd,
+        }
         logger.info("Telegram run: preparing graph task for chat %s.", chat_id)
         logger.info("Telegram run: request id: %s", request_id)
         logger.info("Telegram run: task label: %s", task_label)
@@ -1908,6 +1926,7 @@ class TelegramOperator:
             TelegramTaskStage.RESEARCH_APPROVAL,
             TelegramTaskStage.COMPLETION_VERIFICATION,
             TelegramTaskStage.INTEGRATION_APPROVAL,
+            TelegramTaskStage.RUN_BUDGET,
         }:
             logger.warning(
                 "Telegram approval: /%s received for chat %s but task '%s' is in stage=%s, "
@@ -1941,6 +1960,9 @@ class TelegramOperator:
                 self._send_message(
                     chat_id, "Integration not approved. The pushed task branch is preserved."
                 )
+            elif active_task.stage == TelegramTaskStage.RUN_BUDGET:
+                resume_value = {"action": "cancel"}
+                self._send_message(chat_id, "Run budget retry cancelled. Stopping the task...")
             elif active_task.stage != TelegramTaskStage.PRE_RUN_APPROVAL:
                 # Unchanged existing behaviour for other stages: discard without resuming.
                 self._active_tasks.pop(chat_id, None)
@@ -1960,6 +1982,12 @@ class TelegramOperator:
                 resume_value = {"action": "approve", "approved_by": sender}
                 self._send_message(
                     chat_id, "Integration approved. Reconciling with current origin/main..."
+                )
+            elif active_task.stage == TelegramTaskStage.RUN_BUDGET:
+                resume_value = {"action": "retry"}
+                self._send_message(
+                    chat_id,
+                    "Retrying the budget-blocked step with current settings...",
                 )
             else:
                 resume_value = (
@@ -2138,6 +2166,25 @@ class TelegramOperator:
                 sections.append(f"Result: {_summarize_text(result_summary, limit=200)}")
             sections.append("Reply with guidance to retry, or /reject to abort.")
             return TelegramTaskStage.ORCHESTRATOR_INPUT, "\n\n".join(sections)
+
+        if kind == "run_budget":
+            reason = str(interrupt_value.get("reason", "")).strip() or "Run budget reached."
+            calls_used = int(interrupt_value.get("calls_used", 0))
+            tokens_used = int(interrupt_value.get("tokens_used", 0))
+            cost_used = float(interrupt_value.get("cost_usd_used", 0.0))
+            max_calls = int(interrupt_value.get("max_calls", 0))
+            max_tokens = int(interrupt_value.get("max_tokens", 0))
+            max_cost = float(interrupt_value.get("max_cost_usd", 0.0))
+            message = (
+                f"Orchestrator run budget reached: {task_label}\n"
+                f"{reason}\n"
+                f"Usage: {calls_used}/{max_calls} calls · "
+                f"{tokens_used}/{max_tokens} tokens · ${cost_used:.4f}/${max_cost:.4f}.\n"
+                "No budget was increased automatically. Change the run-budget limits in "
+                "Settings if you want to continue, then /approve to retry the blocked step "
+                "or /cancel to stop."
+            )
+            return TelegramTaskStage.RUN_BUDGET, message
 
         if kind == "approval":
             approval_reason = str(interrupt_value.get("reason", "")).strip()

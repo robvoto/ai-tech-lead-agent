@@ -2949,3 +2949,31 @@ def test_build_target_project_context_parses_backlog_project_configuration() -> 
         item_id_prefix="HUB",
         columns=BacklogColumnContext(item_id="Work ID", title="Work Title"),
     )
+
+
+def test_map_state_to_output_run_budget_failure_is_structured_and_reports_usage() -> None:
+    result = _map_state_to_output(
+        "req-budget",
+        {
+            "run_budget_terminated": True,
+            "run_budget_exceeded_reason": "Run cost ceiling reached: $2.1000/$2.0000 used.",
+            "orchestrator_calls_used": 7,
+            "orchestrator_tokens_in_used": 1000,
+            "orchestrator_tokens_out_used": 250,
+            "orchestrator_tokens_used": 1250,
+            "orchestrator_cost_usd_used": 2.1,
+        },
+        False,
+    )
+
+    assert result["status"] == "failed"
+    assert result["result_kind"] == "terminal_failure"
+    assert "Run cost ceiling reached" in result["summary"]
+    assert "will not raise its own budget automatically" in result["next_action"]
+    assert result["orchestrator_usage"] == {
+        "calls": 7,
+        "tokens_in": 1000,
+        "tokens_out": 250,
+        "tokens_total": 1250,
+        "cost_usd": 2.1,
+    }
