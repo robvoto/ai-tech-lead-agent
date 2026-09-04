@@ -44,7 +44,7 @@ def analyse_task(
     """Produce a task statement and high-level technical direction for the coding agent.
 
     ``project_guidance`` is the target project's own bounded guidance (AGENTS.md,
-    docs/INDEX.md, .skills/INDEX.md, and at most one matching skill — see
+    docs/INDEX.md, .agents/skills/INDEX.md, and at most one matching skill — see
     project_guidance_discovery.py), distinct from ``research_evidence``: it answers
     "what does this repo already say about working in it", not "is there a domain
     knowledge gap". It may be empty — that's the normal case when a project has no

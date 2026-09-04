@@ -12,9 +12,9 @@ def test_project_pack_templates_include_expected_starter_files() -> None:
 
     assert Path("AGENTS.md") in templates
     assert Path("docs/INDEX.md") in templates
-    assert Path(".skills/INDEX.md") in templates
-    assert Path(".skills/code-change/SKILL.md") in templates
-    assert Path(".skills/instruction-maintenance/SKILL.md") in templates
+    assert Path(".agents/skills/INDEX.md") in templates
+    assert Path(".agents/skills/code-change/SKILL.md") in templates
+    assert Path(".agents/skills/instruction-maintenance/SKILL.md") in templates
 
 
 def test_bootstrap_project_pack_writes_starter_files(tmp_path: Path) -> None:
@@ -22,8 +22,8 @@ def test_bootstrap_project_pack_writes_starter_files(tmp_path: Path) -> None:
 
     assert (tmp_path / "AGENTS.md").is_file()
     assert (tmp_path / "docs" / "INDEX.md").is_file()
-    assert (tmp_path / ".skills" / "INDEX.md").is_file()
-    assert (tmp_path / ".skills" / "code-change" / "SKILL.md").is_file()
+    assert (tmp_path / ".agents" / "skills" / "INDEX.md").is_file()
+    assert (tmp_path / ".agents" / "skills" / "code-change" / "SKILL.md").is_file()
     assert "Bootstrapped starter project pack into" in lines[0]
     assert "review the starter AGENTS.md" in lines[-1]
 

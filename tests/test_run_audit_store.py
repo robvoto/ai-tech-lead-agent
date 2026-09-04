@@ -92,8 +92,8 @@ def test_compact_skill_versions_and_guidance_state_are_retrievable(tmp_path: Pat
         thread_id="thread-3",
         state={
             "request": "Record selected instruction versions.",
-            "selected_skill_paths": [".skills/code-change/SKILL.md"],
-            "selected_skill_hashes": {".skills/code-change/SKILL.md": "sha256:123"},
+            "selected_skill_paths": [".agents/skills/code-change/SKILL.md"],
+            "selected_skill_hashes": {".agents/skills/code-change/SKILL.md": "sha256:123"},
             "project_guidance_paths": ["AGENTS.md"],
             "project_guidance_hash": "sha256:456",
             "project_guidance_changed_on_resume": True,
@@ -111,9 +111,9 @@ def test_compact_skill_versions_and_guidance_state_are_retrievable(tmp_path: Pat
     )
 
     payload = store.get("versions-test").to_payload()
-    assert payload["selected_skill_paths"] == [".skills/code-change/SKILL.md"]
+    assert payload["selected_skill_paths"] == [".agents/skills/code-change/SKILL.md"]
     assert payload["selected_skill_hashes"] == {
-        ".skills/code-change/SKILL.md": "sha256:123"
+        ".agents/skills/code-change/SKILL.md": "sha256:123"
     }
     assert payload["guidance_changed_on_resume"] is True
     assert payload["rubric_status"] == "passed"

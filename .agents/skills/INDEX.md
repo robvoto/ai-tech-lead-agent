@@ -24,6 +24,6 @@ Pick the smallest skill that matches the requested outcome or the files being ch
 
 ## Maintenance rules
 
-- Add a skill here when a new `.skills/<name>/SKILL.md` is created.
+- Add a skill here when a new `.agents/skills/<name>/SKILL.md` is created.
 - Keep descriptions short enough to support routing only.
 - Put detailed task rules inside the skill itself, not in this index.

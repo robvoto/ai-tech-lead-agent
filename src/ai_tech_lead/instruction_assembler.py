@@ -203,7 +203,7 @@ def select_skills(
                 project_root=target_project_root,
             )
         )
-    if _has_any(text, ["agents.md", ".skills", "skill.md", "handoff", "project rules"]):
+    if _has_any(text, ["agents.md", ".agents/skills", "skill.md", "handoff", "project rules"]):
         selections.append(
             _skill(
                 "instruction-maintenance",
@@ -281,7 +281,7 @@ def _extract_section(content: str, heading: str) -> str:
 
 
 def _skills_dir(project_root: Path) -> Path:
-    return project_root / ".skills"
+    return project_root / ".agents" / "skills"
 
 
 def _runtime_core_skills_dir() -> Path:

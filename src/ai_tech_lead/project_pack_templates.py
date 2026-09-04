@@ -40,7 +40,7 @@ def bootstrap_project_pack(
     lines = [f"Bootstrapped starter project pack into {normalized_root}."]
     lines.extend(f"Wrote: {path}" for path in written_paths)
     lines.append(
-        "Next step: review the starter AGENTS.md, docs/INDEX.md, and .skills files "
+        "Next step: review the starter AGENTS.md, docs/INDEX.md, and .agents/skills files "
         "before using this repo as a coding target."
     )
     return lines
@@ -52,9 +52,9 @@ def project_pack_templates() -> dict[Path, str]:
     return {
         Path("AGENTS.md"): _agents_template(),
         Path("docs/INDEX.md"): _docs_index_template(),
-        Path(".skills/INDEX.md"): _skills_index_template(),
-        Path(".skills/code-change/SKILL.md"): _code_change_skill_template(),
-        Path(".skills/instruction-maintenance/SKILL.md"): _instruction_skill_template(),
+        Path(".agents/skills/INDEX.md"): _skills_index_template(),
+        Path(".agents/skills/code-change/SKILL.md"): _code_change_skill_template(),
+        Path(".agents/skills/instruction-maintenance/SKILL.md"): _instruction_skill_template(),
     }
 
 
@@ -66,12 +66,12 @@ def _agents_template() -> str:
         "This file is a routing layer only. It is not the full project manual.\n\n"
         "## Default workflow\n\n"
         "1. Use `docs/INDEX.md` to find the smallest relevant project document.\n"
-        "2. Use `.skills/INDEX.md` to choose one relevant task skill.\n"
+        "2. Use `.agents/skills/INDEX.md` to choose one relevant task skill.\n"
         "3. Inspect the current files before giving code-specific advice or editing.\n"
         "4. Keep work bounded to the smallest file set that solves the task.\n\n"
         "## Navigation\n\n"
         "- Project docs: `docs/INDEX.md`\n"
-        "- Task skills: `.skills/INDEX.md`\n\n"
+        "- Task skills: `.agents/skills/INDEX.md`\n\n"
         "## Universal rules\n\n"
         "- Never guess local architecture or commands.\n"
         "- Do not broaden scope silently.\n"
@@ -96,7 +96,7 @@ def _docs_index_template() -> str:
         "- `CONTEXT_MANAGEMENT.md` - what context is safe to expose to agents, logs, or tools.\n\n"
         "## Entry points\n\n"
         "- Root `AGENTS.md` - minimal always-loaded routing file.\n"
-        "- `.skills/INDEX.md` - project skill catalogue.\n\n"
+        "- `.agents/skills/INDEX.md` - project skill catalogue.\n\n"
         "## Maintenance rules\n\n"
         "- Keep this index factual and short.\n"
         "- Add durable docs here.\n"
@@ -115,7 +115,7 @@ def _skills_index_template() -> str:
         "- `code-change/SKILL.md` - code, tests, runtime, or integration changes.\n"
         "- `instruction-maintenance/SKILL.md` - AGENTS, docs index, or skill maintenance.\n\n"
         "## Maintenance rules\n\n"
-        "- Add a skill here when a new `.skills/<name>/SKILL.md` is created.\n"
+        "- Add a skill here when a new `.agents/skills/<name>/SKILL.md` is created.\n"
         "- Keep descriptions short enough to support routing only.\n"
         "- Put detailed task rules inside the skill itself, not in this index.\n"
     )
@@ -148,7 +148,7 @@ def _instruction_skill_template() -> str:
         "Use when editing project instructions.\n\n"
         "## Rules\n\n"
         "- Put universal operational rules in `AGENTS.md`.\n"
-        "- Put repeatable procedures in `.skills`.\n"
+        "- Put repeatable procedures in `.agents/skills`.\n"
         "- Put human explanations and rationale in `docs`.\n"
         "- Keep instruction files small, current, and non-contradictory.\n"
     )

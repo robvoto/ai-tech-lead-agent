@@ -28,7 +28,7 @@ def valid_settings_dict() -> dict[str, Any]:
             "Architecture and module map: docs/ARCHITECTURE.md",
             "Graph workflow, nodes, interrupts: docs/GRAPH_WORKFLOW.md",
             "Documentation index: docs/INDEX.md",
-            "Task skills index: .skills/INDEX.md",
+            "Task skills index: .agents/skills/INDEX.md",
             "Main package: src/ai_tech_lead/",
         ],
         "allowed_directories": ["src/ai_tech_lead", "docs", "tests"],

@@ -2707,7 +2707,7 @@ def test_hub_backlog_refinement_returns_waiting_decision_with_proposal(
                 approval_risk_flags=["Writes backlog items"],
             ),
             source="fake-model",
-            skill_path=".skills/backlog-item-authoring/SKILL.md",
+            skill_path=".agents/skills/backlog-item-authoring/SKILL.md",
             matches=(),
             blocked=False,
         ),
@@ -2777,7 +2777,7 @@ def test_hub_backlog_refinement_duplicate_blocking_returns_clarification(
                 approval_risk_flags=["Writes backlog items"],
             ),
             source="fake-model",
-            skill_path=".skills/backlog-item-authoring/SKILL.md",
+            skill_path=".agents/skills/backlog-item-authoring/SKILL.md",
             matches=(
                 type(
                     "_Match",
@@ -2864,7 +2864,7 @@ def test_hub_backlog_refinement_approval_writes_item(
                     approval_risk_flags=["Writes backlog items"],
                 ),
                 source="fake-model",
-                skill_path=".skills/backlog-item-authoring/SKILL.md",
+                skill_path=".agents/skills/backlog-item-authoring/SKILL.md",
                 matches=(),
                 blocked=False,
             )

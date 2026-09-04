@@ -1,8 +1,8 @@
 """Bounded discovery of a target project's own guidance before Tech Lead Analysis.
 
 Reuses the "project pack" shape (see project_pack_templates.py / agent_manifest.py's
-``_PROJECT_PACK_REQUIRED_FILES``) — ``AGENTS.md``, ``docs/INDEX.md``, ``.skills/INDEX.md``
-— and the same progressive-disclosure pattern this repo's own ``.skills/INDEX.md``
+``_PROJECT_PACK_REQUIRED_FILES``) — ``AGENTS.md``, ``docs/INDEX.md``, ``.agents/skills/INDEX.md``
+— and the same progressive-disclosure pattern this repo's own ``.agents/skills/INDEX.md``
 follows: read the small index/entry-point files first, follow at most two explicit
 one-hop Markdown references from ``docs/INDEX.md``, and load one skill's full
 detail only when it scores as relevant to the current request. This module never
@@ -55,9 +55,9 @@ _SKILL_INDEX_ENTRY_PATTERN = re.compile(
 def discover_project_guidance(request: str, project_root: str) -> tuple[str, ...]:
     """Return bounded notes from a target project's own authoritative entry points.
 
-    Checks only ``AGENTS.md``, ``docs/INDEX.md``, and ``.skills/INDEX.md`` directly
+    Checks only ``AGENTS.md``, ``docs/INDEX.md``, and ``.agents/skills/INDEX.md`` directly
     under ``project_root`` — the same three files ``agent_manifest.py``'s project-pack
-    check already treats as the canonical minimal set. When ``.skills/INDEX.md``
+    check already treats as the canonical minimal set. When ``.agents/skills/INDEX.md``
     exists, also loads the single best-matching skill file (scored against its own
     index entry, not its full content — the whole point of progressive disclosure
     is not opening every skill just to score it). From ``docs/INDEX.md``, follows at
@@ -88,15 +88,15 @@ def discover_project_guidance(request: str, project_root: str) -> tuple[str, ...
         text = _truncate_text(docs_index_text, _ENTRY_MAX_CHARS)
         notes.append(f"docs/INDEX.md: {text}")
 
-    skills_index_path = root / ".skills" / "INDEX.md"
+    skills_index_path = root / ".agents" / "skills" / "INDEX.md"
     if skills_index_path.is_file():
         index_text = skills_index_path.read_text(encoding="utf-8")
-        notes.append(f".skills/INDEX.md: {_truncate_text(index_text, _ENTRY_MAX_CHARS)}")
+        notes.append(f".agents/skills/INDEX.md: {_truncate_text(index_text, _ENTRY_MAX_CHARS)}")
         best_skill = _best_matching_skill(index_text, skills_index_path, request_terms)
         if best_skill is not None:
             relative_path, summary, skill_text = best_skill
             notes.append(
-                f".skills/{relative_path} ({summary}): "
+                f".agents/skills/{relative_path} ({summary}): "
                 f"{_truncate_text(skill_text, _SKILL_DETAIL_MAX_CHARS)}"
             )
 

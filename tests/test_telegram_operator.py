@@ -499,7 +499,7 @@ def test_new_command_logs_discarded_cleanup_details(caplog: pytest.LogCaptureFix
                 approval_risk_flags=["Touches backlog storage"],
             ),
             source="fake-model",
-            skill_path=".skills/backlog-item-authoring/SKILL.md",
+            skill_path=".agents/skills/backlog-item-authoring/SKILL.md",
             matches=(),
             blocked=False,
         ),
@@ -1653,7 +1653,7 @@ def test_propose_command_creates_and_approves_backlog_item(
                 approval_risk_flags=["Touches backlog storage"],
             ),
             source="fake-model",
-            skill_path=".skills/backlog-item-authoring/SKILL.md",
+            skill_path=".agents/skills/backlog-item-authoring/SKILL.md",
             matches=(),
             blocked=False,
         )
@@ -1712,7 +1712,7 @@ def test_code_command_saves_backlog_item_before_starting_work(
             research_required=False,
         ),
         matches=(),
-        skill_path=".skills/backlog-item-authoring/SKILL.md",
+        skill_path=".agents/skills/backlog-item-authoring/SKILL.md",
     )
     prepared: list[str] = []
     added: list[str] = []
@@ -1786,7 +1786,7 @@ def test_code_command_rejection_does_not_start_work(
             research_required=False,
         ),
         matches=(),
-        skill_path=".skills/backlog-item-authoring/SKILL.md",
+        skill_path=".agents/skills/backlog-item-authoring/SKILL.md",
     )
     append_calls: list[object] = []
     graph_calls: list[object] = []

@@ -2551,7 +2551,7 @@ def test_check_project_guidance_node_skips_discovery_when_disabled(tmp_path, mon
 def test_check_project_guidance_node_degrades_gracefully_with_no_project_pack(
     tmp_path, monkeypatch
 ) -> None:
-    """No AGENTS.md/.skills/docs anywhere resolvable: discovery yields nothing —
+    """No AGENTS.md/.agents/skills/docs anywhere resolvable: discovery yields nothing —
     not a failure — and the governance check can still decide "sufficient"."""
     settings = replace(
         parse_settings(valid_settings_dict()),
@@ -2702,13 +2702,13 @@ def test_guidance_paths_and_hash_extracts_paths_and_is_stable() -> None:
     notes = [
         "AGENTS.md: some guidance text.",
         "docs/INDEX.md: some index text.",
-        ".skills/INDEX.md: some skills index text.",
-        ".skills/code-change/SKILL.md (code changes): skill detail text.",
+        ".agents/skills/INDEX.md: some skills index text.",
+        ".agents/skills/code-change/SKILL.md (code changes): skill detail text.",
     ]
 
     paths, guidance_hash = _guidance_paths_and_hash(notes)
 
-    assert paths == ["AGENTS.md", "docs/INDEX.md", ".skills/INDEX.md", ".skills/code-change/SKILL.md"]
+    assert paths == ["AGENTS.md", "docs/INDEX.md", ".agents/skills/INDEX.md", ".agents/skills/code-change/SKILL.md"]
     assert guidance_hash
     # Same notes -> same hash; deterministic, not time- or order-of-call dependent.
     _, repeat_hash = _guidance_paths_and_hash(notes)
@@ -2804,7 +2804,7 @@ def test_review_plan_node_recheck_merges_additional_relevant_guidance(tmp_path, 
     """ATL-078: after the plan names files/areas, the recheck may surface a
     more specific skill than pre-plan discovery found — bounded to the same
     discover_project_guidance mechanism, not a new one."""
-    skills_dir = tmp_path / ".skills"
+    skills_dir = tmp_path / ".agents" / "skills"
     (skills_dir / "database-migrations").mkdir(parents=True)
     (skills_dir / "database-migrations" / "SKILL.md").write_text(
         "Run `make migrate` after adding a migration.", encoding="utf-8"
@@ -2873,7 +2873,7 @@ def test_minimal_context_selection_holds_through_full_pipeline_for_a_simple_task
     """ATL-078: a genuinely simple task (one CSS colour change) must never pull
     in an unrelated skill anywhere along the pipeline — discovery, the plan
     request, or the coding-agent handoff."""
-    skills_dir = tmp_path / ".skills"
+    skills_dir = tmp_path / ".agents" / "skills"
     (skills_dir / "css-design-system").mkdir(parents=True)
     (skills_dir / "css-design-system" / "SKILL.md").write_text(
         "CSS design system detail: use theme tokens, never hardcode colour values.",
@@ -2907,7 +2907,7 @@ def test_minimal_context_selection_holds_through_full_pipeline_for_a_simple_task
     )
     notes = guidance_state["project_guidance_notes"]
     assert any("css-design-system" in note for note in notes)
-    # The raw .skills/INDEX.md dump legitimately lists both skills — that's
+    # The raw .agents/skills/INDEX.md dump legitimately lists both skills — that's
     # the index, not a drill-down. The actual skill *content* opened must be
     # only the relevant one.
     assert any("use theme tokens" in note for note in notes)

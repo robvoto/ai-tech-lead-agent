@@ -10,25 +10,25 @@ from ai_tech_lead.instruction_assembler import build_agent_instruction, select_s
 
 
 def _write_target_project_pack(project_root: Path) -> None:
-    (project_root / ".skills" / "code-change").mkdir(parents=True)
-    (project_root / ".skills" / "backlog-management").mkdir(parents=True)
-    (project_root / ".skills" / "instruction-maintenance").mkdir(parents=True)
-    (project_root / ".skills" / "INDEX.md").write_text(
+    (project_root / ".agents" / "skills" / "code-change").mkdir(parents=True)
+    (project_root / ".agents" / "skills" / "backlog-management").mkdir(parents=True)
+    (project_root / ".agents" / "skills" / "instruction-maintenance").mkdir(parents=True)
+    (project_root / ".agents" / "skills" / "INDEX.md").write_text(
         "# Skills Index\n\n"
         "- `code-change/SKILL.md` - Target repo code changes.\n"
         "- `backlog-management/SKILL.md` - Target repo backlog handling.\n"
         "- `instruction-maintenance/SKILL.md` - Target repo instruction files.\n",
         encoding="utf-8",
     )
-    (project_root / ".skills" / "code-change" / "SKILL.md").write_text(
+    (project_root / ".agents" / "skills" / "code-change" / "SKILL.md").write_text(
         "---\nname: code-change\n---\n\n# Target Repo Code Change\nTarget repo code rules.\n",
         encoding="utf-8",
     )
-    (project_root / ".skills" / "backlog-management" / "SKILL.md").write_text(
+    (project_root / ".agents" / "skills" / "backlog-management" / "SKILL.md").write_text(
         "---\nname: backlog-management\n---\n\n# Target Repo Backlog\nTarget repo backlog rules.\n",
         encoding="utf-8",
     )
-    (project_root / ".skills" / "instruction-maintenance" / "SKILL.md").write_text(
+    (project_root / ".agents" / "skills" / "instruction-maintenance" / "SKILL.md").write_text(
         "---\nname: instruction-maintenance\n---\n\n"
         "# Target Repo Instructions\nTarget repo instruction rules.\n",
         encoding="utf-8",
@@ -325,13 +325,13 @@ def test_runtime_core_research_skill_is_not_loaded_for_simple_non_research_task(
 
 
 def test_select_skills_requires_target_project_skills_index(tmp_path: Path) -> None:
-    with pytest.raises(FileNotFoundError, match=r"\.skills/INDEX\.md"):
+    with pytest.raises(FileNotFoundError, match=r"\.agents/skills/INDEX\.md"):
         select_skills("Fix runtime test", project_root=tmp_path)
 
 
 def test_select_skills_requires_selected_target_project_skill_file(tmp_path: Path) -> None:
-    (tmp_path / ".skills").mkdir()
-    (tmp_path / ".skills" / "INDEX.md").write_text("# Skills Index\n", encoding="utf-8")
+    (tmp_path / ".agents" / "skills").mkdir(parents=True)
+    (tmp_path / ".agents" / "skills" / "INDEX.md").write_text("# Skills Index\n", encoding="utf-8")
 
     with pytest.raises(FileNotFoundError, match="Selected target-project skill file not found"):
         select_skills("Fix runtime test", project_root=tmp_path)

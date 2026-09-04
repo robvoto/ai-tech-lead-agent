@@ -185,7 +185,7 @@ def test_docs_index_reference_loading_is_capped_at_two_documents(tmp_path: Path)
 def test_skills_index_scores_and_drills_into_the_best_match_only(tmp_path: Path) -> None:
     """Uses deliberately arbitrary, non-AI-Tech-Lead skill names to prove nothing
     is hardcoded — relevance comes only from scoring the index's own text."""
-    skills_dir = tmp_path / ".skills"
+    skills_dir = tmp_path / ".agents" / "skills"
     (skills_dir / "widget-forging").mkdir(parents=True)
     (skills_dir / "widget-forging" / "SKILL.md").write_text(
         "Widget forging detail: temper the alloy before shaping.", encoding="utf-8"
@@ -213,7 +213,7 @@ def test_skills_index_scores_and_drills_into_the_best_match_only(tmp_path: Path)
 
 
 def test_skills_index_included_even_with_no_scoring_match(tmp_path: Path) -> None:
-    skills_dir = tmp_path / ".skills"
+    skills_dir = tmp_path / ".agents" / "skills"
     (skills_dir / "widget-forging").mkdir(parents=True)
     (skills_dir / "widget-forging" / "SKILL.md").write_text("detail", encoding="utf-8")
     (skills_dir / "INDEX.md").write_text(
@@ -225,12 +225,12 @@ def test_skills_index_included_even_with_no_scoring_match(tmp_path: Path) -> Non
 
     # Only the index note — nothing scored above zero, so no drill-down note.
     assert len(notes) == 1
-    assert ".skills/INDEX.md" in notes[0]
+    assert ".agents/skills/INDEX.md" in notes[0]
 
 
 def test_missing_skill_file_referenced_by_index_is_skipped(tmp_path: Path) -> None:
-    skills_dir = tmp_path / ".skills"
-    skills_dir.mkdir()
+    skills_dir = tmp_path / ".agents" / "skills"
+    skills_dir.mkdir(parents=True)
     (skills_dir / "INDEX.md").write_text(
         "# Skills Index\n\n## Skills\n\n- `ghost-skill/SKILL.md` - a skill file that isn't there.\n",
         encoding="utf-8",
@@ -241,7 +241,7 @@ def test_missing_skill_file_referenced_by_index_is_skipped(tmp_path: Path) -> No
     # Only the index note itself — no drill-down note, since the referenced
     # skill file doesn't actually exist on disk.
     assert len(notes) == 1
-    assert ".skills/INDEX.md" in notes[0]
+    assert ".agents/skills/INDEX.md" in notes[0]
 
 
 def test_content_is_bounded_even_for_a_very_long_file(tmp_path: Path) -> None:
@@ -262,10 +262,10 @@ def test_content_is_bounded_even_for_a_very_long_file(tmp_path: Path) -> None:
 # since a test referencing an absolute path on one machine isn't portable to
 # CI or another developer's checkout. The shapes (not the project names or
 # content) are what matter and are reproduced here:
-#   - AGENTS.md + docs/INDEX.md, no .skills/INDEX.md at all.
-#   - AGENTS.md + docs/INDEX.md + .skills/INDEX.md using a plain
+#   - AGENTS.md + docs/INDEX.md, no .agents/skills/INDEX.md at all.
+#   - AGENTS.md + docs/INDEX.md + .agents/skills/INDEX.md using a plain
 #     "- path.md: summary" bullet shape (no backticks) — discovered live
-#     against Agent Factory's real `.skills/INDEX.md`, which the original
+#     against Agent Factory's real `.agents/skills/INDEX.md`, which the original
 #     backtick-only parser could not read at all.
 #   - No project pack whatsoever.
 # ---------------------------------------------------------------------------
@@ -276,7 +276,7 @@ def _write_project_context_only_fixture(root: Path) -> None:
     root.mkdir(parents=True, exist_ok=True)
     (root / "AGENTS.md").write_text(
         "# Agent Instructions\n\nAlways-loaded agent loader. Keep this file small.\n"
-        "Load the relevant skill from `.skills/`.",
+        "Load the relevant skill from `.agents/skills/`.",
         encoding="utf-8",
     )
     docs_dir = root / "docs"
@@ -289,8 +289,8 @@ def _write_project_context_only_fixture(root: Path) -> None:
 
 
 def _write_colon_skills_index_fixture(root: Path) -> None:
-    """Shape: full project pack, but .skills/INDEX.md uses a plain colon bullet
-    (no backticks) — e.g. Agent Factory's real `.skills/INDEX.md`."""
+    """Shape: full project pack, but .agents/skills/INDEX.md uses a plain colon bullet
+    (no backticks) — e.g. Agent Factory's real `.agents/skills/INDEX.md`."""
     root.mkdir(parents=True, exist_ok=True)
     (root / "AGENTS.md").write_text(
         "# AGENTS.md\n\nMinimal always-loaded routing instructions.", encoding="utf-8"
@@ -298,7 +298,7 @@ def _write_colon_skills_index_fixture(root: Path) -> None:
     docs_dir = root / "docs"
     docs_dir.mkdir(exist_ok=True)
     (docs_dir / "INDEX.md").write_text("# Documentation Index\n\nRoute here first.", encoding="utf-8")
-    skills_dir = root / ".skills"
+    skills_dir = root / ".agents" / "skills"
     (skills_dir / "code-change").mkdir(parents=True)
     (skills_dir / "code-change" / "SKILL.md").write_text(
         "# Code Change Skill\n\nFor code changes: change only files required by the task.",
@@ -318,7 +318,7 @@ def _write_colon_skills_index_fixture(root: Path) -> None:
 
 
 def test_colon_style_skills_index_is_parsed_like_the_backtick_style(tmp_path: Path) -> None:
-    """Regression for the real Agent Factory shape: a `.skills/INDEX.md` using
+    """Regression for the real Agent Factory shape: a `.agents/skills/INDEX.md` using
     `- path.md: summary` bullets (no backticks) must still drive selection."""
     root = tmp_path / "colon-shape-project"
     _write_colon_skills_index_fixture(root)
@@ -349,7 +349,7 @@ def test_colon_style_skills_index_selects_a_different_skill_for_a_different_task
 
 def test_project_context_only_shape_never_drills_into_a_skill(tmp_path: Path) -> None:
     """Regression for the real Job Hunter shape: AGENTS.md + docs/INDEX.md with
-    no .skills/INDEX.md must include only those two, never fabricate a skill."""
+    no .agents/skills/INDEX.md must include only those two, never fabricate a skill."""
     root = tmp_path / "context-only-project"
     _write_project_context_only_fixture(root)
 

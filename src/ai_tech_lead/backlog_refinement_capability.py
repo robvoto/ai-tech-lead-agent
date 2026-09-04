@@ -21,7 +21,7 @@ from .backlog_repository import (
 from .backlog_status import BacklogStatus
 from .config import PROJECT_ROOT
 
-_BACKLOG_AUTHORING_SKILL_PATH = PROJECT_ROOT / ".skills" / "backlog-item-authoring" / "SKILL.md"
+_BACKLOG_AUTHORING_SKILL_PATH = PROJECT_ROOT / ".agents" / "skills" / "backlog-item-authoring" / "SKILL.md"
 _STOPWORDS = {
     "a",
     "an",

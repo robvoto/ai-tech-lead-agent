@@ -410,7 +410,7 @@ Academy material is useful for learning concepts, but it is not the production a
 Current project skills are indexed in:
 
 ```text
-.skills/INDEX.md
+.agents/skills/INDEX.md
 ```
 
 Use the index to choose one relevant skill before acting.

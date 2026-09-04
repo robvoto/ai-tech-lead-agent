@@ -12,7 +12,7 @@ Keep instructions useful, small, current, and non-contradictory.
 
 ## Rules
 - Put universal operational rules in `AGENTS.md`.
-- Put area-specific operational rules in `.skills/<area>/SKILL.md`.
+- Put area-specific operational rules in `.agents/skills/<area>/SKILL.md`.
 - Put human/developer explanations, rationale, examples, and learning notes in `docs/*`.
 - Do not duplicate the same rule across many files.
 - Do not copy domain-specific rules from another project unless they apply here.
@@ -34,3 +34,7 @@ Report:
 - Why the rule belongs there
 - Evidence source if the change came from official/current guidance
 - Any follow-up review needed
+
+## Adapter independence
+- Agent-specific adapter files, when present, own only their own bootstrap. Shared project docs/tests must not enumerate, require, or depend on specific adapter filenames.
+- Shared `AGENTS.md` and `.agents/skills/*` must stay runtime-neutral.

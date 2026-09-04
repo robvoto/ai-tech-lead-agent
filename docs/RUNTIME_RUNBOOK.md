@@ -80,7 +80,7 @@ dropped. Exit code is non-zero if anything is still pending, in conflict, or
 abandoned after the pass.
 
 `bootstrap-project-pack` is an explicit operator action that writes a small starter
-`AGENTS.md`, `docs/INDEX.md`, and `.skills/` pack into a reviewed target repo.
+`AGENTS.md`, `docs/INDEX.md`, and `.agents/skills/` pack into a reviewed target repo.
 It refuses to overwrite existing files unless `--overwrite` is supplied.
 
 Coding-agent execution is controlled by the local settings/admin toggle (`execute_coding_agent`); there is no `--execute-coding-agent` CLI flag.

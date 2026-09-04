@@ -64,7 +64,7 @@ def test_build_agent_manifest_contains_core_contract_fields() -> None:
     assert manifest["project_pack"]["required_files"] == [
         "AGENTS.md",
         "docs/INDEX.md",
-        ".skills/INDEX.md",
+        ".agents/skills/INDEX.md",
     ]
     assert manifest["runtime"]["project_root"] == settings.project_root
     assert manifest["runtime"]["subprocess_project_registry"] == [

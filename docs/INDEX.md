@@ -44,7 +44,7 @@ Rules:
 
 - Root `README.md` - short human entry point and quick start.
 - Root `AGENTS.md` - minimal always-loaded routing file for all AI agents.
-- `.skills/INDEX.md` - skill catalogue and selection guidance.
+- `.agents/skills/INDEX.md` - skill catalogue and selection guidance.
 
 ## Orchestrator product documents
 
@@ -58,7 +58,6 @@ Rules:
 
 ## Tool-specific files
 
-- Root `CLAUDE.md` - compatibility file for tools that read it.
 
 ## Maintenance rules
 

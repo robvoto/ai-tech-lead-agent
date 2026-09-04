@@ -14,7 +14,7 @@ Use when creating or changing backlog items.
 - Every item must include ID, title, approval required, approval reason, goal, and constraints.
 - Keep backlog items executable by explicit ID.
 - Do not turn backlog items into universal operating rules.
-- Put durable project rules in `AGENTS.md`; put repeatable procedures in `.skills`; put rationale in `docs`.
+- Put durable project rules in `AGENTS.md`; put repeatable procedures in `.agents/skills`; put rationale in `docs`.
 - For refined backlog items created through `/propose`, the AI must provide structured fields for title, item type, epic, priority, size, approval status, approval reason, problem, desired outcome, scope, out of scope, acceptance criteria, duplicate/stale/already-done checks, research use, implementation pattern, and risk flags.
 - Repository-managed fields such as `Status`, `Created Date`, `Creator`, completeness indicators, cleanup flags, and cleanup notes are filled by code, not by the AI.
 

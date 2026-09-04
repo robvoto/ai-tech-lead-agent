@@ -214,7 +214,7 @@ def _wire_common_workflow_mocks(
             research_required=False,
         ),
         matches=(),
-        skill_path=".skills/backlog-item-authoring/SKILL.md",
+        skill_path=".agents/skills/backlog-item-authoring/SKILL.md",
     )
     monkeypatch.setattr(
         "ai_tech_lead.telegram_operator.prepare_backlog_refinement_proposal",

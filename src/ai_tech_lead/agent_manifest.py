@@ -35,7 +35,7 @@ _SUPPORTED_OUTPUT_STATUSES = [
 _PROJECT_PACK_REQUIRED_FILES = [
     "AGENTS.md",
     "docs/INDEX.md",
-    ".skills/INDEX.md",
+    ".agents/skills/INDEX.md",
 ]
 
 
@@ -289,7 +289,7 @@ def build_agent_manifest(settings: AppSettings | None = None) -> dict[str, Any]:
                 "runtime_core/CORE.md",
                 "runtime_core/skills/*",
                 "TARGET_ROOT/AGENTS.md",
-                "TARGET_ROOT/.skills/INDEX.md and selected skill files",
+                "TARGET_ROOT/.agents/skills/INDEX.md and selected skill files",
             ],
         },
         "required_docs": _REQUIRED_DOCS,
