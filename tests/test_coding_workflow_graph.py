@@ -958,6 +958,84 @@ def test_already_approved_subprocess_state_skips_approval_interrupt(monkeypatch)
     assert result["coding_agent_result"] == "done"
 
 
+def test_run_coding_agent_node_passes_resolved_tier_args_to_runner(monkeypatch) -> None:
+    settings = replace(parse_settings(valid_settings_dict()), execute_coding_agent=True)
+
+    def fake_load_settings():
+        return settings
+
+    class _Result:
+        message = "done"
+        returncode = 0
+        duration_seconds = 0.1
+        changed_files_delta: tuple[str, ...] = ()
+        command = ["codex"]
+
+        def summary(self) -> str:
+            return self.message
+
+    captured: dict = {}
+
+    def fake_run_coding_agent(**kwargs):
+        captured.update(kwargs)
+        return _Result()
+
+    monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.load_settings", fake_load_settings)
+    monkeypatch.setattr("ai_tech_lead.risk_reviewer.load_settings", fake_load_settings)
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.resolve_tier_args",
+        lambda command, tier: ("-c", f"model_reasoning_effort={tier}") if tier == "deep" else (),
+    )
+    monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.run_coding_agent", fake_run_coding_agent)
+
+    run_coding_agent_node(
+        graph_state(agent_instruction="Do the task", coding_agent_tier="deep"),
+        execute_coding_agent_override=True,
+    )
+
+    assert captured["extra_args"] == ("-c", "model_reasoning_effort=deep")
+
+
+def test_run_coding_agent_node_resolves_no_extra_args_for_unconfigured_backend(
+    monkeypatch,
+) -> None:
+    settings = replace(
+        parse_settings(valid_settings_dict()),
+        execute_coding_agent=True,
+        coding_agent_command="some-future-agent",
+    )
+
+    def fake_load_settings():
+        return settings
+
+    class _Result:
+        message = "done"
+        returncode = 0
+        duration_seconds = 0.1
+        changed_files_delta: tuple[str, ...] = ()
+        command = ["some-future-agent"]
+
+        def summary(self) -> str:
+            return self.message
+
+    captured: dict = {}
+
+    def fake_run_coding_agent(**kwargs):
+        captured.update(kwargs)
+        return _Result()
+
+    monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.load_settings", fake_load_settings)
+    monkeypatch.setattr("ai_tech_lead.risk_reviewer.load_settings", fake_load_settings)
+    monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.run_coding_agent", fake_run_coding_agent)
+
+    run_coding_agent_node(
+        graph_state(agent_instruction="Do the task"),
+        execute_coding_agent_override=True,
+    )
+
+    assert captured["extra_args"] == ()
+
+
 def test_run_coding_agent_node_infers_success_from_zero_returncode(monkeypatch) -> None:
     settings = replace(parse_settings(valid_settings_dict()), execute_coding_agent=True)
 
@@ -3248,6 +3326,8 @@ def test_known_backlog_resolves_referenced_item_without_clarification(monkeypatc
     class _FakeItem:
         title = "Ship the widget"
         body = "Acceptance Criteria: widget ships."
+        priority = "Medium"
+        complexity = "M"
 
     class _FakeSourceRecord:
         item = _FakeItem()
@@ -3290,6 +3370,8 @@ def test_known_backlog_fetch_snapshots_the_row_when_request_id_present(monkeypat
     class _FakeItem:
         title = "Ship the widget"
         body = "Acceptance Criteria: widget ships."
+        priority = "Medium"
+        complexity = "M"
 
     class _FakeSourceRecord:
         item = _FakeItem()
@@ -3336,6 +3418,8 @@ def test_backlog_location_discovered_from_settings_registry_resolves_item(monkey
     class _FakeItem:
         title = "Ship the widget"
         body = "Acceptance Criteria: widget ships."
+        priority = "Medium"
+        complexity = "M"
 
     class _FakeSourceRecord:
         item = _FakeItem()

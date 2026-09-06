@@ -198,12 +198,17 @@ def run_coding_agent(
     cancellation_token: CodingAgentCancellationToken | None = None,
     use_pty: bool = False,
     sandbox_override: str | None = None,
+    extra_args: tuple[str, ...] = (),
 ) -> CodingAgentResult:
     """Run the configured CLI agent.
 
     use_pty=True for long interactive runs (actual coding) so the agent sees a
     real terminal and emits live progress. Leave False (default) for plan
     requests where plain stdout text extraction is required.
+
+    `extra_args` are backend-specific coding-agent tier flags resolved by
+    coding_agent_tier_profiles.py (ATL-034) — this function stays generic and
+    just appends whatever it's given, never picking flags itself.
     """
     if not settings.execute_coding_agent:
         return CodingAgentResult(
@@ -219,7 +224,7 @@ def run_coding_agent(
         raise ValueError("Agent instruction cannot be empty.")
 
     _preflight_coding_agent(project_root, settings)
-    command = [settings.coding_agent_command, *settings.coding_agent_args]
+    command = [settings.coding_agent_command, *settings.coding_agent_args, *extra_args]
     if sandbox_override:
         command.extend(["-s", sandbox_override])
     command.append(instruction)

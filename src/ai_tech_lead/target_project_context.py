@@ -207,6 +207,8 @@ class BacklogItemContext:
     body: str = ""
     row_hash: str = ""
     fetched_at: str = ""
+    priority: str = ""
+    size: str = ""
 
     def to_payload(self) -> dict[str, str]:
         payload = {
@@ -223,6 +225,10 @@ class BacklogItemContext:
             payload["row_hash"] = self.row_hash
         if self.fetched_at:
             payload["fetched_at"] = self.fetched_at
+        if self.priority:
+            payload["priority"] = self.priority
+        if self.size:
+            payload["size"] = self.size
         return payload
 
     @classmethod
@@ -241,6 +247,8 @@ class BacklogItemContext:
             body=str(payload.get("body", "")).strip(),
             row_hash=str(payload.get("row_hash", "")).strip(),
             fetched_at=str(payload.get("fetched_at", "")).strip(),
+            priority=str(payload.get("priority", "")).strip(),
+            size=str(payload.get("size", "")).strip(),
         )
 
 
