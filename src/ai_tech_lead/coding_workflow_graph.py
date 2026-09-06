@@ -26,6 +26,7 @@ from .backlog_sheets_repository import (
     repository_for,
 )
 from .code_look_checker import check_code_look_need
+from .coding_agent_contract import normalize_coding_agent_result
 from .coding_agent_runner import (
     CodingAgentCancellationToken,
     GitPreflightResult,
@@ -222,6 +223,7 @@ class GraphState(TypedDict):
     coding_agent_returncode: int | None
     coding_agent_timed_out: bool
     coding_agent_performed_by: str
+    coding_agent_validation: str
     verification_status: str
     verification_reason: str
     verification_correction: str
@@ -354,6 +356,7 @@ def build_initial_graph_state(
         "coding_agent_returncode": None,
         "coding_agent_timed_out": False,
         "coding_agent_performed_by": "",
+        "coding_agent_validation": "",
         "verification_status": "",
         "verification_reason": "",
         "verification_correction": "",
@@ -2217,22 +2220,6 @@ def _short_reason(reason: str, limit: int = 120) -> str:
     return normalized[:limit] + "..." if len(normalized) > limit else normalized
 
 
-def _coding_agent_result_succeeded(result: Any) -> bool:
-    """Return success for a coding-agent result with a safe fallback.
-
-    Prefer an explicit ``success`` field when the adapter provides one. When it
-    does not, infer success from a zero return code as long as the run did not
-    time out or get cancelled.
-    """
-
-    explicit_success = getattr(result, "success", None)
-    if explicit_success is not None:
-        return bool(explicit_success)
-    if getattr(result, "timed_out", False) or getattr(result, "cancelled", False):
-        return False
-    return getattr(result, "returncode", None) == 0
-
-
 def _request_title(request: str) -> str:
     """Return a short task label for readable console logs."""
 
@@ -2354,6 +2341,7 @@ def run_coding_agent_node(
                 "coding_agent_returncode": None,
                 "coding_agent_timed_out": False,
                 "coding_agent_performed_by": "",
+                "coding_agent_validation": "",
             }
     else:
         preflight = canonical_preflight
@@ -2385,6 +2373,7 @@ def run_coding_agent_node(
             "coding_agent_returncode": None,
             "coding_agent_timed_out": False,
             "coding_agent_performed_by": "",
+            "coding_agent_validation": "",
         }
 
     # Approval context: explains who/what authorised this run
@@ -2459,9 +2448,10 @@ def run_coding_agent_node(
     )
     logger.info("[LEARN] Cost: not available for the same reason.")
 
-    changed_files = getattr(result, "changed_files_delta", ())
+    report = normalize_coding_agent_result(result)
+    changed_files = report.changed_files
     restart_required = _restart_required_for_changed_files(changed_files)
-    success = _coding_agent_result_succeeded(result)
+    success = report.success
     retry_count = state.get("coding_agent_retry_count", 0)
     new_retry_count = 0 if success else retry_count + 1
     correction = "" if success else result.summary()
@@ -2472,6 +2462,7 @@ def run_coding_agent_node(
         new_retry_count,
     )
     logger.info("Restart required: %s", restart_required)
+    logger.info("Validation reported: %s", report.validation or "not stated")
 
     return {
         **preflight_fields,
@@ -2482,9 +2473,10 @@ def run_coding_agent_node(
         "coding_agent_retry_count": new_retry_count,
         "coding_agent_correction": correction,
         "coding_agent_command": command[0] if command else "",
-        "coding_agent_returncode": getattr(result, "returncode", None),
+        "coding_agent_returncode": report.returncode,
         "coding_agent_timed_out": getattr(result, "timed_out", False),
         "coding_agent_performed_by": settings.coding_agent_command if command else "",
+        "coding_agent_validation": report.validation,
     }
 
 

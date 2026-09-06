@@ -994,6 +994,67 @@ def test_run_coding_agent_node_infers_success_from_zero_returncode(monkeypatch) 
     assert state["restart_required"] is True
 
 
+def test_run_coding_agent_node_surfaces_validation_line_from_stdout(monkeypatch) -> None:
+    settings = replace(parse_settings(valid_settings_dict()), execute_coding_agent=True)
+
+    def fake_load_settings():
+        return settings
+
+    class _ValidatedResult:
+        message = "done"
+        returncode = 0
+        duration_seconds = 0.5
+        changed_files_delta: tuple[str, ...] = ("src/foo.py",)
+        command = ["codex"]
+        stdout = "Implemented the fix.\nValidation: uv run pytest tests/test_foo.py — passed"
+
+        def summary(self) -> str:
+            return self.message
+
+    monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.load_settings", fake_load_settings)
+    monkeypatch.setattr("ai_tech_lead.risk_reviewer.load_settings", fake_load_settings)
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.run_coding_agent", lambda **_kw: _ValidatedResult()
+    )
+
+    state = run_coding_agent_node(
+        graph_state(agent_instruction="Do the task"),
+        execute_coding_agent_override=True,
+    )
+
+    assert state["coding_agent_validation"] == "uv run pytest tests/test_foo.py — passed"
+
+
+def test_run_coding_agent_node_leaves_validation_empty_when_not_stated(monkeypatch) -> None:
+    settings = replace(parse_settings(valid_settings_dict()), execute_coding_agent=True)
+
+    def fake_load_settings():
+        return settings
+
+    class _ChangedResult:
+        message = "done"
+        returncode = 0
+        duration_seconds = 0.5
+        changed_files_delta: tuple[str, ...] = ()
+        command = ["codex"]
+
+        def summary(self) -> str:
+            return self.message
+
+    monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.load_settings", fake_load_settings)
+    monkeypatch.setattr("ai_tech_lead.risk_reviewer.load_settings", fake_load_settings)
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.run_coding_agent", lambda **_kw: _ChangedResult()
+    )
+
+    state = run_coding_agent_node(
+        graph_state(agent_instruction="Do the task"),
+        execute_coding_agent_override=True,
+    )
+
+    assert state["coding_agent_validation"] == ""
+
+
 def test_run_coding_agent_node_infers_failure_from_nonzero_returncode(monkeypatch) -> None:
     settings = replace(parse_settings(valid_settings_dict()), execute_coding_agent=True)
 
