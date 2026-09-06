@@ -38,11 +38,21 @@ _PHASE_RE = re.compile(r"^[a-z][a-z0-9_.:-]{0,63}$")
 _ELAPSED_RE = re.compile(r"\[(?:(?P<minutes>\d+)m )?(?P<seconds>\d+)s\]")
 _LINES_RE = re.compile(r"(?P<lines>\d+) lines")
 _ATTEMPT_RE = re.compile(r"attempt (?P<attempt>\d+)", re.IGNORECASE)
+# Matches the single optional estimate line the plan-request prompt asks the
+# coding agent for (e.g. "Estimated steps: 4" / "Estimated time: ~10m"). Only
+# this captured line is ever forwarded — never the surrounding plan body.
+_ESTIMATE_LINE_RE = re.compile(
+    r"^\s*estimated\s+(?P<kind>steps?|time)\s*:?\s*(?P<value>.+?)\s*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+MAX_ESTIMATE_VALUE_CHARS = 40
 
 _ALLOWED_METADATA_KEYS = {
     "attempt",
     "backend",
     "elapsed_seconds",
+    "estimate_kind",
+    "estimate_value",
     "files_changed",
     "lines_output",
     "source",
@@ -312,7 +322,8 @@ class ProgressReporter:
     def handle_workflow_message(self, message: str) -> bool:
         """Translate existing graph/coding-runner callbacks into safe stable phases."""
 
-        normalized = " ".join(str(message).split())
+        raw_message = str(message)
+        normalized = " ".join(raw_message.split())
         if not normalized:
             return False
 
@@ -327,7 +338,15 @@ class ProgressReporter:
         ):
             return self.phase("planning", "Preparing an implementation plan.", metadata)
         if lower.startswith("plan from coding agent:"):
-            return self.phase("planning", "Implementation plan received.")
+            estimate = _extract_plan_estimate(raw_message)
+            if estimate is None:
+                return self.phase("planning", "Implementation plan received.")
+            estimate_kind, estimate_value = estimate
+            return self.phase(
+                "planning",
+                f"Implementation plan received. Estimated {estimate_kind}: {estimate_value}.",
+                {"estimate_kind": estimate_kind, "estimate_value": estimate_value},
+            )
         if lower.startswith("coding agent returned an empty plan"):
             return self.emit(
                 event_type="warning",
@@ -535,6 +554,24 @@ def _bounded_metadata(metadata: Mapping[str, Any] | None) -> dict[str, Any]:
 def _extract_attempt(message: str) -> int | None:
     match = _ATTEMPT_RE.search(message)
     return int(match.group("attempt")) if match else None
+
+
+def _extract_plan_estimate(plan_message: str) -> tuple[str, str] | None:
+    """Return (kind, value) for a coding-agent-declared plan estimate, or None.
+
+    `kind` is "steps" or "time". No estimate is invented when the plan didn't
+    include one — an absent match means the caller shows no estimate at all.
+    """
+    match = _ESTIMATE_LINE_RE.search(plan_message)
+    if not match:
+        return None
+    value = " ".join(match.group("value").split())
+    if not value:
+        return None
+    if len(value) > MAX_ESTIMATE_VALUE_CHARS:
+        value = value[: MAX_ESTIMATE_VALUE_CHARS - 1].rstrip() + "…"
+    kind = "steps" if match.group("kind").lower().startswith("step") else "time"
+    return kind, value
 
 
 def _runtime_metadata(message: str) -> dict[str, Any]:
