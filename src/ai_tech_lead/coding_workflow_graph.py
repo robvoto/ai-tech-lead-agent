@@ -33,6 +33,7 @@ from .coding_agent_runner import (
     run_coding_agent,
     run_git_preflight,
 )
+from .coding_agent_tier_profiles import DEFAULT_CODING_AGENT_TIER, resolve_tier_args
 from .completion_verifier import CompletionVerificationUnavailable, verify_completion
 from .git_lifecycle import (
     GitLifecycleBlocked,
@@ -195,6 +196,7 @@ class GraphState(TypedDict):
     plan_correction: str
     plan_rejection_count: int
     plan_needs_human_review: bool
+    coding_agent_tier: str
     agent_instruction: str
     git_preflight_status: str
     git_preflight_branch: str
@@ -328,6 +330,7 @@ def build_initial_graph_state(
         "plan_correction": "",
         "plan_rejection_count": 0,
         "plan_needs_human_review": False,
+        "coding_agent_tier": DEFAULT_CODING_AGENT_TIER,
         "agent_instruction": "",
         "git_preflight_status": "",
         "git_preflight_branch": "",
@@ -658,6 +661,8 @@ def _fetch_known_backlog_item(
         body=source_record.item.body,
         row_hash=source_record.row_hash,
         fetched_at=source_record.fetched_at,
+        priority=source_record.item.priority,
+        size=source_record.item.complexity,
     )
     return replace(context, backlog_item=backlog_item)
 
@@ -1768,6 +1773,11 @@ def review_plan_node(
     formulated_task = state.get("formulated_task", "") or state["request"]
     rejection_count = state.get("plan_rejection_count", 0)
 
+    context = _target_project_context_from_state(state)
+    backlog_item = context.backlog_item if context is not None else None
+    backlog_priority = backlog_item.priority if backlog_item is not None else ""
+    backlog_size = backlog_item.size if backlog_item is not None else ""
+
     logger.info("Reviewing plan (rejection_count=%d):", rejection_count)
     logger.info("Plan text:\n%s", plan_text or "<empty>")
 
@@ -1794,6 +1804,8 @@ def review_plan_node(
             agent_error=plan_agent_stderr,
             settings=settings,
             project_guidance=project_guidance,
+            backlog_priority=backlog_priority,
+            backlog_size=backlog_size,
         ),
     )
     if _budget_blocked(error):
@@ -1825,11 +1837,12 @@ def review_plan_node(
             "plan_correction": decision.correction,
             "plan_needs_human_review": False,
             "plan_rejection_count": new_rejection_count,
+            "coding_agent_tier": decision.coding_agent_tier,
             **guidance_updates,
             **budget_updates,
         }
 
-    logger.info("Plan approved.")
+    logger.info("Plan approved. Coding-agent tier: %s", decision.coding_agent_tier)
     if progress_callback is not None:
         progress_callback("Plan approved. Starting implementation...")
     return {
@@ -1837,6 +1850,7 @@ def review_plan_node(
         "plan_review_reason": decision.reason,
         "plan_correction": "",
         "plan_needs_human_review": False,
+        "coding_agent_tier": decision.coding_agent_tier,
         **guidance_updates,
         **budget_updates,
     }
@@ -2393,7 +2407,10 @@ def run_coding_agent_node(
         approval_source,
     )
     logger.info("[LEARN] Approval reason: %s", _short_reason(state["approval_reason"]))
+    coding_agent_tier = state.get("coding_agent_tier", DEFAULT_CODING_AGENT_TIER)
+    extra_args = resolve_tier_args(settings.coding_agent_command, coding_agent_tier)
     logger.info("Coding agent command: %s", settings.coding_agent_command)
+    logger.info("Coding agent tier: %s (extra args: %s)", coding_agent_tier, extra_args)
     logger.info("Coding agent execution enabled: %s", settings.execute_coding_agent)
     logger.info("Working directory: %s", target_project_root)
 
@@ -2412,6 +2429,7 @@ def run_coding_agent_node(
         "progress_callback": progress_callback,
         "use_pty": True,
         "sandbox_override": "workspace-write",
+        "extra_args": extra_args,
     }
     if cancellation_token is not None:
         runner_kwargs["cancellation_token"] = cancellation_token

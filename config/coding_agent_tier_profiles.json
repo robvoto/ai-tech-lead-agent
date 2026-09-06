@@ -1,0 +1,12 @@
+{
+  "_comment": "Per-backend coding-agent effort tiers (ATL-034). AI Tech Lead picks one of the tiers below per task; this file is the only place that knows what each tier means for a given coding-agent CLI. A backend with no entry here runs with no extra args — never a guessed flag.",
+  "tiers": ["light", "standard", "deep"],
+  "default_tier": "standard",
+  "backends": {
+    "codex": {
+      "light": ["-c", "model_reasoning_effort=low"],
+      "standard": ["-c", "model_reasoning_effort=medium"],
+      "deep": ["-c", "model_reasoning_effort=high"]
+    }
+  }
+}

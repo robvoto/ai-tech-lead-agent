@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from .app_settings import AppSettings
+from .coding_agent_tier_profiles import CODING_AGENT_TIERS, DEFAULT_CODING_AGENT_TIER
 from .llm_json import call_llm_for_json
 from .logging_setup import LOGGER_NAME
 from .orchestrator_llm import OrchestratorLlmConfig, OrchestratorLlmError
@@ -23,8 +24,9 @@ _PLAN_REVIEW_SCHEMA = {
         "approved": {"type": "boolean"},
         "reason": {"type": "string"},
         "correction": {"type": "string"},
+        "coding_agent_tier": {"type": "string", "enum": list(CODING_AGENT_TIERS)},
     },
-    "required": ["approved", "reason", "correction"],
+    "required": ["approved", "reason", "correction", "coding_agent_tier"],
     "additionalProperties": False,
 }
 
@@ -38,6 +40,7 @@ class PlanReviewDecision:
     approved: bool
     reason: str
     correction: str
+    coding_agent_tier: str = DEFAULT_CODING_AGENT_TIER
 
 
 def review_plan(
@@ -46,6 +49,8 @@ def review_plan(
     settings: AppSettings,
     agent_error: str = "",
     project_guidance: list[str] | None = None,
+    backlog_priority: str = "",
+    backlog_size: str = "",
 ) -> PlanReviewDecision:
     """Decide whether the coding agent's plan correctly addresses the task.
 
@@ -56,6 +61,12 @@ def review_plan(
     testable criteria; guidance may add or narrow project-local expectations
     but must never be treated as a reason to approve a plan that skips core
     safety, approval, evidence, or stop rules.
+
+    ``backlog_priority``/``backlog_size`` (ATL-034) are optional hints, not a
+    fixed lookup — this same call also decides ``coding_agent_tier`` (light/
+    standard/deep), the effort level the coding agent runs the real change
+    at, using its own read of the task and plan plus these hints. No separate
+    LLM call is added: this reuses the review that already runs on every plan.
     """
 
     if not settings.orchestrator_ai_enabled:
@@ -85,7 +96,14 @@ def review_plan(
         )
 
     try:
-        return _llm_review_plan(formulated_task, plan_text, settings, project_guidance or [])
+        return _llm_review_plan(
+            formulated_task,
+            plan_text,
+            settings,
+            project_guidance or [],
+            backlog_priority,
+            backlog_size,
+        )
     except OrchestratorLlmError as error:
         logger.warning("Plan review LLM call failed: %s — routing to human approval.", error)
         raise PlanReviewUnavailable(f"Plan review LLM unavailable: {error}") from error
@@ -101,10 +119,23 @@ def _llm_review_plan(
     plan_text: str,
     settings: AppSettings,
     project_guidance: list[str],
+    backlog_priority: str,
+    backlog_size: str,
 ) -> PlanReviewDecision:
     guidance_text = (
         "Target project's own guidance:\n" + "\n".join(f"- {g}" for g in project_guidance)
         if project_guidance
+        else ""
+    )
+    hint_lines = []
+    if backlog_priority:
+        hint_lines.append(f"- Priority: {backlog_priority}")
+    if backlog_size:
+        hint_lines.append(f"- Size: {backlog_size}")
+    backlog_hints = (
+        "Backlog metadata (a hint, not a rule — use your own judgment of the task and plan):\n"
+        + "\n".join(hint_lines)
+        if hint_lines
         else ""
     )
     prompt = render_prompt(
@@ -112,6 +143,7 @@ def _llm_review_plan(
         formulated_task=formulated_task,
         plan_text=plan_text,
         project_guidance=guidance_text,
+        backlog_hints=backlog_hints,
     )
     profile = resolve_profile_with_override("plan_review", settings=settings)
     config = OrchestratorLlmConfig(
@@ -148,13 +180,23 @@ def _parse_review_payload(payload: dict[str, Any]) -> PlanReviewDecision:
     approved = payload["approved"]
     reason = str(payload.get("reason", "")).strip()
     correction = str(payload.get("correction", "")).strip()
+    coding_agent_tier = str(payload.get("coding_agent_tier", "")).strip()
 
     if not isinstance(approved, bool):
         raise ValueError("approved must be boolean")
     if not reason:
         raise ValueError("reason cannot be empty")
+    if coding_agent_tier not in CODING_AGENT_TIERS:
+        raise ValueError(
+            f"coding_agent_tier must be one of {CODING_AGENT_TIERS}, got {coding_agent_tier!r}"
+        )
 
-    return PlanReviewDecision(approved=approved, reason=reason, correction=correction)
+    return PlanReviewDecision(
+        approved=approved,
+        reason=reason,
+        correction=correction,
+        coding_agent_tier=coding_agent_tier,
+    )
 
 
 def _plan_is_too_verbose(plan_text: str) -> bool:

@@ -109,6 +109,41 @@ def test_run_coding_agent_calls_configured_command(
     assert result.stdout == "done"
 
 
+def test_run_coding_agent_appends_extra_args_after_configured_args(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    settings = replace(parse_settings(valid_settings_dict()), execute_coding_agent=True)
+
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *a, **kw: subprocess.CompletedProcess(
+            args=a[0], returncode=0, stdout="codex-cli 0.148.0", stderr=""
+        ),
+    )
+    calls = _install_fake_pipe_popen(monkeypatch, stdout="done")
+
+    run_coding_agent(
+        "Do the task",
+        tmp_path,
+        settings,
+        extra_args=("-c", "model_reasoning_effort=high"),
+    )
+
+    agent_call = calls[0]
+    assert agent_call["args"] == [
+        "stdbuf", "-oL",
+        "codex",
+        "--ask-for-approval",
+        "never",
+        "exec",
+        "-c",
+        "model_reasoning_effort=high",
+        "Do the task",
+    ]
+
+
 def test_run_coding_agent_rejects_missing_backend_before_launch(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

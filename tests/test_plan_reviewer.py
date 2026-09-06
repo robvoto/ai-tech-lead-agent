@@ -63,7 +63,10 @@ def test_review_plan_allows_five_bullets_plus_done_when(monkeypatch) -> None:
     monkeypatch.setattr(
         "ai_tech_lead.llm_json.call_orchestrator_llm",
         lambda **_kw: OrchestratorLlmResult(
-            text='{"approved": true, "reason": "Plan shape is valid.", "correction": ""}'
+            text=(
+                '{"approved": true, "reason": "Plan shape is valid.", "correction": "", '
+                '"coding_agent_tier": "standard"}'
+            )
         ),
     )
 
@@ -92,7 +95,10 @@ def test_review_plan_accepts_markdown_fenced_json(monkeypatch) -> None:
     monkeypatch.setattr(
         "ai_tech_lead.llm_json.call_orchestrator_llm",
         lambda **_kw: OrchestratorLlmResult(
-            text='```json\n{"approved": true, "reason": "Looks good."}\n```'
+            text=(
+                '```json\n{"approved": true, "reason": "Looks good.", '
+                '"coding_agent_tier": "standard"}\n```'
+            )
         ),
     )
 
@@ -110,7 +116,9 @@ def test_review_plan_retries_once_on_invalid_response_then_succeeds(monkeypatch)
         calls.append(1)
         if len(calls) == 1:
             return OrchestratorLlmResult(text="")
-        return OrchestratorLlmResult(text='{"approved": true, "reason": "Fine on retry."}')
+        return OrchestratorLlmResult(
+            text='{"approved": true, "reason": "Fine on retry.", "coding_agent_tier": "standard"}'
+        )
 
     monkeypatch.setattr("ai_tech_lead.llm_json.call_orchestrator_llm", fake_call)
 
@@ -139,7 +147,9 @@ def test_project_guidance_is_included_in_the_plan_review_prompt_when_present(mon
 
     def fake_call(**kwargs):
         captured["prompt"] = kwargs["prompt"]
-        return OrchestratorLlmResult(text='{"approved": true, "reason": "Looks good."}')
+        return OrchestratorLlmResult(
+            text='{"approved": true, "reason": "Looks good.", "coding_agent_tier": "standard"}'
+        )
 
     monkeypatch.setattr("ai_tech_lead.llm_json.call_orchestrator_llm", fake_call)
 
@@ -160,10 +170,95 @@ def test_project_guidance_omitted_from_plan_review_prompt_when_empty(monkeypatch
 
     def fake_call(**kwargs):
         captured["prompt"] = kwargs["prompt"]
-        return OrchestratorLlmResult(text='{"approved": true, "reason": "Looks good."}')
+        return OrchestratorLlmResult(
+            text='{"approved": true, "reason": "Looks good.", "coding_agent_tier": "standard"}'
+        )
 
     monkeypatch.setattr("ai_tech_lead.llm_json.call_orchestrator_llm", fake_call)
 
     review_plan("Build the feature", "1. Do the thing.", settings)
 
     assert "Target project's own guidance" not in captured["prompt"]
+
+
+def test_review_plan_returns_coding_agent_tier_from_llm(monkeypatch) -> None:
+    settings = replace(parse_settings(valid_settings_dict()), orchestrator_ai_enabled=True)
+
+    monkeypatch.setattr(
+        "ai_tech_lead.llm_json.call_orchestrator_llm",
+        lambda **_kw: OrchestratorLlmResult(
+            text='{"approved": true, "reason": "Simple fix.", "coding_agent_tier": "light"}'
+        ),
+    )
+
+    decision = review_plan("Fix a typo", "1. Fix the typo.", settings)
+
+    assert decision.approved is True
+    assert decision.coding_agent_tier == "light"
+
+
+def test_review_plan_rejects_invalid_coding_agent_tier(monkeypatch) -> None:
+    settings = replace(parse_settings(valid_settings_dict()), orchestrator_ai_enabled=True)
+
+    monkeypatch.setattr(
+        "ai_tech_lead.llm_json.call_orchestrator_llm",
+        lambda **_kw: OrchestratorLlmResult(
+            text='{"approved": true, "reason": "Fine.", "coding_agent_tier": "extreme"}'
+        ),
+    )
+
+    with pytest.raises(PlanReviewUnavailable, match="invalid response"):
+        review_plan("Build the feature", "1. Do the thing.", settings)
+
+
+def test_review_plan_defaults_to_standard_tier_on_empty_plan() -> None:
+    settings = replace(parse_settings(valid_settings_dict()), orchestrator_ai_enabled=True)
+
+    decision = review_plan("Build the feature", "", settings)
+
+    assert decision.approved is False
+    assert decision.coding_agent_tier == "standard"
+
+
+def test_backlog_hints_are_included_in_the_plan_review_prompt_as_a_hint_not_a_rule(
+    monkeypatch,
+) -> None:
+    settings = replace(parse_settings(valid_settings_dict()), orchestrator_ai_enabled=True)
+    captured: dict = {}
+
+    def fake_call(**kwargs):
+        captured["prompt"] = kwargs["prompt"]
+        return OrchestratorLlmResult(
+            text='{"approved": true, "reason": "Looks good.", "coding_agent_tier": "standard"}'
+        )
+
+    monkeypatch.setattr("ai_tech_lead.llm_json.call_orchestrator_llm", fake_call)
+
+    review_plan(
+        "Build the feature",
+        "1. Do the thing.",
+        settings,
+        backlog_priority="High",
+        backlog_size="L",
+    )
+
+    assert "Priority: High" in captured["prompt"]
+    assert "Size: L" in captured["prompt"]
+    assert "a hint, not a rule" in captured["prompt"]
+
+
+def test_backlog_hints_omitted_from_plan_review_prompt_when_absent(monkeypatch) -> None:
+    settings = replace(parse_settings(valid_settings_dict()), orchestrator_ai_enabled=True)
+    captured: dict = {}
+
+    def fake_call(**kwargs):
+        captured["prompt"] = kwargs["prompt"]
+        return OrchestratorLlmResult(
+            text='{"approved": true, "reason": "Looks good.", "coding_agent_tier": "standard"}'
+        )
+
+    monkeypatch.setattr("ai_tech_lead.llm_json.call_orchestrator_llm", fake_call)
+
+    review_plan("Build the feature", "1. Do the thing.", settings)
+
+    assert "Backlog metadata" not in captured["prompt"]

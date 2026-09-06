@@ -536,6 +536,8 @@ def _build_target_project_context(
             body=source_record.item.body,
             row_hash=source_record.row_hash,
             fetched_at=source_record.fetched_at,
+            priority=source_record.item.priority,
+            size=source_record.item.complexity,
         )
 
     return TargetProjectContext(

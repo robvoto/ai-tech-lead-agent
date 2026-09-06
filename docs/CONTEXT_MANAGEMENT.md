@@ -105,6 +105,7 @@ A handoff may include:
 - safety/approval status
 - bounded research evidence from local docs or approved online docs
 - a request for the coding agent to state its own bounded plan estimate (steps or rough time), only when it is confident enough to give one
+- an effort tier (`light`/`standard`/`deep`) AI Tech Lead itself chose from its own read of the task and plan — translated into backend-specific CLI args by `coding_agent_tier_profiles.py`, never invented per call site
 
 A handoff should not include:
 
