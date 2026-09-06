@@ -77,7 +77,7 @@ Progress may contain:
 
 - stable phase name
 - short human-safe milestone
-- elapsed seconds, line count, attempt number, or other allowlisted bounded metrics
+- elapsed seconds, line count, attempt number, a coding-agent-declared plan estimate (steps or rough time, only when it stated one), or other allowlisted bounded metrics
 - waiting, warning, failure, or completion state
 
 Progress must not contain:
@@ -104,6 +104,7 @@ A handoff may include:
 - validation command
 - safety/approval status
 - bounded research evidence from local docs or approved online docs
+- a request for the coding agent to state its own bounded plan estimate (steps or rough time), only when it is confident enough to give one
 
 A handoff should not include:
 

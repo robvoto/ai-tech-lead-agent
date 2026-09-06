@@ -148,6 +148,53 @@ def test_workflow_message_translation_does_not_forward_plan_or_rejection_text() 
     assert events[2]["metadata"] == {"elapsed_seconds": 67, "lines_output": 42}
 
 
+def test_plan_estimate_is_surfaced_when_coding_agent_declares_one() -> None:
+    stream = io.StringIO()
+    reporter = ProgressReporter(
+        StdoutJsonlProgressSink(run_id="run-1", request_id="req-1", stream=stream)
+    )
+
+    reporter.handle_workflow_message(
+        "Plan from coding agent:\n"
+        "SECRET PLAN BODY\n"
+        "- inspect foo.py\n"
+        "Done when tests pass.\n"
+        "Estimated steps: 4"
+    )
+
+    event = _events(stream)[0]
+    assert event["human_summary"] == "Implementation plan received. Estimated steps: 4."
+    assert event["metadata"] == {"estimate_kind": "steps", "estimate_value": "4"}
+    assert "SECRET PLAN BODY" not in json.dumps(event)
+
+
+def test_plan_estimate_absent_shows_no_fake_eta() -> None:
+    stream = io.StringIO()
+    reporter = ProgressReporter(
+        StdoutJsonlProgressSink(run_id="run-1", request_id="req-1", stream=stream)
+    )
+
+    reporter.handle_workflow_message("Plan from coding agent:\nSECRET PLAN BODY, no estimate here")
+
+    event = _events(stream)[0]
+    assert event["human_summary"] == "Implementation plan received."
+    assert event["metadata"] == {}
+
+
+def test_plan_estimate_value_is_bounded() -> None:
+    stream = io.StringIO()
+    reporter = ProgressReporter(
+        StdoutJsonlProgressSink(run_id="run-1", request_id="req-1", stream=stream)
+    )
+
+    long_value = "x" * 200
+    reporter.handle_workflow_message(f"Plan from coding agent:\nEstimated time: {long_value}")
+
+    event = _events(stream)[0]
+    assert len(event["metadata"]["estimate_value"]) <= 40
+    assert event["metadata"]["estimate_value"].endswith("…")
+
+
 def test_structured_event_adapter_supports_future_deep_agent_events() -> None:
     stream = io.StringIO()
     reporter = ProgressReporter(
