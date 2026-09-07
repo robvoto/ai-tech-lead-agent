@@ -74,6 +74,7 @@ START
 -> 6_run_coding_agent
 -> [6b_failure_interrupt, if agent fails twice in a row]
 -> 6b1_capture_validation_evidence  (AI Tech Lead builds its own diff + runs the validation command)
+-> 6b2_implementation_review        (independent second agent reviews the change, for meaningful/risky work)
 -> 6c_verify_completion             (AI Tech Lead verifies the coding agent's success claim)
 -> [6d_completion_verification_interrupt, if completion can't be proven automatically]
 -> 7_end_node
@@ -153,7 +154,7 @@ Prompt: `data/prompts.json` key `tech_lead_analysis`, module `tech_lead_analyst.
 
 After `6_run_coding_agent`:
 
-- **Success** → `6b1_capture_validation_evidence`, then `6c_verify_completion`. A clean process exit from the coding agent is not the completion rule; verification is.
+- **Success** → `6b1_capture_validation_evidence` → `6b2_implementation_review` → `6c_verify_completion`. A clean process exit from the coding agent is not the completion rule; verification is.
 - **Failure, retry_count < 2** → back to `5_create_agent_instruction` with `coding_agent_correction` included so the agent knows what went wrong.
 - **Failure, retry_count ≥ 2** → `6b_failure_interrupt` asks the human for guidance, then back to `5_create_agent_instruction` with human feedback and retry count reset to 0.
 
@@ -162,6 +163,21 @@ After `6_run_coding_agent`:
 `5e_discover_validation_command` runs once after plan approval, before the handoff. It finds the target project's canonical validation command (`validation_command_discovery.py`): first a short line in the project's own entry points (`AGENTS.md`, `docs/INDEX.md` one-hop references, the best-matching `.agents/skills` skill) that names the intent ("validation command", "core validation", "run tests with", …) and carries exactly one backtick-quoted command; otherwise exactly one unambiguous repository signal (a pytest project → `uv run pytest`/`pytest`, a `package.json` test script → `npm test`, a `Makefile` `test:` target → `make test`, `tox.ini` → `tox`, `noxfile.py` → `nox`). Zero signals, or more than one, returns nothing.
 
 When discovery finds nothing, `route_after_discover_validation_command` sends the run to `5e1_validation_command_interrupt`, which pauses and asks the operator for the command (`{"kind": "validation_command", ...}`; reply with the command, or `skip`). Bounded to `VALIDATION_COMMAND_MAX_RETRIES` (1): a usable reply sets `validation_command` (source `operator-supplied`) and the loop returns through `5e_discover_validation_command` (which keeps an already-set command); `skip` or an unusable/empty reply marks the attempt exhausted and the run proceeds without a command, so the completion gate escalates to human verification. `build_agent_instruction` names the exact command to run and report, or — when there is none — asks the agent to state whichever command it used.
+
+## Independent implementation review (ATL-093)
+
+`6b2_implementation_review` runs between the evidence capture and the verifier (`implementation_review.py`). `review_required` returns true when the plan-review `coding_agent_tier` is `standard`/`deep`, the `risk_level` is `MEDIUM`/`HIGH`/`UNKNOWN`, or the formulated task / brief / git-changed paths hit an `implementation_review_risk_keywords` term; otherwise, and when coding execution or `implementation_review_enabled` is off, the node returns `review_status="skipped"` and passes through. The backlog `Size` field is not consulted.
+
+When required, the node dispatches `review_agent_command` (which must differ from `coding_agent_command`) through `run_coding_agent(..., sandbox_override="read-only")`, giving it the approved task/plan/criteria, the git-derived diff and the ATL-039 validation result. It parses `FINDING [required|advisory] <target>: <text>` lines and a final `REVIEW: pass|changes-required`. `review_status`:
+
+- `clean` — verdict `pass` (advisory-only findings allowed). Passes through; positive context for the verifier.
+- `findings` — verdict `changes-required` with at least one `required` finding, and `review_correction_count` is below `IMPLEMENTATION_REVIEW_MAX_CORRECTIONS` (1). `route_after_implementation_review` sends it back to `5_create_agent_instruction` with the required findings as the correction; the re-run returns through `6b1` → `6b2`.
+- `findings_unresolved` — required findings still present after that one correction cycle.
+- `unavailable` — no distinct reviewer configured, or its preflight failed.
+- `failed` — the reviewer errored or its output had no usable `REVIEW:` verdict.
+- `mutated` — the reviewer changed files on disk (`changed_files_delta` non-empty).
+
+`completion_verifier.py` treats `unavailable`/`failed`/`mutated`/`findings_unresolved` like ATL-039's `validation_passed=None`: raise `CompletionVerificationUnavailable` → `6d_completion_verification_interrupt` (Human verification required), no LLM call. `skipped`/`clean` go to the normal LLM path with the review status as context. Agent A never reviews its own work. `review_status` is written to the ATL-038 audit receipt and the subprocess `review` field.
 
 ## Completion verification
 
@@ -215,6 +231,7 @@ is removed automatically. Every execution result includes exactly one explicit
 | Plan request | `coding_workflow_graph.py` | `plan_request_instruction` |
 | Plan review | `plan_reviewer.py` | `plan_review` |
 | Completion verification | `completion_verifier.py` | `completion_verification` |
+| Independent implementation review | `implementation_review.py` | `implementation_review` |
 | Operator question answer | `operator_question.py` | `operator_question_answer` |
 
 ## Human interrupt nodes
@@ -296,6 +313,7 @@ When sleep mode is active, the `3_review_risk` node applies these rules instead 
 - Failed coding agent runs loop back to `5_create_agent_instruction` with the failure summary included in the instruction.
 - After two failures, `6b_failure_interrupt` fires to ask the human for guidance.
 - A successful coding-agent run is checked once by `6c_verify_completion`; `correction_required` loops back to `5_create_agent_instruction` at most once (`COMPLETION_VERIFICATION_MAX_CORRECTIONS`), after which a still-unmet issue escalates to `6d_completion_verification_interrupt` (`human_verification_required`) instead of looping again or ending as terminal `failed`.
+- `6b2_implementation_review` has its own bounded loop: required findings send the run back to `5_create_agent_instruction` at most once (`IMPLEMENTATION_REVIEW_MAX_CORRECTIONS`), tracked by `review_correction_count`; if required findings survive that cycle the review is `findings_unresolved` and the verifier escalates to `6d_completion_verification_interrupt`, never a second review-driven retry.
 
 ## Execution boundary
 

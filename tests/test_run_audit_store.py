@@ -37,6 +37,7 @@ def test_schema_and_round_trip(tmp_path: Path) -> None:
             "coding_agent_performed_by": "codex",
             "coding_agent_changed_files": ("src/example.py",),
             "verification_status": "complete",
+            "review_status": "clean",
         },
         result={
             "status": "success",
@@ -52,11 +53,13 @@ def test_schema_and_round_trip(tmp_path: Path) -> None:
             row[1]
             for row in connection.execute("PRAGMA table_info(run_audit_summaries)")
         }
-    assert {"request_id", "selected_skill_hashes", "validation_status"} <= columns
+    assert {"request_id", "selected_skill_hashes", "validation_status", "review_status"} <= columns
 
     restored = store.get("ATL-038-test")
     assert restored == summary
     assert restored.to_payload()["result"]["status"] == "success"
+    assert restored.review_status == "clean"
+    assert restored.to_payload()["review"] == {"status": "clean"}
 
 
 def test_secret_exclusion_and_bounded_summary(tmp_path: Path) -> None:

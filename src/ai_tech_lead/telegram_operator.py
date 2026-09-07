@@ -2932,6 +2932,11 @@ def _completion_message(
     lines = [header, body]
     if main_status:
         lines.append(main_status)
+    review_status = str(state_values.get("review_status", "")).strip()
+    if review_status and review_status != "skipped":
+        reviewer = str(state_values.get("review_agent_performed_by", "")).strip()
+        review_line = f"Independent review ({reviewer or 'second agent'}): {review_status}"
+        lines.append(review_line)
     if verification_status == "failed" and verification_reason:
         lines.append(f"Verification: {_summarize_text(verification_reason, limit=200)}")
     if backlog_status_line:

@@ -11,6 +11,35 @@ from urllib.parse import urlparse
 from ai_tech_lead.config import PROJECT_ROOT, SETTINGS_PATH
 
 ALLOWED_TELEGRAM_TRANSPORTS = {"polling", "webhook"}
+
+# ATL-093: task/diff text hitting any of these forces the independent
+# implementation review regardless of estimated size. Tunable per install.
+DEFAULT_IMPLEMENTATION_REVIEW_RISK_KEYWORDS = [
+    "security",
+    "auth",
+    "authentication",
+    "authorization",
+    "credential",
+    "credentials",
+    "secret",
+    "secrets",
+    "password",
+    "token",
+    "oauth",
+    "session",
+    "crypto",
+    "migration",
+    "migrate",
+    "schema",
+    "database",
+    "production",
+    "deploy",
+    "payment",
+    "billing",
+    "invoice",
+    "pii",
+    "gdpr",
+]
 PROJECT_REGISTRY_KEY = "project_registry"
 ALLOWED_PROJECT_ROOTS_KEY = "allowed_project_roots"
 LEGACY_ALLOWED_PROJECT_ROOTS_KEY = "army_allowed_project_roots"
@@ -43,6 +72,10 @@ class AppSettings:
     max_runtime_minutes: int
     coding_agent_command: str
     coding_agent_args: list[str]
+    review_agent_command: str
+    review_agent_args: list[str]
+    implementation_review_enabled: bool
+    implementation_review_risk_keywords: list[str]
     execute_coding_agent: bool
     telegram_enabled: bool
     project_context: list[str]
@@ -150,6 +183,15 @@ def parse_settings(raw_settings: dict[str, Any]) -> AppSettings:
             raw_settings,
             "coding_agent_args",
             allow_empty=True,
+        ),
+        review_agent_command=_optional_string(raw_settings, "review_agent_command"),
+        review_agent_args=_optional_string_list(raw_settings, "review_agent_args"),
+        implementation_review_enabled=_optional_bool(
+            raw_settings, "implementation_review_enabled", default=True
+        ),
+        implementation_review_risk_keywords=(
+            _optional_string_list(raw_settings, "implementation_review_risk_keywords")
+            or list(DEFAULT_IMPLEMENTATION_REVIEW_RISK_KEYWORDS)
         ),
         execute_coding_agent=_required_bool(raw_settings, "execute_coding_agent"),
         telegram_enabled=_optional_bool(
@@ -361,6 +403,10 @@ def settings_to_dict(settings: AppSettings) -> dict[str, Any]:
         "max_runtime_minutes": settings.max_runtime_minutes,
         "coding_agent_command": settings.coding_agent_command,
         "coding_agent_args": settings.coding_agent_args,
+        "review_agent_command": settings.review_agent_command,
+        "review_agent_args": settings.review_agent_args,
+        "implementation_review_enabled": settings.implementation_review_enabled,
+        "implementation_review_risk_keywords": settings.implementation_review_risk_keywords,
         "execute_coding_agent": settings.execute_coding_agent,
         "telegram_enabled": settings.telegram_enabled,
         "project_context": settings.project_context,

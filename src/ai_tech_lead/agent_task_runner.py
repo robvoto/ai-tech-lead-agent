@@ -1091,6 +1091,20 @@ def _sync_backlog_completion(
     return sync_status
 
 
+def _review_field(state: dict[str, Any]) -> dict[str, Any] | None:
+    """ATL-093 independent-review outcome for the caller, or None when not run."""
+
+    status = str(state.get("review_status", "")).strip()
+    if not status or status == "skipped":
+        return None
+    findings = [str(f).strip() for f in state.get("review_findings", []) or [] if str(f).strip()]
+    return {
+        "status": status,
+        "reviewer": str(state.get("review_agent_performed_by", "")).strip() or None,
+        "findings": findings[:20],
+    }
+
+
 def _authoritative_validation_field(state: dict[str, Any]) -> str | None:
     """The validation line for the subprocess contract (ATL-039).
 
@@ -1251,6 +1265,7 @@ def _map_state_to_output(
         "backend_used": state.get("coding_agent_performed_by", "none") or "none",
         "execution_performed": bool(state.get("coding_agent_performed_by")),
         "validation": _authoritative_validation_field(state),
+        "review": _review_field(state),
         "logs": state.get("task_feedback", []),
         "evidence": list(state.get("research_source_titles", [])),
         "next_action": next_action,

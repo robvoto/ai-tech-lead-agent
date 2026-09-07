@@ -8,6 +8,10 @@
     "never",
     "exec"
   ],
+  "review_agent_command": "",
+  "review_agent_args": [],
+  "implementation_review_enabled": true,
+  "implementation_review_risk_keywords": [],
   "execute_coding_agent": false,
   "telegram_enabled": false,
   "admin_bind_host": "127.0.0.1",
