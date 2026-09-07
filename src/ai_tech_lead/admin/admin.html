@@ -58,6 +58,31 @@
       </label>
     </fieldset>
     <fieldset>
+      <legend>Independent Review</legend>
+      <label>
+        <input name="implementation_review_enabled" type="checkbox">
+        Enable independent implementation review
+        <span class="field-help">When on, meaningful or risky changes are reviewed read-only by a second agent before completion (ATL-093).</span>
+      </label>
+      <label>
+        Review agent command
+        <span class="field-help">The second agent that reviews the change. Must differ from the coding agent command. Example: <code>claude</code> when the coder is <code>codex</code>. Leave blank to route those tasks to human verification instead.</span>
+        <input name="review_agent_command" placeholder="claude">
+      </label>
+      <div class="field-group">
+        <div class="field-heading">Review agent args</div>
+        <span class="field-help">One argument per line. Must make the reviewer read-only for its backend. Example (Codex): <code>-s</code>, <code>read-only</code>. Example (Claude Code): <code>-p</code>, <code>--permission-mode</code>, <code>plan</code>.</span>
+        <div class="list-editor" data-list-editor="review_agent_args"></div>
+        <button type="button" class="list-add" data-list-add="review_agent_args">+ Add review arg</button>
+      </div>
+      <div class="field-group">
+        <div class="field-heading">Review risk keywords</div>
+        <span class="field-help">One per line. A task or diff hitting any of these forces the review regardless of estimated size. Leave empty to use the built-in default set.</span>
+        <div class="list-editor" data-list-editor="implementation_review_risk_keywords"></div>
+        <button type="button" class="list-add" data-list-add="implementation_review_risk_keywords">+ Add keyword</button>
+      </div>
+    </fieldset>
+    <fieldset>
       <legend>Admin Server</legend>
       <label>
         Admin bind host

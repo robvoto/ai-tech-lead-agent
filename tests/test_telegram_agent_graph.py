@@ -107,6 +107,10 @@ def test_telegram_agent_session_cost_accumulates_and_resets_on_new(
         return next(replies)
 
     monkeypatch.setattr(
+        "ai_tech_lead.telegram_operator.build_telegram_agent_graph",
+        lambda *, settings, checkpointer: "fake-app",
+    )
+    monkeypatch.setattr(
         "ai_tech_lead.telegram_operator.run_telegram_agent_message",
         fake_run_telegram_agent_message,
     )

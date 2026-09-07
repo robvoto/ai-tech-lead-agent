@@ -27,6 +27,7 @@ TECH_LEAD_ANALYSIS_PROMPT_KEY = "tech_lead_analysis"
 TELEGRAM_AGENT_SYSTEM_PROMPT_KEY = "telegram_agent_system"
 RISK_REVIEW_REASON_PROMPT_KEY = "risk_review_reason"
 PROJECT_GUIDANCE_GOVERNANCE_PROMPT_KEY = "project_guidance_governance"
+IMPLEMENTATION_REVIEW_PROMPT_KEY = "implementation_review"
 
 
 @dataclass(frozen=True)

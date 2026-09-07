@@ -36,6 +36,7 @@ def test_prompt_registry_exposes_central_catalog() -> None:
         "code_look_need",
         "code_recon_instruction",
         "project_guidance_governance",
+        "implementation_review",
     ]
 
 

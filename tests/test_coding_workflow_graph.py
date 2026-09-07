@@ -21,6 +21,8 @@ from ai_tech_lead.coding_workflow_graph import (
     build_graph,
     build_initial_graph_state,
     capture_validation_evidence_node,
+    implementation_review_node,
+    route_after_implementation_review,
     check_code_look_need_node,
     check_project_guidance_node,
     check_research_node,
@@ -3051,6 +3053,110 @@ def test_graph_compiles_with_validation_nodes() -> None:
     assert NodeName.DISCOVER_VALIDATION_COMMAND.value in node_names
     assert NodeName.VALIDATION_COMMAND_INTERRUPT.value in node_names
     assert NodeName.CAPTURE_VALIDATION_EVIDENCE.value in node_names
+    assert NodeName.IMPLEMENTATION_REVIEW.value in node_names
+
+
+def _review_settings(monkeypatch, **overrides):
+    from ai_tech_lead.app_settings import DEFAULT_IMPLEMENTATION_REVIEW_RISK_KEYWORDS
+
+    fields = {
+        "coding_agent_command": "codex",
+        "review_agent_command": "claude",
+        "review_agent_args": [],
+        "implementation_review_enabled": True,
+        "implementation_review_risk_keywords": list(DEFAULT_IMPLEMENTATION_REVIEW_RISK_KEYWORDS),
+        "execute_coding_agent": True,
+        **overrides,
+    }
+    settings = replace(parse_settings(valid_settings_dict()), **fields)
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.load_settings", lambda: settings
+    )
+    return settings
+
+
+def test_route_after_implementation_review_branches() -> None:
+    assert (
+        route_after_implementation_review(graph_state(review_status="findings"))
+        == "correction needed"
+    )
+    for status in ("skipped", "clean", "unavailable", "failed", "mutated", "findings_unresolved"):
+        assert (
+            route_after_implementation_review(graph_state(review_status=status))
+            == "review finished"
+        )
+
+
+def test_implementation_review_node_skips_when_execution_disabled(monkeypatch) -> None:
+    _review_settings(monkeypatch, execute_coding_agent=False)
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.run_implementation_review",
+        lambda **_kw: (_ for _ in ()).throw(AssertionError("must not run")),
+    )
+    result = implementation_review_node(
+        graph_state(coding_agent_tier="deep", risk_level="HIGH")
+    )
+    assert result == {"review_status": "skipped"}
+
+
+def test_implementation_review_node_skips_when_not_required(monkeypatch) -> None:
+    _review_settings(monkeypatch)
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.run_implementation_review",
+        lambda **_kw: (_ for _ in ()).throw(AssertionError("must not run")),
+    )
+    result = implementation_review_node(
+        graph_state(
+            coding_agent_tier="light",
+            risk_level="LOW",
+            formulated_task="tidy the readme wording",
+            git_changed_files=["README.md"],
+        )
+    )
+    assert result == {"review_status": "skipped"}
+
+
+def test_implementation_review_node_findings_then_unresolved(monkeypatch) -> None:
+    from ai_tech_lead.implementation_review import ReviewOutcome
+
+    _review_settings(monkeypatch)
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.run_implementation_review",
+        lambda **_kw: ReviewOutcome(
+            status="findings",
+            findings=("[required] X: broken",),
+            correction="Fix X.",
+            performed_by="claude",
+        ),
+    )
+    base = dict(coding_agent_tier="deep", risk_level="MEDIUM")
+
+    first = implementation_review_node(graph_state(**base, review_correction_count=0))
+    assert first["review_status"] == "findings"
+    assert first["review_correction"] == "Fix X."
+    assert first["review_correction_count"] == 1
+    assert first["review_agent_performed_by"] == "claude"
+
+    second = implementation_review_node(graph_state(**base, review_correction_count=1))
+    assert second["review_status"] == "findings_unresolved"
+    assert "review_correction" not in second
+
+
+def test_verify_completion_node_human_verification_on_blocking_review(monkeypatch) -> None:
+    settings = replace(parse_settings(valid_settings_dict()), orchestrator_ai_enabled=True)
+    monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.load_settings", lambda: settings)
+    monkeypatch.setattr(
+        "ai_tech_lead.llm_json.call_orchestrator_llm",
+        lambda **_kw: (_ for _ in ()).throw(AssertionError("no LLM on blocking review")),
+    )
+    result = verify_completion_node(
+        graph_state(
+            validation_passed=True,
+            review_status="failed",
+            review_findings=["reviewer produced no verdict"],
+        )
+    )
+    assert result["verification_status"] == "human_verification_required"
 
 
 def test_guidance_paths_and_hash_extracts_paths_and_is_stable() -> None:

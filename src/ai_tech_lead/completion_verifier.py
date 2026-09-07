@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from .app_settings import AppSettings
+from .implementation_review import BLOCKING_REVIEW_STATUSES
 from .llm_json import call_llm_for_json
 from .logging_setup import LOGGER_NAME
 from .orchestrator_llm import (
@@ -61,6 +62,8 @@ def verify_completion(
     validation_passed: bool | None = None,
     validation_output_tail: str = "",
     out_of_scope_paths: tuple[str, ...] = (),
+    review_status: str = "",
+    review_findings: tuple[str, ...] = (),
     target_project_context: TargetProjectContext | None = None,
     settings: AppSettings,
     prior_correction: str = "",
@@ -123,6 +126,21 @@ def verify_completion(
             ),
         )
 
+    if review_status in BLOCKING_REVIEW_STATUSES:
+        # ATL-093: an independent review that could not run, failed, mutated the
+        # checkout, or still had required findings after one correction cycle
+        # cannot resolve to Complete — a human decides.
+        findings_text = "; ".join(review_findings) if review_findings else "no findings recorded"
+        logger.warning(
+            "Completion verification: independent review %s (%s) — human verification.",
+            review_status,
+            findings_text,
+        )
+        raise CompletionVerificationUnavailable(
+            f"The independent implementation review is '{review_status}' "
+            f"({findings_text}). A human must decide completion."
+        )
+
     try:
         return _llm_verify_completion(
             bounded_request=bounded_request,
@@ -136,6 +154,8 @@ def verify_completion(
             validation_command=validation_command,
             validation_output_tail=validation_output_tail,
             out_of_scope_paths=out_of_scope_paths,
+            review_status=review_status,
+            review_findings=review_findings,
             target_project_context=target_project_context,
             settings=settings,
             prior_correction=prior_correction,
@@ -171,6 +191,8 @@ def _llm_verify_completion(
     validation_command: str,
     validation_output_tail: str,
     out_of_scope_paths: tuple[str, ...],
+    review_status: str,
+    review_findings: tuple[str, ...],
     target_project_context: TargetProjectContext | None,
     settings: AppSettings,
     prior_correction: str,
@@ -198,6 +220,22 @@ def _llm_verify_completion(
         if out_of_scope_paths
         else "(none detected)"
     )
+    if review_status == "clean":
+        review_evidence = (
+            "An independent second coding agent reviewed the change and found no "
+            "issues that block completion."
+            + (
+                "\nAdvisory notes:\n" + "\n".join(f"- {f}" for f in review_findings)
+                if review_findings
+                else ""
+            )
+        )
+    elif review_status == "skipped":
+        review_evidence = (
+            "No independent second-agent review was run (small, low-risk change)."
+        )
+    else:
+        review_evidence = f"Independent second-agent review status: {review_status or 'not run'}."
     prompt = render_prompt(
         COMPLETION_VERIFICATION_PROMPT_KEY,
         bounded_request=bounded_request,
@@ -210,6 +248,7 @@ def _llm_verify_completion(
         diff_summary=diff_summary.strip() or "(no diff summary captured)",
         validation_evidence=validation_evidence,
         out_of_scope=out_of_scope_text,
+        review_evidence=review_evidence,
         coding_agent_result=coding_agent_result or "(no completion report)",
         prior_correction=prior_correction or "(none — first check)",
         project_guidance=guidance_text,

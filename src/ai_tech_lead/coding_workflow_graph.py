@@ -46,6 +46,15 @@ from .git_lifecycle import (
     prepare_task_worktree,
     validate_integrated_git_result,
 )
+from .implementation_review import (
+    IMPLEMENTATION_REVIEW_MAX_CORRECTIONS,
+    STATUS_FINDINGS as IMPLEMENTATION_REVIEW_FINDINGS,
+    STATUS_FINDINGS_UNRESOLVED as IMPLEMENTATION_REVIEW_FINDINGS_UNRESOLVED,
+    STATUS_SKIPPED as IMPLEMENTATION_REVIEW_SKIPPED,
+    matched_risk_keywords,
+    review_required,
+    run_implementation_review,
+)
 from .instruction_assembler import build_agent_instruction, selected_instruction_hashes
 from .logging_setup import LOGGER_NAME
 from .operator_question import answer_operator_question
@@ -113,6 +122,7 @@ class NodeName(StrEnum):
     RUN_CODING_AGENT = "6_run_coding_agent"
     FAILURE_INTERRUPT = "6b Handle Coding Failure"
     CAPTURE_VALIDATION_EVIDENCE = "6b1_capture_validation_evidence"
+    IMPLEMENTATION_REVIEW = "6b2_implementation_review"
     VERIFY_COMPLETION = "6c_verify_completion"
     RUN_BUDGET_INTERRUPT = "6c1_run_budget_interrupt"
     COMPLETION_VERIFICATION_INTERRUPT = "6d_completion_verification_interrupt"
@@ -244,6 +254,11 @@ class GraphState(TypedDict):
     validation_passed: bool | None
     validation_output_tail: str
     out_of_scope_paths: list[str]
+    review_status: str
+    review_findings: list[str]
+    review_correction: str
+    review_agent_performed_by: str
+    review_correction_count: int
     verification_status: str
     verification_reason: str
     verification_correction: str
@@ -387,6 +402,11 @@ def build_initial_graph_state(
         "validation_passed": None,
         "validation_output_tail": "",
         "out_of_scope_paths": [],
+        "review_status": "",
+        "review_findings": [],
+        "review_correction": "",
+        "review_agent_performed_by": "",
+        "review_correction_count": 0,
         "verification_status": "",
         "verification_reason": "",
         "verification_correction": "",
@@ -2236,6 +2256,7 @@ def create_agent_instruction_node(state: GraphState) -> dict[str, Any]:
     correction = (
         state.get("coding_agent_correction", "").strip()
         or state.get("verification_correction", "").strip()
+        or state.get("review_correction", "").strip()
         or None
     )
     if correction:
@@ -2773,6 +2794,118 @@ def capture_validation_evidence_node(state: GraphState) -> dict[str, Any]:
     }
 
 
+def implementation_review_node(state: GraphState) -> dict[str, Any]:
+    """Independent second-agent review of the completed change (ATL-093).
+
+    Runs only for meaningful or risky work (``review_required``). A genuinely
+    different coding agent reviews the git-derived diff read-only against the
+    approved task/plan/criteria and the ATL-039 validation result, and returns
+    structured findings. Required findings drive one bounded correction cycle;
+    an unavailable, failed, mutated, or still-unresolved review is turned by the
+    verifier into human verification, never Complete.
+    """
+
+    _log_node_start("6b2", "IMPLEMENTATION_REVIEW", "Independent second-agent review")
+    settings = load_settings()
+
+    if not settings.execute_coding_agent:
+        logger.info("[LEARN] Coding execution disabled — skipping implementation review.")
+        return {"review_status": IMPLEMENTATION_REVIEW_SKIPPED}
+
+    tier = str(state.get("coding_agent_tier", DEFAULT_CODING_AGENT_TIER))
+    risk_level = str(state.get("risk_level", ""))
+    risk_signal_text = "\n".join(
+        text
+        for text in (
+            state.get("formulated_task", ""),
+            state.get("brief", ""),
+            "\n".join(state.get("git_changed_files", []) or []),
+        )
+        if text
+    )
+    if not review_required(
+        coding_agent_tier=tier,
+        risk_level=risk_level,
+        risk_signal_text=risk_signal_text,
+        settings=settings,
+    ):
+        logger.info(
+            "[LEARN] Implementation review not required (tier=%s risk=%s).", tier, risk_level
+        )
+        return {"review_status": IMPLEMENTATION_REVIEW_SKIPPED}
+
+    keywords = matched_risk_keywords(risk_signal_text, settings)
+    logger.info(
+        "[LEARN] Implementation review required (tier=%s risk=%s keywords=%s).",
+        tier,
+        risk_level,
+        ",".join(keywords) or "none",
+    )
+
+    worktree = str(state.get("git_task_worktree", "")).strip()
+    checkout_root = Path(worktree) if worktree else _target_project_root(state, settings)
+    outcome = run_implementation_review(
+        formulated_task=state.get("formulated_task", ""),
+        plan_text=state.get("plan_text", ""),
+        acceptance_criteria=settings.acceptance_criteria,
+        diff_summary=state.get("diff_summary", ""),
+        changed_files=tuple(state.get("git_changed_files", []) or ()),
+        validation_command=state.get("validation_command", ""),
+        validation_passed=state.get("validation_passed"),
+        validation_output_tail=state.get("validation_output_tail", ""),
+        checkout_root=checkout_root,
+        settings=settings,
+    )
+    correction_count = int(state.get("review_correction_count", 0))
+    logger.info(
+        "[LEARN] Implementation review: status=%s findings=%d reviewer=%s correction_count=%d",
+        outcome.status,
+        len(outcome.findings),
+        outcome.performed_by or "(none)",
+        correction_count,
+    )
+
+    updates: dict[str, Any] = {
+        "review_findings": list(outcome.findings),
+        "review_agent_performed_by": outcome.performed_by,
+    }
+    if (
+        outcome.status == IMPLEMENTATION_REVIEW_FINDINGS
+        and correction_count >= IMPLEMENTATION_REVIEW_MAX_CORRECTIONS
+    ):
+        logger.info(
+            "Decision: review findings still present after %d correction(s) -> findings_unresolved",
+            IMPLEMENTATION_REVIEW_MAX_CORRECTIONS,
+        )
+        updates["review_status"] = IMPLEMENTATION_REVIEW_FINDINGS_UNRESOLVED
+        return updates
+
+    updates["review_status"] = outcome.status
+    if outcome.status == IMPLEMENTATION_REVIEW_FINDINGS:
+        updates["review_correction"] = outcome.correction
+        updates["review_correction_count"] = correction_count + 1
+    else:
+        # Clear any correction carried from a prior review cycle so it cannot be
+        # re-sent by a later verifier-driven correction.
+        updates["review_correction"] = ""
+    return updates
+
+
+def route_after_implementation_review(state: GraphState) -> str:
+    """Required findings (first cycle) loop back to re-implement; everything else verifies."""
+
+    _log_decision_start(
+        "6b2", "ROUTE_AFTER_IMPLEMENTATION_REVIEW", "Route after independent review"
+    )
+    if state.get("review_status") == IMPLEMENTATION_REVIEW_FINDINGS:
+        logger.info("Decision: review findings -> CREATE_AGENT_INSTRUCTION")
+        return "correction needed"
+    logger.info(
+        "Decision: review status=%s -> VERIFY_COMPLETION", state.get("review_status")
+    )
+    return "review finished"
+
+
 def verify_completion_node(state: GraphState) -> dict[str, Any]:
     """AI Tech Lead verifies the coding agent's completed work against the approved task."""
 
@@ -2802,6 +2935,8 @@ def verify_completion_node(state: GraphState) -> dict[str, Any]:
             validation_passed=state.get("validation_passed"),
             validation_output_tail=state.get("validation_output_tail", ""),
             out_of_scope_paths=tuple(state.get("out_of_scope_paths", []) or ()),
+            review_status=str(state.get("review_status", "")),
+            review_findings=tuple(state.get("review_findings", []) or ()),
             target_project_context=target_project_context,
             settings=settings,
             prior_correction=prior_correction,
@@ -3161,6 +3296,14 @@ def build_graph(
             "Running the project's validation command.",
         ),
     )
+    workflow.add_node(
+        NodeName.IMPLEMENTATION_REVIEW,
+        with_progress(
+            implementation_review_node,
+            "validating",
+            "Independent review of the change by a second agent.",
+        ),
+    )
     workflow.add_node(NodeName.VERIFY_COMPLETION, with_progress(verify_completion_node, "validating", "Validating the completed work."))
     workflow.add_node(NodeName.RUN_BUDGET_INTERRUPT, run_budget_interrupt_node)
     workflow.add_node(
@@ -3312,7 +3455,17 @@ def build_graph(
             "retries exhausted": NodeName.FAILURE_INTERRUPT,
         },
     )
-    workflow.add_edge(NodeName.CAPTURE_VALIDATION_EVIDENCE, NodeName.VERIFY_COMPLETION)
+    workflow.add_edge(
+        NodeName.CAPTURE_VALIDATION_EVIDENCE, NodeName.IMPLEMENTATION_REVIEW
+    )
+    workflow.add_conditional_edges(
+        NodeName.IMPLEMENTATION_REVIEW,
+        route_after_implementation_review,
+        {
+            "correction needed": NodeName.CREATE_AGENT_INSTRUCTION,
+            "review finished": NodeName.VERIFY_COMPLETION,
+        },
+    )
     workflow.add_edge(NodeName.FAILURE_INTERRUPT, NodeName.CREATE_AGENT_INSTRUCTION)
     workflow.add_conditional_edges(
         NodeName.VERIFY_COMPLETION,

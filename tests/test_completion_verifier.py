@@ -174,6 +174,40 @@ def test_verify_completion_passes_atl_evidence_into_the_prompt(monkeypatch) -> N
     assert "docs/unrelated.md" in prompt
 
 
+@pytest.mark.parametrize(
+    "review_status", ["unavailable", "failed", "mutated", "findings_unresolved"]
+)
+def test_verify_completion_blocking_review_routes_to_human(monkeypatch, review_status) -> None:
+    def _fail(**_kw):
+        raise AssertionError("LLM must not be called when the review is blocking")
+
+    monkeypatch.setattr("ai_tech_lead.llm_json.call_orchestrator_llm", _fail)
+
+    with pytest.raises(CompletionVerificationUnavailable):
+        _call(review_status=review_status, review_findings=("something",))
+
+
+def test_verify_completion_clean_review_reaches_llm_and_can_complete(monkeypatch) -> None:
+    captured: dict = {}
+
+    def fake_call(**kwargs):
+        captured["prompt"] = kwargs["prompt"]
+        return OrchestratorLlmResult(
+            text=json.dumps({"status": "complete", "reason": "ok", "correction": ""}),
+            tokens_in=1,
+            tokens_out=1,
+            cost_usd=0.0,
+        )
+
+    monkeypatch.setattr("ai_tech_lead.llm_json.call_orchestrator_llm", fake_call)
+
+    decision = _call(review_status="clean", review_findings=("[advisory] x: nit",))
+
+    assert decision.status == "complete"
+    assert "no issues that block completion" in captured["prompt"]
+    assert "[advisory] x: nit" in captured["prompt"]
+
+
 def test_verify_completion_raises_when_llm_call_fails(monkeypatch) -> None:
     def _raise(**_kw):
         raise OrchestratorLlmError("timeout")

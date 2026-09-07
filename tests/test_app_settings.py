@@ -113,7 +113,7 @@ def test_parse_settings_defaults_project_root_when_missing() -> None:
 
     settings = parse_settings(raw_settings)
 
-    assert settings.project_root.endswith("ai-tech-lead")
+    assert settings.project_root == str(PROJECT_ROOT)
 
 
 def test_parse_settings_rejects_missing_project_context() -> None:

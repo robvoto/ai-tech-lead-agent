@@ -59,6 +59,7 @@ CREATE TABLE IF NOT EXISTS run_audit_summaries (
     result_summary                TEXT NOT NULL,
     validation_status             TEXT NOT NULL,
     validation_reason             TEXT NOT NULL,
+    review_status                 TEXT NOT NULL DEFAULT '',
     tokens_in                     INTEGER,
     tokens_out                    INTEGER,
     cost_usd                      REAL,
@@ -117,6 +118,7 @@ class RunAuditSummary:
     result_summary: str
     validation_status: str
     validation_reason: str
+    review_status: str
     tokens_in: int | None
     tokens_out: int | None
     cost_usd: float | None
@@ -167,6 +169,9 @@ class RunAuditSummary:
                 "status": self.validation_status,
                 "reason": self.validation_reason,
             },
+            "review": {
+                "status": self.review_status,
+            },
             "usage": {
                 "tokens_in": self.tokens_in,
                 "tokens_out": self.tokens_out,
@@ -199,12 +204,12 @@ class RunAuditStore:
                     git_integration_status, tools_used, files_used, selected_skill_paths,
                     selected_skill_hashes, project_guidance_paths, project_guidance_hash,
                     guidance_changed_on_resume, rubric_status, result_status, result_kind,
-                    result_summary, validation_status, validation_reason, tokens_in,
-                    tokens_out, cost_usd, created_at, updated_at
+                    result_summary, validation_status, validation_reason, review_status,
+                    tokens_in, tokens_out, cost_usd, created_at, updated_at
                 ) VALUES (
                     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                    ?, ?, ?, ?, ?, ?, ?, ?
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?
                 )
                 ON CONFLICT(request_id) DO UPDATE SET
                     thread_id=excluded.thread_id, task=excluded.task, model=excluded.model,
@@ -231,7 +236,8 @@ class RunAuditStore:
                     rubric_status=excluded.rubric_status, result_status=excluded.result_status,
                     result_kind=excluded.result_kind, result_summary=excluded.result_summary,
                     validation_status=excluded.validation_status,
-                    validation_reason=excluded.validation_reason, tokens_in=excluded.tokens_in,
+                    validation_reason=excluded.validation_reason,
+                    review_status=excluded.review_status, tokens_in=excluded.tokens_in,
                     tokens_out=excluded.tokens_out, cost_usd=excluded.cost_usd,
                     updated_at=excluded.updated_at""",
                 _summary_values(summary),
@@ -270,6 +276,7 @@ def _ensure_schema_columns(conn: sqlite3.Connection) -> None:
         "git_main_status": "TEXT NOT NULL DEFAULT ''",
         "git_main_sha": "TEXT NOT NULL DEFAULT ''",
         "git_integration_status": "TEXT NOT NULL DEFAULT ''",
+        "review_status": "TEXT NOT NULL DEFAULT ''",
     }
     for name, definition in additions.items():
         if name not in columns:
@@ -364,6 +371,7 @@ def record_run_audit_summary(
         validation_reason=_bounded_text(
             state.get("verification_reason", "") or state.get("git_preflight_reason", "")
         ),
+        review_status=_bounded_text(state.get("review_status", ""), max_chars=60),
         tokens_in=_optional_int(
             state.get(
                 "orchestrator_tokens_in_used",
@@ -423,6 +431,7 @@ def _summary_values(summary: RunAuditSummary) -> tuple[Any, ...]:
         summary.result_summary,
         summary.validation_status,
         summary.validation_reason,
+        summary.review_status,
         summary.tokens_in,
         summary.tokens_out,
         summary.cost_usd,
@@ -468,6 +477,7 @@ def _row_to_summary(row: sqlite3.Row) -> RunAuditSummary:
         result_summary=row["result_summary"],
         validation_status=row["validation_status"],
         validation_reason=row["validation_reason"],
+        review_status=row["review_status"],
         tokens_in=row["tokens_in"],
         tokens_out=row["tokens_out"],
         cost_usd=row["cost_usd"],

@@ -1,5 +1,7 @@
 export const LIST_FIELDS = [
   "coding_agent_args",
+  "review_agent_args",
+  "implementation_review_risk_keywords",
   "project_context",
   "allowed_directories",
   "watched_directories",
@@ -29,6 +31,12 @@ export const PROMPT_TEMPLATE_PLACEHOLDER =
 export const LIST_FIELD_CONFIG = {
   coding_agent_args: {
     placeholder: "--ask-for-approval",
+  },
+  review_agent_args: {
+    placeholder: "-s",
+  },
+  implementation_review_risk_keywords: {
+    placeholder: "migration",
   },
   project_context: {
     placeholder: "Architecture and module map: docs/ARCHITECTURE.md",
@@ -67,6 +75,7 @@ export const FIELD_PLACEHOLDERS = {
   backlog_path: "data/backlog.sqlite3",
   max_runtime_minutes: "20",
   coding_agent_command: "codex",
+  review_agent_command: "claude",
   admin_bind_host: "127.0.0.1",
   admin_bind_port: "8766",
   orchestrator_ai_model: "gpt-4.1-mini",
