@@ -1079,6 +1079,23 @@ def _sync_backlog_completion(
     return sync_status
 
 
+def _authoritative_validation_field(state: dict[str, Any]) -> str | None:
+    """The validation line for the subprocess contract (ATL-039).
+
+    Prefer the AI Tech Lead's own run — it re-runs the project's canonical
+    command itself, so its result is authoritative. Fall back to the coding
+    agent's self-declared line only when ATL had no command or could not run
+    one.
+    """
+
+    passed = state.get("validation_passed")
+    command = str(state.get("validation_command", "")).strip()
+    if passed is not None and command:
+        outcome = "passed" if passed else "failed"
+        return f"{command} — {outcome} (AI Tech Lead ran it)"
+    return str(state.get("coding_agent_validation", "")).strip() or None
+
+
 def _map_state_to_output(
     request_id: str,
     state: dict[str, Any],
@@ -1221,7 +1238,7 @@ def _map_state_to_output(
         "coding_agent_instruction": agent_instruction,
         "backend_used": state.get("coding_agent_performed_by", "none") or "none",
         "execution_performed": bool(state.get("coding_agent_performed_by")),
-        "validation": str(state.get("coding_agent_validation", "")).strip() or None,
+        "validation": _authoritative_validation_field(state),
         "logs": state.get("task_feedback", []),
         "evidence": list(state.get("research_source_titles", [])),
         "next_action": next_action,

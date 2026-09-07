@@ -34,6 +34,7 @@ from .coding_agent_runner import (
     run_git_preflight,
 )
 from .coding_agent_tier_profiles import DEFAULT_CODING_AGENT_TIER, resolve_tier_args
+from .completion_evidence import capture_completion_evidence
 from .completion_verifier import CompletionVerificationUnavailable, verify_completion
 from .git_lifecycle import (
     GitLifecycleBlocked,
@@ -68,6 +69,7 @@ from .risk_reviewer import review_task_risk
 from .run_budget import RunBudgetExceededError, RunBudgetTracker, use_run_budget
 from .target_project_context import BacklogItemContext, BacklogProjectContext, TargetProjectContext
 from .tech_lead_analyst import analyse_task
+from .validation_command_discovery import discover_validation_command
 
 APPROVAL_MAX_REVISION_CYCLES = 5
 COMPLETION_VERIFICATION_MAX_CORRECTIONS = 1
@@ -101,9 +103,11 @@ class NodeName(StrEnum):
     REQUEST_PLAN = "5b_request_plan"
     REVIEW_PLAN = "5c_review_plan"
     PLAN_INTERRUPT = "5d_plan_interrupt"
+    DISCOVER_VALIDATION_COMMAND = "5e_discover_validation_command"
     CREATE_AGENT_INSTRUCTION = "5_create_agent_instruction"
     RUN_CODING_AGENT = "6_run_coding_agent"
     FAILURE_INTERRUPT = "6b Handle Coding Failure"
+    CAPTURE_VALIDATION_EVIDENCE = "6b1_capture_validation_evidence"
     VERIFY_COMPLETION = "6c_verify_completion"
     RUN_BUDGET_INTERRUPT = "6c1_run_budget_interrupt"
     COMPLETION_VERIFICATION_INTERRUPT = "6d_completion_verification_interrupt"
@@ -226,6 +230,12 @@ class GraphState(TypedDict):
     coding_agent_timed_out: bool
     coding_agent_performed_by: str
     coding_agent_validation: str
+    validation_command: str
+    validation_command_source: str
+    diff_summary: str
+    validation_passed: bool | None
+    validation_output_tail: str
+    out_of_scope_paths: list[str]
     verification_status: str
     verification_reason: str
     verification_correction: str
@@ -360,6 +370,12 @@ def build_initial_graph_state(
         "coding_agent_timed_out": False,
         "coding_agent_performed_by": "",
         "coding_agent_validation": "",
+        "validation_command": "",
+        "validation_command_source": "",
+        "diff_summary": "",
+        "validation_passed": None,
+        "validation_output_tail": "",
+        "out_of_scope_paths": [],
         "verification_status": "",
         "verification_reason": "",
         "verification_correction": "",
@@ -2089,6 +2105,40 @@ def approval_interrupt_node(state: GraphState) -> dict[str, Any]:
     }
 
 
+def discover_validation_command_node(state: GraphState) -> dict[str, Any]:
+    """Work out the target project's canonical validation command before handoff.
+
+    The AI Tech Lead must run this command itself after the coding agent finishes
+    (ATL-039), so it has to be known up front. Discovery is read-only and never
+    interrupts: when it finds nothing, ``validation_command`` stays empty, the
+    handoff asks the agent to state whatever command it used, and the completion
+    gate escalates to human verification because ATL has no command of its own to
+    run.
+    """
+
+    _log_node_start("5e", "DISCOVER_VALIDATION_COMMAND", "Discover project validation command")
+    settings = load_settings()
+    request_text = state.get("bounded_request", "") or state["request"]
+    discovered = discover_validation_command(
+        request_text, _soft_target_project_root(state, settings)
+    )
+    if discovered is None:
+        logger.info(
+            "[LEARN] No canonical validation command found; completion will need "
+            "human verification unless the coding agent reports one."
+        )
+        return {"validation_command": "", "validation_command_source": ""}
+    logger.info(
+        "[LEARN] Canonical validation command: %s (%s)",
+        discovered.command,
+        discovered.source,
+    )
+    return {
+        "validation_command": discovered.command,
+        "validation_command_source": discovered.source,
+    }
+
+
 def create_agent_instruction_node(state: GraphState) -> dict[str, Any]:
     """Create the bounded instruction package for the coding-agent process."""
 
@@ -2126,6 +2176,7 @@ def create_agent_instruction_node(state: GraphState) -> dict[str, Any]:
         research_evidence=research_evidence,
         agent_correction=correction,
         project_guidance=list(state.get("project_guidance_notes", [])),
+        validation_command=state.get("validation_command", ""),
     )
     try:
         selected_hashes = selected_instruction_hashes(
@@ -2537,7 +2588,7 @@ def route_after_run_coding_agent(state: GraphState) -> str:
         return "retries exhausted"
 
     if state.get("coding_agent_success"):
-        logger.info("Decision: success -> VERIFY_COMPLETION")
+        logger.info("Decision: success -> CAPTURE_VALIDATION_EVIDENCE")
         return "coding succeeded"
 
     retry_count = state.get("coding_agent_retry_count", 0)
@@ -2547,6 +2598,89 @@ def route_after_run_coding_agent(state: GraphState) -> str:
 
     logger.info("Decision: failure retry_count=%d >= 2 -> FAILURE_INTERRUPT", retry_count)
     return "retries exhausted"
+
+
+def _completion_relevance_text(state: GraphState) -> str:
+    """Already-approved workflow text that can name a file relevant to this task.
+
+    Mirrors the relevance corpus RUN_CODING_AGENT builds for its git preflight —
+    no new LLM call, just state the graph already produced this run.
+    """
+
+    return "\n".join(
+        text
+        for text in (
+            state.get("agent_instruction", ""),
+            state.get("plan_text", ""),
+            state.get("formulated_task", ""),
+            state.get("bounded_request", "") or state.get("request", ""),
+            state.get("brief", ""),
+            state.get("code_recon_report", ""),
+            "\n".join(state.get("project_guidance_related_locations", []) or []),
+        )
+        if text
+    )
+
+
+def capture_validation_evidence_node(state: GraphState) -> dict[str, Any]:
+    """Gather ATL's own completion evidence before the verifier decides (ATL-039).
+
+    Runs in whichever checkout the coding agent used — the request-owned task
+    worktree when the Git lifecycle is active, otherwise the resolved target
+    project root. Builds a git diff summary, runs the discovered canonical
+    validation command itself (``shell=False``), and lists changed files that
+    look unrelated to the approved task. ``validation_passed=None`` here means
+    ATL had no command or could not run one; the verifier turns that into human
+    verification, never a pass.
+    """
+
+    _log_node_start(
+        "6b1", "CAPTURE_VALIDATION_EVIDENCE", "Capture diff and run project validation"
+    )
+    settings = load_settings()
+    if not settings.execute_coding_agent:
+        # Instruction-only mode: no coding agent actually ran, so there is
+        # nothing on disk for ATL to independently validate. Leave
+        # validation_passed unset — the verifier treats that as
+        # "cannot prove completion" rather than a pass.
+        logger.info("[LEARN] Coding execution disabled — skipping validation evidence capture.")
+        return {
+            "diff_summary": "",
+            "validation_passed": None,
+            "validation_output_tail": "Coding execution disabled; no work to validate.",
+            "out_of_scope_paths": [],
+        }
+    worktree = str(state.get("git_task_worktree", "")).strip()
+    checkout_root = Path(worktree) if worktree else _target_project_root(state, settings)
+    base_sha = (
+        str(state.get("git_task_base_sha", "")).strip()
+        or str(state.get("git_preflight_head", "")).strip()
+    )
+    evidence = capture_completion_evidence(
+        checkout_root=checkout_root,
+        base_sha=base_sha,
+        changed_files=tuple(state.get("coding_agent_changed_files", ()) or ()),
+        validation_command=state.get("validation_command", ""),
+        relevance_text=_completion_relevance_text(state),
+        timeout_seconds=settings.max_runtime_minutes * 60,
+    )
+    logger.info(
+        "[LEARN] Completion evidence: validation_passed=%s command=%s out_of_scope=%d",
+        evidence.validation_passed,
+        evidence.validation_command or "(none)",
+        len(evidence.out_of_scope_paths),
+    )
+    if evidence.out_of_scope_paths:
+        logger.warning(
+            "[LEARN] Changed files unrelated to the approved task: %s",
+            ", ".join(evidence.out_of_scope_paths),
+        )
+    return {
+        "diff_summary": evidence.diff_summary,
+        "validation_passed": evidence.validation_passed,
+        "validation_output_tail": evidence.validation_output_tail,
+        "out_of_scope_paths": list(evidence.out_of_scope_paths),
+    }
 
 
 def verify_completion_node(state: GraphState) -> dict[str, Any]:
@@ -2570,6 +2704,11 @@ def verify_completion_node(state: GraphState) -> dict[str, Any]:
             acceptance_criteria=settings.acceptance_criteria,
             changed_files=state.get("coding_agent_changed_files", ()),
             coding_agent_result=state.get("coding_agent_result", ""),
+            diff_summary=state.get("diff_summary", ""),
+            validation_command=state.get("validation_command", ""),
+            validation_passed=state.get("validation_passed"),
+            validation_output_tail=state.get("validation_output_tail", ""),
+            out_of_scope_paths=tuple(state.get("out_of_scope_paths", []) or ()),
             target_project_context=target_project_context,
             settings=settings,
             prior_correction=prior_correction,
@@ -2889,6 +3028,14 @@ def build_graph(
     )
     workflow.add_node(NodeName.PLAN_INTERRUPT, plan_interrupt_node)
     workflow.add_node(
+        NodeName.DISCOVER_VALIDATION_COMMAND,
+        with_progress(
+            discover_validation_command_node,
+            "analysing",
+            "Finding the project's validation command.",
+        ),
+    )
+    workflow.add_node(
         NodeName.CREATE_AGENT_INSTRUCTION,
         create_agent_instruction_node,
     )
@@ -2903,6 +3050,14 @@ def build_graph(
         ),
     )
     workflow.add_node(NodeName.FAILURE_INTERRUPT, failure_interrupt_node)
+    workflow.add_node(
+        NodeName.CAPTURE_VALIDATION_EVIDENCE,
+        with_progress(
+            capture_validation_evidence_node,
+            "validating",
+            "Running the project's validation command.",
+        ),
+    )
     workflow.add_node(NodeName.VERIFY_COMPLETION, with_progress(verify_completion_node, "validating", "Validating the completed work."))
     workflow.add_node(NodeName.RUN_BUDGET_INTERRUPT, run_budget_interrupt_node)
     workflow.add_node(
@@ -3024,7 +3179,7 @@ def build_graph(
         NodeName.REVIEW_PLAN,
         route_after_review_plan,
         {
-            "plan approved": NodeName.CREATE_AGENT_INSTRUCTION,
+            "plan approved": NodeName.DISCOVER_VALIDATION_COMMAND,
             "revise plan": NodeName.REQUEST_PLAN,
             "human review needed": NodeName.PLAN_INTERRUPT,
             "budget exceeded": NodeName.RUN_BUDGET_INTERRUPT,
@@ -3032,16 +3187,20 @@ def build_graph(
     )
     workflow.add_edge(NodeName.PLAN_INTERRUPT, NodeName.REQUEST_PLAN)
 
+    workflow.add_edge(
+        NodeName.DISCOVER_VALIDATION_COMMAND, NodeName.CREATE_AGENT_INSTRUCTION
+    )
     workflow.add_edge(NodeName.CREATE_AGENT_INSTRUCTION, NodeName.RUN_CODING_AGENT)
     workflow.add_conditional_edges(
         NodeName.RUN_CODING_AGENT,
         route_after_run_coding_agent,
         {
-            "coding succeeded": NodeName.VERIFY_COMPLETION,
+            "coding succeeded": NodeName.CAPTURE_VALIDATION_EVIDENCE,
             "retry coding": NodeName.CREATE_AGENT_INSTRUCTION,
             "retries exhausted": NodeName.FAILURE_INTERRUPT,
         },
     )
+    workflow.add_edge(NodeName.CAPTURE_VALIDATION_EVIDENCE, NodeName.VERIFY_COMPLETION)
     workflow.add_edge(NodeName.FAILURE_INTERRUPT, NodeName.CREATE_AGENT_INSTRUCTION)
     workflow.add_conditional_edges(
         NodeName.VERIFY_COMPLETION,

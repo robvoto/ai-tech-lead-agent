@@ -71,6 +71,12 @@ def test_structured_consumers_share_strict_schema_boundary(monkeypatch) -> None:
             acceptance_criteria=["Tests pass"],
             changed_files=("src/ai_tech_lead/example.py",),
             coding_agent_result="Tests pass.",
+            # ATL-039: the AI Tech Lead's own validation run must have passed
+            # before the LLM boundary is reached at all.
+            diff_summary="M\tsrc/ai_tech_lead/example.py",
+            validation_command="uv run pytest -q",
+            validation_passed=True,
+            validation_output_tail="1 passed",
             settings=settings,
         ).status
         == "complete"

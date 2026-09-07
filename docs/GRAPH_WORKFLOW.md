@@ -68,9 +68,11 @@ START
 -> 5b_request_plan
 -> 5c_review_plan
 -> [5d_plan_interrupt, if plan rejected repeatedly or reviewer unavailable]
+-> 5e_discover_validation_command   (find the project's canonical validation command)
 -> 5_create_agent_instruction
 -> 6_run_coding_agent
 -> [6b_failure_interrupt, if agent fails twice in a row]
+-> 6b1_capture_validation_evidence  (AI Tech Lead builds its own diff + runs the validation command)
 -> 6c_verify_completion             (AI Tech Lead verifies the coding agent's success claim)
 -> [6d_completion_verification_interrupt, if completion can't be proven automatically]
 -> 7_end_node
@@ -150,13 +152,27 @@ Prompt: `data/prompts.json` key `tech_lead_analysis`, module `tech_lead_analyst.
 
 After `6_run_coding_agent`:
 
-- **Success** → `6c_verify_completion`. A clean process exit from the coding agent is not the completion rule; verification is.
+- **Success** → `6b1_capture_validation_evidence`, then `6c_verify_completion`. A clean process exit from the coding agent is not the completion rule; verification is.
 - **Failure, retry_count < 2** → back to `5_create_agent_instruction` with `coding_agent_correction` included so the agent knows what went wrong.
 - **Failure, retry_count ≥ 2** → `6b_failure_interrupt` asks the human for guidance, then back to `5_create_agent_instruction` with human feedback and retry count reset to 0.
 
+## Validation command discovery (ATL-039)
+
+`5e_discover_validation_command` runs once after plan approval, before the handoff. It finds the target project's canonical validation command (`validation_command_discovery.py`): first an explicit line in the project's own entry points (`AGENTS.md`, `docs/INDEX.md` one-hop references, the best-matching `.agents/skills` skill), otherwise exactly one unambiguous repository signal (a pytest project → `uv run pytest`/`pytest`, a `package.json` test script → `npm test`, a `Makefile` `test:` target → `make test`, `tox.ini` → `tox`, `noxfile.py` → `nox`). Zero signals or more than one conflicting signal returns nothing. The node never interrupts. The command (or its absence) goes into `validation_command`/`validation_command_source` and into the coding-agent handoff — `build_agent_instruction` names the exact command to run and report, or asks the agent to state whichever command it used.
+
 ## Completion verification
 
-`6c_verify_completion` is the AI Tech Lead's own close-out check, run only after the coding agent has already reported success. It compares the approved task, technical direction (`brief`), plan (`plan_text`), project-level acceptance criteria (`settings.acceptance_criteria`), changed files, and the coding agent's completion report against each other and returns one of three verdicts (`completion_verifier.py`, prompt `completion_verification`):
+After a successful coding-agent run, `6b1_capture_validation_evidence` gathers the AI Tech Lead's own evidence (`completion_evidence.py`), in the same checkout the agent used — the request-owned task worktree when the Git lifecycle is active, otherwise the resolved target project root:
+
+- a `git diff` name-status + shortstat summary against the task base commit (`diff_summary`);
+- the result of the AI Tech Lead running `validation_command` itself with `shell=False` — `validation_passed` is `True`/`False` when it ran, or `None` when there was no command or it could not be executed;
+- `out_of_scope_paths`: an advisory list of changed files whose path shares no token with the approved task.
+
+`6c_verify_completion` is the close-out check, run only after that evidence is captured. It resolves to exactly one of four outcomes (`completion_verifier.py`, prompt `completion_verification`):
+
+- `validation_passed is None` → raises `CompletionVerificationUnavailable` with no LLM call → `human_verification_required` (the AI Tech Lead could not run the project's validation command; a human confirms or supplies it).
+- `validation_passed is False` → `correction_required` naming "make `<command>` pass"; the existing one-bounded-cycle cap then resolves a still-failing run to **Failed**.
+- `validation_passed is True` → the verifier LLM compares the approved task, technical direction (`brief`), plan (`plan_text`), acceptance criteria (`settings.acceptance_criteria`), the `diff_summary`, the validation output tail, and the out-of-scope list, and returns one of the three LLM verdicts below. The coding agent's own completion report is passed as context only.
 
 - `complete` → `6e_finalize_task_branch` for real execution runs with a request ID. Instruction-only runs retain the direct route to `7_end_node`. Optional/nice-to-have observations are recorded in `verification_reason` but never block completion.
 - `correction_required` → names exactly one unmet requirement in `verification_correction`. If `verification_attempt_count` is below `COMPLETION_VERIFICATION_MAX_CORRECTIONS` (1), it loops back to `5_create_agent_instruction` with that correction folded into the instruction (same mechanism as `coding_agent_correction`) and the attempt count incremented. If the budget is already used, the node instead sets `verification_status` to `failed` and routes to `7_end_node` — no third attempt, the unresolved issue is reported rather than retried again.

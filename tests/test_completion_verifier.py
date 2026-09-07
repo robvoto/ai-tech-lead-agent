@@ -27,6 +27,13 @@ def _call(**overrides):
         "acceptance_criteria": ["Logout button is visible", "Clicking it signs the user out"],
         "changed_files": ("src/app/settings.py",),
         "coding_agent_result": "Ran pytest, all green. Changed files: settings.py",
+        # ATL-039: the AI Tech Lead's own validation run is the gate. Default it to
+        # a pass so LLM-path tests reach the model; None/False are exercised
+        # explicitly below.
+        "diff_summary": "M\tsrc/app/settings.py",
+        "validation_command": "uv run pytest -q",
+        "validation_passed": True,
+        "validation_output_tail": "1 passed in 0.12s",
         "settings": _ai_enabled_settings(),
         "prior_correction": "",
     }
@@ -105,6 +112,66 @@ def test_verify_completion_returns_human_verification_required(monkeypatch) -> N
     decision = _call()
 
     assert decision.status == "human_verification_required"
+
+
+def test_verify_completion_unavailable_when_atl_has_no_validation_result(monkeypatch) -> None:
+    """No ATL validation result -> human verification, without spending an LLM call."""
+
+    def _fail(**_kw):
+        raise AssertionError("LLM must not be called when validation_passed is None")
+
+    monkeypatch.setattr("ai_tech_lead.llm_json.call_orchestrator_llm", _fail)
+
+    with pytest.raises(CompletionVerificationUnavailable):
+        _call(
+            validation_passed=None,
+            validation_output_tail="No canonical validation command was determined.",
+        )
+
+
+def test_verify_completion_correction_required_when_atl_validation_failed(monkeypatch) -> None:
+    """ATL ran the command and it failed -> correction_required naming that fix."""
+
+    def _fail(**_kw):
+        raise AssertionError("LLM must not be called when validation_passed is False")
+
+    monkeypatch.setattr("ai_tech_lead.llm_json.call_orchestrator_llm", _fail)
+
+    decision = _call(
+        validation_passed=False,
+        validation_command="uv run pytest -q",
+        validation_output_tail="2 failed, 5 passed",
+    )
+
+    assert decision.status == "correction_required"
+    assert "uv run pytest -q" in decision.correction
+    assert "2 failed" in decision.reason
+
+
+def test_verify_completion_passes_atl_evidence_into_the_prompt(monkeypatch) -> None:
+    captured: dict = {}
+
+    def fake_call(**kwargs):
+        captured["prompt"] = kwargs["prompt"]
+        return OrchestratorLlmResult(
+            text=json.dumps({"status": "complete", "reason": "ok", "correction": ""}),
+            tokens_in=1,
+            tokens_out=1,
+            cost_usd=0.0,
+        )
+
+    monkeypatch.setattr("ai_tech_lead.llm_json.call_orchestrator_llm", fake_call)
+
+    _call(
+        diff_summary="M\tsrc/app/settings.py",
+        validation_output_tail="1 passed in 0.12s",
+        out_of_scope_paths=("docs/unrelated.md",),
+    )
+
+    prompt = captured["prompt"]
+    assert "M\tsrc/app/settings.py" in prompt
+    assert "1 passed in 0.12s" in prompt
+    assert "docs/unrelated.md" in prompt
 
 
 def test_verify_completion_raises_when_llm_call_fails(monkeypatch) -> None:
