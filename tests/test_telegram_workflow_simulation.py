@@ -262,6 +262,9 @@ def test_telegram_workflow_simulation_happy_path_approve_and_complete(
             "AGENTS.md": (
                 "Follow explicit-validation conventions in app/service.py before merging.\n"
             ),
+            # Gives ATL-039 discovery an unambiguous validation signal (pytest),
+            # so the run does not pause at 5e1_validation_command_interrupt.
+            "pyproject.toml": "[tool.pytest.ini_options]\naddopts = \"-q\"\n",
         },
     )
     expected_project_guidance = [
@@ -434,6 +437,9 @@ def test_telegram_workflow_simulation_preflight_blocks_relevant_dirty_file(
                 "def handle_request(payload):\n    return process(payload)\n"
             ),
             "README.md": "# Demo project\n",
+            # Unambiguous ATL-039 validation signal so the run reaches the git
+            # preflight rather than pausing for the validation command first.
+            "pyproject.toml": "[tool.pytest.ini_options]\naddopts = \"-q\"\n",
         },
     )
     # Dirty the exact file the approved plan will name, *before* the run

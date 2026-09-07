@@ -56,6 +56,11 @@ def verify_completion(
     acceptance_criteria: list[str],
     changed_files: tuple[str, ...],
     coding_agent_result: str,
+    diff_summary: str = "",
+    validation_command: str = "",
+    validation_passed: bool | None = None,
+    validation_output_tail: str = "",
+    out_of_scope_paths: tuple[str, ...] = (),
     target_project_context: TargetProjectContext | None = None,
     settings: AppSettings,
     prior_correction: str = "",
@@ -63,20 +68,59 @@ def verify_completion(
 ) -> CompletionVerificationDecision:
     """Decide whether the coding agent's completed work satisfies the approved task.
 
+    The AI Tech Lead decides completion from evidence it gathered itself
+    (``diff_summary`` from the coding checkout, ``validation_passed`` from running
+    the project's canonical validation command), not from the coding agent's own
+    success prose. ``validation_passed`` is tri-state:
+
+    - ``None`` — ATL had no command to run or could not execute one. Completion
+      cannot be proven; raise ``CompletionVerificationUnavailable`` so the run
+      routes to human verification. No LLM call is spent.
+    - ``False`` — ATL ran the command and it failed. Return
+      ``correction_required`` naming that single fix (the graph caps this at one
+      cycle, then resolves to Failed).
+    - ``True`` — the LLM weighs the real diff, validation output and
+      out-of-scope list against the task, plan and acceptance criteria.
+
     ``project_guidance`` is the same bounded, already-selected notes used
-    throughout this run (Tech Lead Analysis, plan review, coding-agent handoff)
-    — not re-selected here. The final diff, changed files, and reported
-    validation are checked against it in addition to the task/plan/acceptance
-    criteria; a relevant violation is a reason for ``correction_required``
-    (one bounded correction, same existing retry cap), never a silent pass —
-    but guidance can never excuse skipping the core safety/approval/evidence
-    bar either.
+    throughout this run — not re-selected here. A relevant violation is a reason
+    for ``correction_required``, never a silent pass; but guidance can never
+    excuse skipping the core safety/approval/evidence bar either.
     """
 
     if not settings.orchestrator_ai_enabled:
         logger.info("Completion verification: AI disabled, routing to human verification.")
         raise CompletionVerificationUnavailable(
             "AI review is disabled — human verification required."
+        )
+
+    if validation_passed is None:
+        detail = validation_output_tail.strip() or "no validation result was captured"
+        logger.warning(
+            "Completion verification: no ATL validation result (%s) — human verification.",
+            detail,
+        )
+        raise CompletionVerificationUnavailable(
+            "The AI Tech Lead could not run the project's validation command "
+            f"({detail}). A human must confirm completion or supply the command."
+        )
+
+    if validation_passed is False:
+        detail = validation_output_tail.strip()
+        reason = (
+            f"The AI Tech Lead ran the project validation command `{validation_command}` "
+            "and it failed."
+        )
+        if detail:
+            reason = f"{reason}\nLast output:\n{detail}"
+        logger.info("Completion verification: ATL validation failed -> correction_required.")
+        return CompletionVerificationDecision(
+            status=STATUS_CORRECTION_REQUIRED,
+            reason=reason,
+            correction=(
+                f"Make the project validation command `{validation_command}` pass, "
+                "then report it again."
+            ),
         )
 
     try:
@@ -88,6 +132,10 @@ def verify_completion(
             acceptance_criteria=acceptance_criteria,
             changed_files=changed_files,
             coding_agent_result=coding_agent_result,
+            diff_summary=diff_summary,
+            validation_command=validation_command,
+            validation_output_tail=validation_output_tail,
+            out_of_scope_paths=out_of_scope_paths,
             target_project_context=target_project_context,
             settings=settings,
             prior_correction=prior_correction,
@@ -119,6 +167,10 @@ def _llm_verify_completion(
     acceptance_criteria: list[str],
     changed_files: tuple[str, ...],
     coding_agent_result: str,
+    diff_summary: str,
+    validation_command: str,
+    validation_output_tail: str,
+    out_of_scope_paths: tuple[str, ...],
     target_project_context: TargetProjectContext | None,
     settings: AppSettings,
     prior_correction: str,
@@ -136,6 +188,16 @@ def _llm_verify_completion(
         if project_guidance
         else ""
     )
+    validation_evidence = (
+        f"The AI Tech Lead ran `{validation_command or '(command not determined)'}` "
+        "and it PASSED.\nLast output:\n"
+        + (validation_output_tail.strip() or "(no output captured)")
+    )
+    out_of_scope_text = (
+        "\n".join(f"- {path}" for path in out_of_scope_paths)
+        if out_of_scope_paths
+        else "(none detected)"
+    )
     prompt = render_prompt(
         COMPLETION_VERIFICATION_PROMPT_KEY,
         bounded_request=bounded_request,
@@ -145,6 +207,9 @@ def _llm_verify_completion(
         plan_text=plan_text or "(no plan recorded)",
         acceptance_criteria="\n".join(f"- {item}" for item in acceptance_criteria) or "(none)",
         changed_files=", ".join(changed_files) or "(none detected)",
+        diff_summary=diff_summary.strip() or "(no diff summary captured)",
+        validation_evidence=validation_evidence,
+        out_of_scope=out_of_scope_text,
         coding_agent_result=coding_agent_result or "(no completion report)",
         prior_correction=prior_correction or "(none — first check)",
         project_guidance=guidance_text,

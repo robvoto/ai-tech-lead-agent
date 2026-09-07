@@ -20,6 +20,7 @@ from ai_tech_lead.coding_workflow_graph import (
     approval_interrupt_node,
     build_graph,
     build_initial_graph_state,
+    capture_validation_evidence_node,
     check_code_look_need_node,
     check_project_guidance_node,
     check_research_node,
@@ -27,6 +28,9 @@ from ai_tech_lead.coding_workflow_graph import (
     collect_research_evidence_node,
     create_agent_instruction_node,
     discover_research_source_node,
+    discover_validation_command_node,
+    route_after_discover_validation_command,
+    validation_command_interrupt_node,
     end_node,
     finalize_task_branch_node,
     project_scope_decision_node,
@@ -2392,7 +2396,7 @@ def test_workflow_scenario_completion_verification_correction_then_success(monke
     assert "Wire the click handler to the sign-out endpoint." in implementation_instructions[1]
 
 
-def test_workflow_scenario_completion_verification_correction_limit_reached_ends_failed(
+def test_workflow_scenario_completion_verification_correction_limit_reached_asks_human(
     monkeypatch,
 ) -> None:
     settings = replace(
@@ -2436,8 +2440,10 @@ def test_workflow_scenario_completion_verification_correction_limit_reached_ends
     app.invoke(graph_state(request="Add a logout button."), config=thread_config)
     final_state = app.get_state(thread_config)
 
-    assert final_state.next == ()
-    assert final_state.values["verification_status"] == "failed"
+    # One automatic correction cycle, then it pauses for a human instead of a
+    # second retry or a terminal Failed.
+    assert final_state.next == (NodeName.COMPLETION_VERIFICATION_INTERRUPT,)
+    assert final_state.values["verification_status"] == "human_verification_required"
     assert final_state.values["verification_attempt_count"] == 1
     assert len(implementation_instructions) == 2
 
@@ -2835,6 +2841,216 @@ def test_verify_completion_node_passes_through_project_guidance_notes(monkeypatc
     verify_completion_node(state)
 
     assert captured["project_guidance"] == ["AGENTS.md: pre-selected note."]
+
+
+def test_run_coding_agent_success_routes_through_validation_evidence() -> None:
+    assert (
+        route_after_run_coding_agent(graph_state(coding_agent_success=True))
+        == "coding succeeded"
+    )
+
+
+def test_discover_validation_command_node_stores_command_and_source(monkeypatch) -> None:
+    from ai_tech_lead.validation_command_discovery import ValidationCommand
+
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.load_settings",
+        lambda: parse_settings(valid_settings_dict()),
+    )
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.discover_validation_command",
+        lambda *_a, **_k: ValidationCommand(
+            command="uv run pytest -q", source="documented: AGENTS.md"
+        ),
+    )
+
+    result = discover_validation_command_node(graph_state(request="do a thing"))
+
+    assert result["validation_command"] == "uv run pytest -q"
+    assert result["validation_command_source"] == "documented: AGENTS.md"
+
+
+def test_discover_validation_command_node_empty_when_nothing_found(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.load_settings",
+        lambda: parse_settings(valid_settings_dict()),
+    )
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.discover_validation_command",
+        lambda *_a, **_k: None,
+    )
+
+    result = discover_validation_command_node(graph_state(request="do a thing"))
+
+    assert result == {"validation_command": "", "validation_command_source": ""}
+
+
+def test_capture_validation_evidence_node_writes_evidence_into_state(monkeypatch) -> None:
+    from ai_tech_lead.completion_evidence import CompletionEvidence
+
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.load_settings",
+        lambda: replace(parse_settings(valid_settings_dict()), execute_coding_agent=True),
+    )
+
+    captured: dict = {}
+
+    def fake_capture(**kwargs):
+        captured.update(kwargs)
+        return CompletionEvidence(
+            diff_summary="M\tapp.py",
+            changed_files=("app.py", "billing/x.py"),
+            validation_command="uv run pytest -q",
+            validation_passed=True,
+            validation_output_tail="1 passed",
+            out_of_scope_paths=("billing/x.py",),
+        )
+
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.capture_completion_evidence", fake_capture
+    )
+
+    state = graph_state(
+        validation_command="uv run pytest -q",
+        git_task_worktree="/tmp/wt",
+        git_task_base_sha="abc123",
+    )
+    result = capture_validation_evidence_node(state)
+
+    assert result["validation_passed"] is True
+    assert result["diff_summary"] == "M\tapp.py"
+    assert result["git_changed_files"] == ["app.py", "billing/x.py"]
+    assert result["out_of_scope_paths"] == ["billing/x.py"]
+    assert str(captured["checkout_root"]) == "/tmp/wt"
+    assert captured["base_sha"] == "abc123"
+    assert "changed_files" not in captured  # git-derived, not passed in
+
+
+def test_capture_validation_evidence_node_skips_when_execution_disabled(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.load_settings",
+        lambda: replace(parse_settings(valid_settings_dict()), execute_coding_agent=False),
+    )
+
+    def _boom(**_kw):
+        raise AssertionError("must not run a command when coding execution is disabled")
+
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.capture_completion_evidence", _boom
+    )
+
+    result = capture_validation_evidence_node(
+        graph_state(validation_command="uv run pytest -q")
+    )
+
+    assert result["validation_passed"] is None
+
+
+def test_verify_completion_node_human_verification_when_atl_had_no_validation(
+    monkeypatch,
+) -> None:
+    settings = replace(parse_settings(valid_settings_dict()), orchestrator_ai_enabled=True)
+    monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.load_settings", lambda: settings)
+
+    def _fail(**_kw):
+        raise AssertionError("LLM must not run when ATL has no validation result")
+
+    monkeypatch.setattr("ai_tech_lead.llm_json.call_orchestrator_llm", _fail)
+
+    result = verify_completion_node(
+        graph_state(validation_passed=None, validation_output_tail="no command determined")
+    )
+
+    assert result["verification_status"] == "human_verification_required"
+
+
+def test_verify_completion_node_failed_validation_then_human_verification_after_one_cycle(
+    monkeypatch,
+) -> None:
+    settings = replace(parse_settings(valid_settings_dict()), orchestrator_ai_enabled=True)
+    monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.load_settings", lambda: settings)
+    monkeypatch.setattr(
+        "ai_tech_lead.llm_json.call_orchestrator_llm",
+        lambda **_kw: (_ for _ in ()).throw(AssertionError("no LLM on failed validation")),
+    )
+
+    first = verify_completion_node(
+        graph_state(
+            validation_passed=False,
+            validation_command="uv run pytest -q",
+            validation_output_tail="1 failed",
+            verification_attempt_count=0,
+        )
+    )
+    assert first["verification_status"] == "correction_required"
+    assert first["verification_attempt_count"] == 1
+
+    # ATL-039: one automatic correction cycle, then escalate to a human — not Failed.
+    second = verify_completion_node(
+        graph_state(
+            validation_passed=False,
+            validation_command="uv run pytest -q",
+            validation_output_tail="1 failed",
+            verification_attempt_count=1,
+        )
+    )
+    assert second["verification_status"] == "human_verification_required"
+
+
+def test_route_after_discover_validation_command_branches() -> None:
+    assert (
+        route_after_discover_validation_command(graph_state(validation_command="uv run pytest"))
+        == "command found"
+    )
+    assert (
+        route_after_discover_validation_command(
+            graph_state(validation_command="", validation_command_retry_count=0)
+        )
+        == "ask operator"
+    )
+    assert (
+        route_after_discover_validation_command(
+            graph_state(validation_command="", validation_command_retry_count=1)
+        )
+        == "proceed without command"
+    )
+
+
+def test_validation_command_interrupt_records_operator_command(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.interrupt", lambda _v: "uv run pytest -q"
+    )
+    result = validation_command_interrupt_node(graph_state(validation_command_retry_count=0))
+    assert result["validation_command"] == "uv run pytest -q"
+    assert result["validation_command_source"] == "operator-supplied"
+    assert result["validation_command_retry_count"] == 1
+
+
+def test_validation_command_interrupt_skip_marks_exhausted(monkeypatch) -> None:
+    monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.interrupt", lambda _v: "skip")
+    result = validation_command_interrupt_node(graph_state(validation_command_retry_count=0))
+    assert "validation_command" not in result
+    assert result["validation_command_exhausted"] is True
+    assert result["validation_command_retry_count"] == 1
+
+
+def test_discover_validation_command_node_keeps_operator_supplied_command(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.discover_validation_command",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("discovery must not re-run")),
+    )
+    result = discover_validation_command_node(
+        graph_state(validation_command="uv run pytest -q", validation_command_source="operator-supplied")
+    )
+    assert result == {}
+
+
+def test_graph_compiles_with_validation_nodes() -> None:
+    graph = build_graph()
+    node_names = set(graph.get_graph().nodes)
+    assert NodeName.DISCOVER_VALIDATION_COMMAND.value in node_names
+    assert NodeName.VALIDATION_COMMAND_INTERRUPT.value in node_names
+    assert NodeName.CAPTURE_VALIDATION_EVIDENCE.value in node_names
 
 
 def test_guidance_paths_and_hash_extracts_paths_and_is_stable() -> None:

@@ -35,6 +35,7 @@ def build_agent_instruction(
     research_evidence: list[str] | None = None,
     agent_correction: str | None = None,
     project_guidance: list[str] | None = None,
+    validation_command: str = "",
 ) -> str:
     if target_project_context is not None and target_project_context.has_explicit_context:
         target_project_root = target_project_context.require_project_root(
@@ -58,10 +59,25 @@ def build_agent_instruction(
             "reply 'ALREADY_DONE: [reason]' and stop without making changes.",
         ]
     )
+    if validation_command:
+        validation_instruction = (
+            "This project's canonical validation command is "
+            f"`{validation_command}`. Run exactly that command and report it as "
+            "your final `Validation: <command> — <passed|failed|not run>` line. "
+            "The AI Tech Lead re-runs this same command itself before accepting "
+            "the work, so a false pass will be caught."
+        )
+    else:
+        validation_instruction = (
+            "State this project's canonical validation command as your final "
+            "`Validation: <command> — <passed|failed|not run>` line, and run it. "
+            "The AI Tech Lead could not determine the command itself; if you "
+            "cannot either, say so explicitly."
+        )
     final_instruction = (
         "Complete only this task. Keep the change small, report changed files, "
         "explain why the design is appropriate, and report the exact validation "
-        "command and result."
+        f"command and result.\n{validation_instruction}"
     )
 
     project_context = _format_bullets(settings.project_context)

@@ -273,6 +273,7 @@ _RECOVERABLE_TELEGRAM_INTERRUPT_KINDS = frozenset(
         "research_approval",
         "clarification",
         "context_clarification",
+        "validation_command",
         "plan_guidance",
         "failure_guidance",
         "completion_verification",
@@ -2144,6 +2145,14 @@ class TelegramOperator:
         if kind in {"clarification", "context_clarification"}:
             question = str(interrupt_value.get("question", "")).strip()
             message = question or "I need more information before I can proceed."
+            return TelegramTaskStage.ORCHESTRATOR_INPUT, message
+
+        if kind == "validation_command":
+            question = str(interrupt_value.get("question", "")).strip()
+            message = question or (
+                "I could not determine this project's validation command. "
+                "Reply with the exact command to run, or 'skip'."
+            )
             return TelegramTaskStage.ORCHESTRATOR_INPUT, message
 
         if kind == "plan_guidance":

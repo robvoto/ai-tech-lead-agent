@@ -223,7 +223,7 @@ def build_agent_manifest(settings: AppSettings | None = None) -> dict[str, Any]:
                 "terminal": False,
                 "notes": (
                     "Returned whenever the workflow is genuinely paused (approval, plan or "
-                    "failure guidance, research approval, completion verification, or backlog refinement approval). See "
+                    "failure guidance, research approval, validation-command request, completion verification, or backlog refinement approval). See "
                     "pending_decision for exactly what options are valid right now. Resume by "
                     "resubmitting request_id with a decision — no task field needed."
                 ),

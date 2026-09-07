@@ -109,6 +109,7 @@ _DECISION_OPTIONS_BY_KIND: dict[str, list[dict[str, Any]]] = {
     "failure_guidance": [{"name": "answer", "needs_text": True}],
     "research_approval": [{"name": "approve"}, {"name": "cancel"}],
     "context_clarification": [{"name": "answer", "needs_text": True}],
+    "validation_command": [{"name": "answer", "needs_text": True}, {"name": "skip"}],
     "project_guidance_governance": [{"name": "approve"}, {"name": "reject"}],
     "completion_verification": [
         {"name": "confirm_complete"},
@@ -903,6 +904,10 @@ def _map_decision_to_resume_payload(kind: str, decision: _Decision) -> Any:
     if kind in {"plan_guidance", "failure_guidance", "context_clarification"}:
         return decision.text
 
+    if kind == "validation_command":
+        # The interrupt node reads a plain string: the command, or "skip".
+        return decision.text if decision.option == "answer" else "skip"
+
     if kind == "research_approval":
         return {"approved": decision.option == "approve"}
 
@@ -956,6 +961,13 @@ def _prompt_for_pending_interrupt(kind: str, payload: dict[str, Any]) -> str:
         if reason:
             parts.append(f"Reason: {reason}")
         return "\n".join(parts)
+
+    if kind == "validation_command":
+        question = str(payload.get("question", "")).strip()
+        return question or (
+            "Provide the project's validation command, or answer 'skip' to fall "
+            "back to human verification at completion."
+        )
 
     if kind == "completion_verification":
         reason = str(payload.get("reason", "")).strip()
@@ -1077,6 +1089,23 @@ def _sync_backlog_completion(
             sync_status,
         )
     return sync_status
+
+
+def _authoritative_validation_field(state: dict[str, Any]) -> str | None:
+    """The validation line for the subprocess contract (ATL-039).
+
+    Prefer the AI Tech Lead's own run — it re-runs the project's canonical
+    command itself, so its result is authoritative. Fall back to the coding
+    agent's self-declared line only when ATL had no command or could not run
+    one.
+    """
+
+    passed = state.get("validation_passed")
+    command = str(state.get("validation_command", "")).strip()
+    if passed is not None and command:
+        outcome = "passed" if passed else "failed"
+        return f"{command} — {outcome} (AI Tech Lead ran it)"
+    return str(state.get("coding_agent_validation", "")).strip() or None
 
 
 def _map_state_to_output(
@@ -1221,7 +1250,7 @@ def _map_state_to_output(
         "coding_agent_instruction": agent_instruction,
         "backend_used": state.get("coding_agent_performed_by", "none") or "none",
         "execution_performed": bool(state.get("coding_agent_performed_by")),
-        "validation": str(state.get("coding_agent_validation", "")).strip() or None,
+        "validation": _authoritative_validation_field(state),
         "logs": state.get("task_feedback", []),
         "evidence": list(state.get("research_source_titles", [])),
         "next_action": next_action,
