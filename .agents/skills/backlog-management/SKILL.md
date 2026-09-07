@@ -15,7 +15,8 @@ Use when creating, parsing, selecting, updating, or explaining backlog items.
 - Each executable backlog item must include explicit `Approval Required` and `Approval Reason` fields.
 - Do not delete backlog items without human approval.
 - Do not mark work done without validation evidence.
-- Preserve the human’s original intent when formatting or converting backlog items.
+- Preserve the human's original intent when formatting or converting backlog items.
+- Do not describe an item's status with vague, non-committal words like "defer" or "deprioritize" — in `Notes / Cleanup Action` and in explanations to the human, state the concrete reason it isn't next and the specific condition that would change that.
 
 ## Current backlog ownership
 - The Google Sheet listed in `docs/INDEX.md` is the only canonical backlog. `SheetsBacklogRepository` (`backlog_sheets_repository.py`) is the live repository behind every read/write — Telegram, chat tools, and the Hub subprocess path all go through it.
