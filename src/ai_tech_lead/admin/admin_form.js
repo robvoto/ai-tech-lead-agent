@@ -471,7 +471,10 @@ export function bootstrapAdminForm() {
     setField("backlog_path", settings.backlog_path);
     setField("max_runtime_minutes", settings.max_runtime_minutes);
     setField("coding_agent_command", settings.coding_agent_command);
+    setField("review_agent_command", settings.review_agent_command);
     form.elements.execute_coding_agent.checked = settings.execute_coding_agent;
+    form.elements.implementation_review_enabled.checked =
+      settings.implementation_review_enabled;
     form.elements.telegram_enabled.checked = settings.telegram_enabled;
     form.elements.orchestrator_ai_enabled.checked = settings.orchestrator_ai_enabled;
     setField("admin_bind_host", settings.admin_bind_host);
@@ -508,7 +511,9 @@ export function bootstrapAdminForm() {
       backlog_path: form.elements.backlog_path.value.trim(),
       max_runtime_minutes: Number.parseInt(form.elements.max_runtime_minutes.value, 10),
       coding_agent_command: form.elements.coding_agent_command.value.trim(),
+      review_agent_command: form.elements.review_agent_command.value.trim(),
       execute_coding_agent: form.elements.execute_coding_agent.checked,
+      implementation_review_enabled: form.elements.implementation_review_enabled.checked,
       telegram_enabled: form.elements.telegram_enabled.checked,
       admin_bind_host: form.elements.admin_bind_host.value.trim(),
       admin_bind_port: Number.parseInt(form.elements.admin_bind_port.value, 10),

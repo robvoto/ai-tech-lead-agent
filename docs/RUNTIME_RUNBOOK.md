@@ -30,6 +30,17 @@ Then edit `data/coding_agent_settings.json` locally if Telegram, execution mode,
 
 The settings file now also carries the explicit knowledge-store path. The current default keeps that store inside the project `data/` directory so the path is visible and easy to validate.
 
+## Configuring the independent reviewer (ATL-093)
+
+For meaningful or risky changes, a second coding agent reviews the diff read-only before completion. It only runs when a distinct reviewer is configured — otherwise those runs go to human verification. Set these in `data/coding_agent_settings.json` or the admin UI ("Independent Review" fieldset):
+
+- `implementation_review_enabled` — `true` to enable the gate.
+- `review_agent_command` — a CLI different from `coding_agent_command`. With `coding_agent_command: "codex"`, use `"claude"`; with `"claude"`, use `"codex"`.
+- `review_agent_args` — must make that CLI read-only. Codex: `["-s", "read-only"]`. Claude Code: `["-p", "--permission-mode", "plan"]`. The runtime does not inject a sandbox flag; if the reviewer writes any file the review is voided (`mutated` → human verification).
+- `implementation_review_risk_keywords` — leave empty for the built-in default set, or override.
+
+Smoke check after configuring: run one Medium/`standard`-tier task with `execute_coding_agent: true` and confirm the log shows `NODE [6b2] IMPLEMENTATION_REVIEW`, the reviewer command is the configured one, and it makes no file changes.
+
 ## Normal CLI run
 
 ```bash

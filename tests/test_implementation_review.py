@@ -162,6 +162,37 @@ def test_findings_when_changes_required_with_required_finding(monkeypatch) -> No
     assert len(outcome.findings) == 2
 
 
+def test_pass_verdict_with_required_finding_fails_closed(monkeypatch) -> None:
+    """A `pass` verdict must never let a `required` finding through as clean."""
+    monkeypatch.setattr(
+        ir,
+        "run_coding_agent",
+        lambda **_kw: _fake_result(
+            stdout="FINDING [required] src/a.py: broken\nREVIEW: pass\n"
+        ),
+    )
+    outcome = _call(monkeypatch)
+    assert outcome.status == ir.STATUS_FAILED
+    assert outcome.status != ir.STATUS_CLEAN
+    # the finding is still surfaced so the human sees why
+    assert outcome.findings == ("[required] src/a.py: broken",)
+
+
+def test_parse_review_output_pass_with_required_is_failed() -> None:
+    outcome = ir._parse_review_output(
+        "FINDING [required] x: broken\nFINDING [advisory] y: nit\nREVIEW: pass\n",
+        "claude",
+    )
+    assert outcome.status == ir.STATUS_FAILED
+
+
+def test_parse_review_output_pass_with_only_advisory_is_clean() -> None:
+    outcome = ir._parse_review_output(
+        "FINDING [advisory] y: nit\nREVIEW: pass\n", "claude"
+    )
+    assert outcome.status == ir.STATUS_CLEAN
+
+
 def test_failed_when_no_verdict_line(monkeypatch) -> None:
     monkeypatch.setattr(
         ir,

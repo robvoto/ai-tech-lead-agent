@@ -165,11 +165,16 @@ def run_implementation_review(
     )
 
     try:
+        # No sandbox flag is injected here: `-s read-only` is Codex-specific and
+        # would break a non-Codex reviewer. Read-only enforcement for the
+        # reviewer is the operator's `review_agent_args` (e.g. `-s read-only` for
+        # Codex, `--permission-mode plan` for Claude Code) plus the prompt's
+        # "do NOT edit" instruction; the post-run mutation check below is the
+        # hard backstop that no reviewer output can bypass.
         result = run_coding_agent(
             agent_instruction=instruction,
             project_root=checkout_root,
             settings=reviewer_settings,
-            sandbox_override="read-only",
         )
     except RuntimeError as error:
         logger.warning("Implementation review: reviewer preflight failed: %s", error)
@@ -178,6 +183,8 @@ def run_implementation_review(
     performed_by = settings.review_agent_command.strip()
 
     if result.changed_files_delta:
+        # Hard backstop: a reviewer must never write. Any change on disk voids
+        # the review regardless of what it reported.
         logger.warning(
             "Implementation review: reviewer mutated the checkout: %s",
             ", ".join(result.changed_files_delta[:10]),
@@ -218,6 +225,18 @@ def _parse_review_output(stdout: str, performed_by: str) -> ReviewOutcome:
 
     required = [f for f in findings if f.severity == "required"]
     verdict = verdict_match.group("verdict").lower()
+    rendered = tuple(f.render() for f in findings)
+
+    # The verdict line and the findings must agree. Either mismatch is an
+    # unreliable review, so it fails closed to human verification — a `pass`
+    # verdict must never let a `required` finding through as clean.
+    if verdict == "pass" and required:
+        logger.warning(
+            "Implementation review: verdict 'pass' but %d required finding(s) present — "
+            "failing closed.",
+            len(required),
+        )
+        return ReviewOutcome(STATUS_FAILED, rendered, "", performed_by)
 
     if verdict == "changes-required" and not required:
         logger.warning(
@@ -226,7 +245,6 @@ def _parse_review_output(stdout: str, performed_by: str) -> ReviewOutcome:
         )
         return ReviewOutcome(STATUS_FAILED, (), "", performed_by)
 
-    rendered = tuple(f.render() for f in findings)
     if verdict == "changes-required":
         correction = "Address the required findings from the independent review:\n" + "\n".join(
             f"- {f.render()}" for f in required

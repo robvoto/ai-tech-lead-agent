@@ -168,13 +168,13 @@ When discovery finds nothing, `route_after_discover_validation_command` sends th
 
 `6b2_implementation_review` runs between the evidence capture and the verifier (`implementation_review.py`). `review_required` returns true when the plan-review `coding_agent_tier` is `standard`/`deep`, the `risk_level` is `MEDIUM`/`HIGH`/`UNKNOWN`, or the formulated task / brief / git-changed paths hit an `implementation_review_risk_keywords` term; otherwise, and when coding execution or `implementation_review_enabled` is off, the node returns `review_status="skipped"` and passes through. The backlog `Size` field is not consulted.
 
-When required, the node dispatches `review_agent_command` (which must differ from `coding_agent_command`) through `run_coding_agent(..., sandbox_override="read-only")`, giving it the approved task/plan/criteria, the git-derived diff and the ATL-039 validation result. It parses `FINDING [required|advisory] <target>: <text>` lines and a final `REVIEW: pass|changes-required`. `review_status`:
+When required, the node dispatches `review_agent_command` (which must differ from `coding_agent_command`) through `run_coding_agent` with the operator's `review_agent_args`, giving it the approved task/plan/criteria, the git-derived diff and the ATL-039 validation result. No sandbox flag is injected — `-s read-only` is Codex-specific — so `review_agent_args` must make the reviewer read-only for its backend (Codex `-s read-only`; Claude Code `--permission-mode plan`); the mutation check below is the enforced backstop regardless. It parses `FINDING [required|advisory] <target>: <text>` lines and a final `REVIEW: pass|changes-required`. `review_status`:
 
-- `clean` — verdict `pass` (advisory-only findings allowed). Passes through; positive context for the verifier.
+- `clean` — verdict `pass` with no `required` findings (advisory-only allowed). Passes through; positive context for the verifier.
 - `findings` — verdict `changes-required` with at least one `required` finding, and `review_correction_count` is below `IMPLEMENTATION_REVIEW_MAX_CORRECTIONS` (1). `route_after_implementation_review` sends it back to `5_create_agent_instruction` with the required findings as the correction; the re-run returns through `6b1` → `6b2`.
 - `findings_unresolved` — required findings still present after that one correction cycle.
 - `unavailable` — no distinct reviewer configured, or its preflight failed.
-- `failed` — the reviewer errored or its output had no usable `REVIEW:` verdict.
+- `failed` — the reviewer errored, its output had no usable `REVIEW:` verdict, or the verdict contradicts the findings (`pass` with a `required` finding, or `changes-required` with none). Fails closed.
 - `mutated` — the reviewer changed files on disk (`changed_files_delta` non-empty).
 
 `completion_verifier.py` treats `unavailable`/`failed`/`mutated`/`findings_unresolved` like ATL-039's `validation_passed=None`: raise `CompletionVerificationUnavailable` → `6d_completion_verification_interrupt` (Human verification required), no LLM call. `skipped`/`clean` go to the normal LLM path with the review status as context. Agent A never reviews its own work. `review_status` is written to the ATL-038 audit receipt and the subprocess `review` field.

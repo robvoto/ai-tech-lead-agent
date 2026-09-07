@@ -8,8 +8,12 @@
     "never",
     "exec"
   ],
-  "review_agent_command": "",
-  "review_agent_args": [],
+  "review_agent_command": "claude",
+  "review_agent_args": [
+    "-p",
+    "--permission-mode",
+    "plan"
+  ],
   "implementation_review_enabled": true,
   "implementation_review_risk_keywords": [],
   "execute_coding_agent": false,
