@@ -32,6 +32,7 @@ _PATH_TOKEN_RE = re.compile(r"[a-z0-9]+")
 @dataclass(frozen=True)
 class CompletionEvidence:
     diff_summary: str
+    changed_files: tuple[str, ...]
     validation_command: str
     validation_passed: bool | None
     validation_output_tail: str
@@ -42,20 +43,25 @@ def capture_completion_evidence(
     *,
     checkout_root: Path,
     base_sha: str,
-    changed_files: tuple[str, ...],
     validation_command: str,
     relevance_text: str,
     timeout_seconds: int,
 ) -> CompletionEvidence:
-    """Gather diff, validation and out-of-scope evidence for one completed run."""
+    """Gather diff, validation and out-of-scope evidence for one completed run.
 
-    diff_summary = _diff_summary(checkout_root, base_sha)
+    The changed-file list and the out-of-scope check are derived from the git
+    diff ATL takes itself, never from the coding agent's self-reported file list
+    — an agent that omits a file from its report cannot hide it here.
+    """
+
+    diff_summary, changed_files = _diff_summary_and_paths(checkout_root, base_sha)
     passed, output_tail = _run_validation(
         checkout_root, validation_command, timeout_seconds
     )
     out_of_scope = _out_of_scope_paths(changed_files, relevance_text)
     return CompletionEvidence(
         diff_summary=diff_summary,
+        changed_files=changed_files,
         validation_command=validation_command,
         validation_passed=passed,
         validation_output_tail=output_tail,
@@ -63,8 +69,10 @@ def capture_completion_evidence(
     )
 
 
-def _diff_summary(checkout_root: Path, base_sha: str) -> str:
-    """A readable name-status + shortstat view of what actually changed.
+def _diff_summary_and_paths(
+    checkout_root: Path, base_sha: str
+) -> tuple[str, tuple[str, ...]]:
+    """Return a readable diff summary and the changed paths, both from git itself.
 
     Compared against the task base commit when known, otherwise the current
     ``HEAD``; either way this covers staged and unstaged working-tree changes,
@@ -75,7 +83,7 @@ def _diff_summary(checkout_root: Path, base_sha: str) -> str:
     name_status = _git_text(checkout_root, ["diff", ref, "--name-status"])
     shortstat = _git_text(checkout_root, ["diff", ref, "--shortstat"])
     if name_status is None and shortstat is None:
-        return "(git diff unavailable in the coding checkout)"
+        return "(git diff unavailable in the coding checkout)", ()
     parts = []
     if name_status:
         parts.append(name_status)
@@ -84,7 +92,25 @@ def _diff_summary(checkout_root: Path, base_sha: str) -> str:
     summary = "\n".join(parts).strip() or "(no differences reported by git)"
     if len(summary) > _MAX_DIFF_SUMMARY_CHARS:
         summary = summary[: _MAX_DIFF_SUMMARY_CHARS - 1].rstrip() + "…"
-    return summary
+    return summary, _paths_from_name_status(name_status or "")
+
+
+def _paths_from_name_status(name_status: str) -> tuple[str, ...]:
+    """Extract changed paths from ``git diff --name-status`` output.
+
+    Each line is a status letter then one or two tab-separated paths; a rename
+    (``R###\told\tnew``) contributes its destination path.
+    """
+
+    paths: list[str] = []
+    for line in name_status.splitlines():
+        fields = [field for field in line.split("\t") if field]
+        if len(fields) < 2:
+            continue
+        path = fields[-1].strip()
+        if path and path not in paths:
+            paths.append(path)
+    return tuple(paths)
 
 
 def _git_text(checkout_root: Path, args: list[str]) -> str | None:

@@ -69,11 +69,15 @@ from .risk_reviewer import review_task_risk
 from .run_budget import RunBudgetExceededError, RunBudgetTracker, use_run_budget
 from .target_project_context import BacklogItemContext, BacklogProjectContext, TargetProjectContext
 from .tech_lead_analyst import analyse_task
-from .validation_command_discovery import discover_validation_command
+from .validation_command_discovery import (
+    discover_validation_command,
+    sanitise_validation_command,
+)
 
 APPROVAL_MAX_REVISION_CYCLES = 5
 COMPLETION_VERIFICATION_MAX_CORRECTIONS = 1
 CONTEXT_CLARIFICATION_MAX_RETRIES = 1
+VALIDATION_COMMAND_MAX_RETRIES = 1
 
 T = TypeVar("T")
 
@@ -104,6 +108,7 @@ class NodeName(StrEnum):
     REVIEW_PLAN = "5c_review_plan"
     PLAN_INTERRUPT = "5d_plan_interrupt"
     DISCOVER_VALIDATION_COMMAND = "5e_discover_validation_command"
+    VALIDATION_COMMAND_INTERRUPT = "5e1_validation_command_interrupt"
     CREATE_AGENT_INSTRUCTION = "5_create_agent_instruction"
     RUN_CODING_AGENT = "6_run_coding_agent"
     FAILURE_INTERRUPT = "6b Handle Coding Failure"
@@ -232,7 +237,10 @@ class GraphState(TypedDict):
     coding_agent_validation: str
     validation_command: str
     validation_command_source: str
+    validation_command_retry_count: int
+    validation_command_exhausted: bool
     diff_summary: str
+    git_changed_files: list[str]
     validation_passed: bool | None
     validation_output_tail: str
     out_of_scope_paths: list[str]
@@ -372,7 +380,10 @@ def build_initial_graph_state(
         "coding_agent_validation": "",
         "validation_command": "",
         "validation_command_source": "",
+        "validation_command_retry_count": 0,
+        "validation_command_exhausted": False,
         "diff_summary": "",
+        "git_changed_files": [],
         "validation_passed": None,
         "validation_output_tail": "",
         "out_of_scope_paths": [],
@@ -2109,24 +2120,30 @@ def discover_validation_command_node(state: GraphState) -> dict[str, Any]:
     """Work out the target project's canonical validation command before handoff.
 
     The AI Tech Lead must run this command itself after the coding agent finishes
-    (ATL-039), so it has to be known up front. Discovery is read-only and never
-    interrupts: when it finds nothing, ``validation_command`` stays empty, the
-    handoff asks the agent to state whatever command it used, and the completion
-    gate escalates to human verification because ATL has no command of its own to
-    run.
+    (ATL-039), so it has to be known before the handoff. Discovery is read-only.
+    When it finds nothing, the router pauses at ``VALIDATION_COMMAND_INTERRUPT``
+    to ask the operator for the command; only if the operator does not supply one
+    within the bounded retry does the run proceed without it, and the completion
+    gate then escalates to human verification.
+
+    A command already in state (operator-supplied on a prior loop) is kept as-is,
+    so the post-interrupt loop back through here does not overwrite it.
     """
 
     _log_node_start("5e", "DISCOVER_VALIDATION_COMMAND", "Discover project validation command")
+    existing = str(state.get("validation_command", "")).strip()
+    if existing:
+        logger.info("[LEARN] Validation command already set (%s) — keeping it.",
+                    state.get("validation_command_source", "unknown source"))
+        return {}
+
     settings = load_settings()
     request_text = state.get("bounded_request", "") or state["request"]
     discovered = discover_validation_command(
         request_text, _soft_target_project_root(state, settings)
     )
     if discovered is None:
-        logger.info(
-            "[LEARN] No canonical validation command found; completion will need "
-            "human verification unless the coding agent reports one."
-        )
+        logger.info("[LEARN] No canonical validation command found by discovery.")
         return {"validation_command": "", "validation_command_source": ""}
     logger.info(
         "[LEARN] Canonical validation command: %s (%s)",
@@ -2136,6 +2153,78 @@ def discover_validation_command_node(state: GraphState) -> dict[str, Any]:
     return {
         "validation_command": discovered.command,
         "validation_command_source": discovered.source,
+    }
+
+
+def route_after_discover_validation_command(state: GraphState) -> str:
+    """Proceed when a command is known; otherwise ask the operator once."""
+
+    _log_decision_start(
+        "5e", "ROUTE_AFTER_DISCOVER_VALIDATION_COMMAND", "Route after validation-command discovery"
+    )
+    if str(state.get("validation_command", "")).strip():
+        logger.info("Decision: validation command known -> CREATE_AGENT_INSTRUCTION")
+        return "command found"
+    retry_count = int(state.get("validation_command_retry_count", 0))
+    if retry_count >= VALIDATION_COMMAND_MAX_RETRIES:
+        logger.info(
+            "Decision: operator did not supply a validation command (%d/%d) -> "
+            "CREATE_AGENT_INSTRUCTION; completion will require human verification.",
+            retry_count,
+            VALIDATION_COMMAND_MAX_RETRIES,
+        )
+        return "proceed without command"
+    logger.info(
+        "Decision: no validation command (%d/%d) -> VALIDATION_COMMAND_INTERRUPT",
+        retry_count,
+        VALIDATION_COMMAND_MAX_RETRIES,
+    )
+    return "ask operator"
+
+
+def validation_command_interrupt_node(state: GraphState) -> dict[str, Any]:
+    """Pause before the handoff and ask the operator for the validation command.
+
+    Same bounded pause/answer/retry shape as
+    ``context_clarification_interrupt`` — the limit is enforced by
+    ``route_after_discover_validation_command``, this node only asks and records.
+    An unusable or empty answer leaves ``validation_command`` empty and marks the
+    attempt exhausted; the run then proceeds and the completion gate routes to
+    human verification.
+    """
+
+    _log_node_start(
+        "5e1", "VALIDATION_COMMAND_INTERRUPT", "Pause for the project's validation command"
+    )
+    retry_count = int(state.get("validation_command_retry_count", 0))
+    result = interrupt(
+        {
+            "kind": "validation_command",
+            "question": (
+                "I could not determine this project's validation command. "
+                "Reply with the exact command the AI Tech Lead should run to "
+                "validate the finished work (e.g. `uv run pytest -q`), or reply "
+                "`skip` to let completion fall back to human verification."
+            ),
+            "reason": "The completion gate re-runs this command itself before accepting the work.",
+            "retry_count": retry_count,
+        }
+    )
+    answer = str(result) if not isinstance(result, dict) else str(result.get("text", result))
+    command = sanitise_validation_command(answer) if answer.strip().lower() not in {
+        "", "skip", "none", "no", "n/a"
+    } else None
+    if command:
+        logger.info("Operator supplied validation command: %s", command)
+        return {
+            "validation_command": command,
+            "validation_command_source": "operator-supplied",
+            "validation_command_retry_count": retry_count + 1,
+        }
+    logger.info("Operator did not supply a usable validation command; proceeding without one.")
+    return {
+        "validation_command_retry_count": retry_count + 1,
+        "validation_command_exhausted": True,
     }
 
 
@@ -2646,6 +2735,7 @@ def capture_validation_evidence_node(state: GraphState) -> dict[str, Any]:
         logger.info("[LEARN] Coding execution disabled — skipping validation evidence capture.")
         return {
             "diff_summary": "",
+            "git_changed_files": [],
             "validation_passed": None,
             "validation_output_tail": "Coding execution disabled; no work to validate.",
             "out_of_scope_paths": [],
@@ -2659,7 +2749,6 @@ def capture_validation_evidence_node(state: GraphState) -> dict[str, Any]:
     evidence = capture_completion_evidence(
         checkout_root=checkout_root,
         base_sha=base_sha,
-        changed_files=tuple(state.get("coding_agent_changed_files", ()) or ()),
         validation_command=state.get("validation_command", ""),
         relevance_text=_completion_relevance_text(state),
         timeout_seconds=settings.max_runtime_minutes * 60,
@@ -2677,6 +2766,7 @@ def capture_validation_evidence_node(state: GraphState) -> dict[str, Any]:
         )
     return {
         "diff_summary": evidence.diff_summary,
+        "git_changed_files": list(evidence.changed_files),
         "validation_passed": evidence.validation_passed,
         "validation_output_tail": evidence.validation_output_tail,
         "out_of_scope_paths": list(evidence.out_of_scope_paths),
@@ -2702,7 +2792,10 @@ def verify_completion_node(state: GraphState) -> dict[str, Any]:
             brief=state.get("brief", ""),
             plan_text=state.get("plan_text", ""),
             acceptance_criteria=settings.acceptance_criteria,
-            changed_files=state.get("coding_agent_changed_files", ()),
+            changed_files=tuple(
+                state.get("git_changed_files", [])
+                or state.get("coding_agent_changed_files", ())
+            ),
             coding_agent_result=state.get("coding_agent_result", ""),
             diff_summary=state.get("diff_summary", ""),
             validation_command=state.get("validation_command", ""),
@@ -2740,13 +2833,20 @@ def verify_completion_node(state: GraphState) -> dict[str, Any]:
         decision.status == "correction_required"
         and attempt_count >= COMPLETION_VERIFICATION_MAX_CORRECTIONS
     ):
+        # ATL-039: one automatic correction cycle only. A still-unresolved issue
+        # escalates to human verification (the acceptance criterion), not a
+        # terminal Failed — Failed is reserved for a human rejecting the work at
+        # the verification interrupt.
         logger.info(
-            "Decision: correction limit reached (%d) -> failed",
+            "Decision: correction limit reached (%d) -> human_verification_required",
             COMPLETION_VERIFICATION_MAX_CORRECTIONS,
         )
         return {
-            "verification_status": "failed",
-            "verification_reason": decision.reason,
+            "verification_status": "human_verification_required",
+            "verification_reason": (
+                "Still unresolved after one automatic correction cycle: "
+                f"{decision.reason}"
+            ),
             "verification_correction": "",
             **budget_updates,
         }
@@ -3036,6 +3136,9 @@ def build_graph(
         ),
     )
     workflow.add_node(
+        NodeName.VALIDATION_COMMAND_INTERRUPT, validation_command_interrupt_node
+    )
+    workflow.add_node(
         NodeName.CREATE_AGENT_INSTRUCTION,
         create_agent_instruction_node,
     )
@@ -3187,8 +3290,17 @@ def build_graph(
     )
     workflow.add_edge(NodeName.PLAN_INTERRUPT, NodeName.REQUEST_PLAN)
 
+    workflow.add_conditional_edges(
+        NodeName.DISCOVER_VALIDATION_COMMAND,
+        route_after_discover_validation_command,
+        {
+            "command found": NodeName.CREATE_AGENT_INSTRUCTION,
+            "ask operator": NodeName.VALIDATION_COMMAND_INTERRUPT,
+            "proceed without command": NodeName.CREATE_AGENT_INSTRUCTION,
+        },
+    )
     workflow.add_edge(
-        NodeName.DISCOVER_VALIDATION_COMMAND, NodeName.CREATE_AGENT_INSTRUCTION
+        NodeName.VALIDATION_COMMAND_INTERRUPT, NodeName.DISCOVER_VALIDATION_COMMAND
     )
     workflow.add_edge(NodeName.CREATE_AGENT_INSTRUCTION, NodeName.RUN_CODING_AGENT)
     workflow.add_conditional_edges(

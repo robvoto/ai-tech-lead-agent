@@ -46,8 +46,10 @@ _ALLOWED_COMMAND_HEADS = frozenset(
      "rake", "gradle", "mvn", "dotnet", "pdm", "rye"}
 )
 
-# Lines that declare a validation/test command in project docs. The command is
-# taken from a backtick span on the same line; the keyword just marks intent.
+# A line "declares" the validation command when it names the intent (one of
+# these phrases) AND carries exactly one backtick span that sanitises to a real
+# command. Requiring exactly one keeps prose lines that merely mention several
+# example commands (``pytest`` / ``npm test`` / ``make test``) from matching.
 _DECLARATION_KEYWORDS = (
     "validation command",
     "core validation",
@@ -57,8 +59,12 @@ _DECLARATION_KEYWORDS = (
     "run the test",
     "run tests with",
     "how to run the test",
+    "command to run the test",
 )
 _BACKTICK_SPAN_RE = re.compile(r"`([^`\n]{2,200})`")
+# Spec/instruction lines are short. A long line is prose that happens to contain
+# the phrase, not a declaration.
+_MAX_DECLARATION_LINE_CHARS = 300
 
 
 @dataclass(frozen=True)
@@ -143,13 +149,18 @@ def _candidate_documents(
 def _command_from_declaration(text: str) -> str | None:
     for raw_line in text.splitlines():
         line = raw_line.strip()
+        if len(line) > _MAX_DECLARATION_LINE_CHARS:
+            continue
         lowered = line.lower()
         if not any(keyword in lowered for keyword in _DECLARATION_KEYWORDS):
             continue
-        for span in _BACKTICK_SPAN_RE.findall(line):
-            command = _sanitise_command(span)
-            if command is not None:
-                return command
+        commands = {
+            command
+            for span in _BACKTICK_SPAN_RE.findall(line)
+            if (command := sanitise_validation_command(span)) is not None
+        }
+        if len(commands) == 1:
+            return next(iter(commands))
     return None
 
 
@@ -219,7 +230,14 @@ def _makefile_has_test_target(root: Path) -> bool:
 # --- shared --------------------------------------------------------------
 
 
-def _sanitise_command(raw: str) -> str | None:
+def sanitise_validation_command(raw: str) -> str | None:
+    """Return a shell-safe, allowlisted, ``shlex``-splittable command, or ``None``.
+
+    Shared by discovery and by the operator-supplied path (the validation-command
+    interrupt): whatever the source, ATL only ever runs a command that clears
+    this bar unattended.
+    """
+
     command = " ".join(raw.split())
     if not command or len(command) > _MAX_COMMAND_CHARS:
         return None

@@ -29,6 +29,8 @@ from ai_tech_lead.coding_workflow_graph import (
     create_agent_instruction_node,
     discover_research_source_node,
     discover_validation_command_node,
+    route_after_discover_validation_command,
+    validation_command_interrupt_node,
     end_node,
     finalize_task_branch_node,
     project_scope_decision_node,
@@ -2394,7 +2396,7 @@ def test_workflow_scenario_completion_verification_correction_then_success(monke
     assert "Wire the click handler to the sign-out endpoint." in implementation_instructions[1]
 
 
-def test_workflow_scenario_completion_verification_correction_limit_reached_ends_failed(
+def test_workflow_scenario_completion_verification_correction_limit_reached_asks_human(
     monkeypatch,
 ) -> None:
     settings = replace(
@@ -2438,8 +2440,10 @@ def test_workflow_scenario_completion_verification_correction_limit_reached_ends
     app.invoke(graph_state(request="Add a logout button."), config=thread_config)
     final_state = app.get_state(thread_config)
 
-    assert final_state.next == ()
-    assert final_state.values["verification_status"] == "failed"
+    # One automatic correction cycle, then it pauses for a human instead of a
+    # second retry or a terminal Failed.
+    assert final_state.next == (NodeName.COMPLETION_VERIFICATION_INTERRUPT,)
+    assert final_state.values["verification_status"] == "human_verification_required"
     assert final_state.values["verification_attempt_count"] == 1
     assert len(implementation_instructions) == 2
 
@@ -2895,6 +2899,7 @@ def test_capture_validation_evidence_node_writes_evidence_into_state(monkeypatch
         captured.update(kwargs)
         return CompletionEvidence(
             diff_summary="M\tapp.py",
+            changed_files=("app.py", "billing/x.py"),
             validation_command="uv run pytest -q",
             validation_passed=True,
             validation_output_tail="1 passed",
@@ -2907,7 +2912,6 @@ def test_capture_validation_evidence_node_writes_evidence_into_state(monkeypatch
 
     state = graph_state(
         validation_command="uv run pytest -q",
-        coding_agent_changed_files=("app.py", "billing/x.py"),
         git_task_worktree="/tmp/wt",
         git_task_base_sha="abc123",
     )
@@ -2915,9 +2919,11 @@ def test_capture_validation_evidence_node_writes_evidence_into_state(monkeypatch
 
     assert result["validation_passed"] is True
     assert result["diff_summary"] == "M\tapp.py"
+    assert result["git_changed_files"] == ["app.py", "billing/x.py"]
     assert result["out_of_scope_paths"] == ["billing/x.py"]
     assert str(captured["checkout_root"]) == "/tmp/wt"
     assert captured["base_sha"] == "abc123"
+    assert "changed_files" not in captured  # git-derived, not passed in
 
 
 def test_capture_validation_evidence_node_skips_when_execution_disabled(monkeypatch) -> None:
@@ -2958,7 +2964,7 @@ def test_verify_completion_node_human_verification_when_atl_had_no_validation(
     assert result["verification_status"] == "human_verification_required"
 
 
-def test_verify_completion_node_failed_validation_then_failed_after_one_cycle(
+def test_verify_completion_node_failed_validation_then_human_verification_after_one_cycle(
     monkeypatch,
 ) -> None:
     settings = replace(parse_settings(valid_settings_dict()), orchestrator_ai_enabled=True)
@@ -2979,6 +2985,7 @@ def test_verify_completion_node_failed_validation_then_failed_after_one_cycle(
     assert first["verification_status"] == "correction_required"
     assert first["verification_attempt_count"] == 1
 
+    # ATL-039: one automatic correction cycle, then escalate to a human — not Failed.
     second = verify_completion_node(
         graph_state(
             validation_passed=False,
@@ -2987,13 +2994,62 @@ def test_verify_completion_node_failed_validation_then_failed_after_one_cycle(
             verification_attempt_count=1,
         )
     )
-    assert second["verification_status"] == "failed"
+    assert second["verification_status"] == "human_verification_required"
+
+
+def test_route_after_discover_validation_command_branches() -> None:
+    assert (
+        route_after_discover_validation_command(graph_state(validation_command="uv run pytest"))
+        == "command found"
+    )
+    assert (
+        route_after_discover_validation_command(
+            graph_state(validation_command="", validation_command_retry_count=0)
+        )
+        == "ask operator"
+    )
+    assert (
+        route_after_discover_validation_command(
+            graph_state(validation_command="", validation_command_retry_count=1)
+        )
+        == "proceed without command"
+    )
+
+
+def test_validation_command_interrupt_records_operator_command(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.interrupt", lambda _v: "uv run pytest -q"
+    )
+    result = validation_command_interrupt_node(graph_state(validation_command_retry_count=0))
+    assert result["validation_command"] == "uv run pytest -q"
+    assert result["validation_command_source"] == "operator-supplied"
+    assert result["validation_command_retry_count"] == 1
+
+
+def test_validation_command_interrupt_skip_marks_exhausted(monkeypatch) -> None:
+    monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.interrupt", lambda _v: "skip")
+    result = validation_command_interrupt_node(graph_state(validation_command_retry_count=0))
+    assert "validation_command" not in result
+    assert result["validation_command_exhausted"] is True
+    assert result["validation_command_retry_count"] == 1
+
+
+def test_discover_validation_command_node_keeps_operator_supplied_command(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.discover_validation_command",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("discovery must not re-run")),
+    )
+    result = discover_validation_command_node(
+        graph_state(validation_command="uv run pytest -q", validation_command_source="operator-supplied")
+    )
+    assert result == {}
 
 
 def test_graph_compiles_with_validation_nodes() -> None:
     graph = build_graph()
     node_names = set(graph.get_graph().nodes)
     assert NodeName.DISCOVER_VALIDATION_COMMAND.value in node_names
+    assert NodeName.VALIDATION_COMMAND_INTERRUPT.value in node_names
     assert NodeName.CAPTURE_VALIDATION_EVIDENCE.value in node_names
 
 

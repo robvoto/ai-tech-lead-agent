@@ -109,6 +109,7 @@ _DECISION_OPTIONS_BY_KIND: dict[str, list[dict[str, Any]]] = {
     "failure_guidance": [{"name": "answer", "needs_text": True}],
     "research_approval": [{"name": "approve"}, {"name": "cancel"}],
     "context_clarification": [{"name": "answer", "needs_text": True}],
+    "validation_command": [{"name": "answer", "needs_text": True}, {"name": "skip"}],
     "project_guidance_governance": [{"name": "approve"}, {"name": "reject"}],
     "completion_verification": [
         {"name": "confirm_complete"},
@@ -903,6 +904,10 @@ def _map_decision_to_resume_payload(kind: str, decision: _Decision) -> Any:
     if kind in {"plan_guidance", "failure_guidance", "context_clarification"}:
         return decision.text
 
+    if kind == "validation_command":
+        # The interrupt node reads a plain string: the command, or "skip".
+        return decision.text if decision.option == "answer" else "skip"
+
     if kind == "research_approval":
         return {"approved": decision.option == "approve"}
 
@@ -956,6 +961,13 @@ def _prompt_for_pending_interrupt(kind: str, payload: dict[str, Any]) -> str:
         if reason:
             parts.append(f"Reason: {reason}")
         return "\n".join(parts)
+
+    if kind == "validation_command":
+        question = str(payload.get("question", "")).strip()
+        return question or (
+            "Provide the project's validation command, or answer 'skip' to fall "
+            "back to human verification at completion."
+        )
 
     if kind == "completion_verification":
         reason = str(payload.get("reason", "")).strip()
