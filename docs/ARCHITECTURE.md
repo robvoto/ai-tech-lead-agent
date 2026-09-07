@@ -87,7 +87,7 @@ The codebase currently implements two LangGraph workflows:
    - Studio registration: not exported in `langgraph.json`; it is used by the Telegram operator at runtime.
    - No standalone PNG export: the compiled graph is only the tiny assistant/tools loop, which is accurate but not useful as a Telegram runtime workflow diagram.
 
-The helper `src/ai_tech_lead/graph_diagrams.py` refreshes the main coding workflow PNG in `docs/diagrams/` so the implemented runtime path stays visible without needing to hunt for the rendering code.
+The helper `src/ai_tech_lead/graph_diagrams.py` refreshes the main coding workflow PNG in `docs/diagrams/` from the compiled runtime graph. The PNG is a human-readable presentation view: the executable graph is not changed, but the repeated run-budget fan-in/resume edges are collapsed into one cross-cutting budget annotation and stepped edge routing is used to reduce line crossings.
 
 Supporting modules such as `src/ai_tech_lead/backlog_graph_runner.py` call the coding workflow graph builder, but they are runners/adapters rather than separate graph implementations.
 
