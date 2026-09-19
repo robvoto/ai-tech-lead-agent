@@ -38,6 +38,9 @@ Use `.agents/skills/instruction-maintenance/SKILL.md` for instruction structure 
 - Stop/escalate on missing standards, failed validation, unavailable required tools, invalid AI output, or ambiguous high-impact requirements rather than silently choosing another path.
 - Do not claim completion without validation evidence.
 - Preserve unrelated work from concurrent sessions.
+- Before editing, inspect the exact current target file and apply a narrow, context-checked patch.
+- If a patch hunk or `old_text` does not match, stop and reread the file before creating a new patch; never retry stale patch text.
+- After editing, inspect the diff and run the required validation before reporting completion.
 
 ## Finish report
 
