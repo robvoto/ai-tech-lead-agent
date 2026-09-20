@@ -21,6 +21,7 @@ Use when creating, parsing, selecting, updating, or explaining backlog items.
 ## Current backlog ownership
 - The Google Sheet listed in `docs/INDEX.md` is the only canonical backlog. `SheetsBacklogRepository` (`backlog_sheets_repository.py`) is the live repository behind every read/write — Telegram, chat tools, and the Hub subprocess path all go through it.
 - The shared backlog access identity is `agent-backlog-access@robvoto-agent-platform-iam.gserviceaccount.com`; it should have access to all relevant project backlog spreadsheets. Do not infer that other configured service accounts are prohibited.
+- If the connected Sheets tool reports a different identity, such as a CV/Docs account, treat that as a connector configuration error: do not share the backlog with the reported account and do not use its result as backlog access.
 - `data/backlog.sqlite3` is runtime state only (task snapshots, pending-update outbox, sync conflicts — `backlog_runtime_store.py`). It has no create/edit/list/planning methods; never treat it as a backlog source.
 - Only the `Status` and `Evidence / Validation` columns are ever written by runtime code.
 - A completed run always writes ahead to the outbox first, then attempts an immediate flush. If the source row changed since the item was fetched, the update is abandoned and a conflict is recorded — never a silent overwrite of a human edit. A failed Sheets call stays pending for bounded recovery: `uv run python -m ai_tech_lead backlog-sync-recover` (also runs automatically at Telegram-operator startup).
