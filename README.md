@@ -1,5 +1,7 @@
 # AI Tech Lead Agent
 
+[![CI](https://github.com/robvoto/ai-tech-lead-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/robvoto/ai-tech-lead-agent/actions/workflows/ci.yml)
+
 AI Tech Lead is a local specialist agent that turns approved technical work into bounded, reviewable coding execution. External callers submit validated tasks through the JSON subprocess adapter; AI Tech Lead then prepares a plan, invokes the configured coding-agent CLI through its controlled runner, validates the result, and reports evidence rather than assuming success.
 
 ## Platform role
@@ -34,6 +36,14 @@ AI Tech Lead is a specialist. Agent Hub owns orchestration and task state; Agent
 - review changed files and validation evidence;
 - report completed, partial, blocked, or failed outcomes accurately;
 - retain reusable technical knowledge without silently changing project rules.
+
+## Engineering highlights
+
+- **Bounded coding execution** — project, file, command, and execution scope are constrained before a coding agent runs.
+- **Untrusted agent output** — a coding agent saying "done" is not treated as evidence of completion.
+- **Independent validation** — diffs, tests, lint, and requested outcomes are checked before success is reported.
+- **Human approval boundaries** — consequential actions can pause and resume through explicit approval or clarification.
+- **Reusable technical memory** — learned technical knowledge is retained without silently rewriting project rules.
 
 ## Repository boundaries
 
@@ -134,4 +144,4 @@ See [`SECURITY.md`](SECURITY.md) for coding-agent, command, repository, Telegram
 
 ## Licence
 
-This private repository does not grant an open-source licence. A licence should be selected deliberately before any public source release.
+Source is publicly visible for review and portfolio purposes, but no open-source licence is currently granted. All rights remain reserved unless a licence is added explicitly.
