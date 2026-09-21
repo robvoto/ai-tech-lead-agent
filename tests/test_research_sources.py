@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import socket
 from dataclasses import replace
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -95,10 +96,11 @@ def test_collect_local_research_sources_uses_local_indexes(tmp_path: Path, caplo
         encoding="utf-8",
     )
     research_note_path = research_dir / "langgraph-hard-rules.md"
+    current_day = date.today().isoformat()
     research_note_path.write_text(
         "---\n"
         "topic: LangGraph hard rules vs LLM-based approval gates\n"
-        "date: 2026-06-10\n"
+        f"date: {current_day}\n"
         "sources:\n"
         "  - https://docs.langchain.com/oss/python/langgraph/interrupts\n"
         "---\n\n"
@@ -116,7 +118,7 @@ def test_collect_local_research_sources_uses_local_indexes(tmp_path: Path, caplo
         "# Research Cache Index\n\n"
         "## LangGraph / Workflow\n\n"
         "- [langgraph-hard-rules.md](langgraph-hard-rules.md) — "
-        "LangGraph hard rules vs LLM-based approval gates (2026-06-10)\n",
+        f"LangGraph hard rules vs LLM-based approval gates ({current_day})\n",
         encoding="utf-8",
     )
 
