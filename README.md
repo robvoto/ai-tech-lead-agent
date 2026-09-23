@@ -37,14 +37,6 @@ AI Tech Lead is a specialist. Agent Hub owns orchestration and task state; Agent
 - report completed, partial, blocked, or failed outcomes accurately;
 - retain reusable technical knowledge without silently changing project rules.
 
-## Engineering highlights
-
-- **Bounded coding execution** — project, file, command, and execution scope are constrained before a coding agent runs.
-- **Untrusted agent output** — a coding agent saying "done" is not treated as evidence of completion.
-- **Independent validation** — diffs, tests, lint, and requested outcomes are checked before success is reported.
-- **Human approval boundaries** — consequential actions can pause and resume through explicit approval or clarification.
-- **Reusable technical memory** — learned technical knowledge is retained without silently rewriting project rules.
-
 ## Repository boundaries
 
 | Repository | Responsibility |
@@ -117,12 +109,15 @@ The default test suite should not call a real coding agent unless an explicit in
 
 ## Architecture principles
 
+- **Bounded coding execution** — project, file, command, and execution scope are constrained before a coding agent runs.
 - **Pinned project context** — execution cannot silently move to another repository.
 - **Plan before modification** — the coding agent receives a bounded task rather than an ambiguous request.
 - **Approval for consequential actions** — risky execution pauses rather than proceeding silently.
 - **Untrusted agent output** — diffs and claimed success require validation.
+- **Independent validation** — diffs, tests, lint, and requested outcomes are checked before success is reported.
 - **Evidence-based completion** — a task is complete only when the requested outcome and relevant checks are demonstrated.
 - **Controlled execution** — coding-agent execution is disabled unless explicitly enabled in local settings.
+- **Reusable technical memory** — learned technical knowledge is retained without silently rewriting project rules.
 - **No hidden scope expansion** — extra files, commands, tools, or research require a justified task need and the applicable approval.
 
 ## Documentation
