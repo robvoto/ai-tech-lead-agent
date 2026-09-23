@@ -210,6 +210,7 @@ class GraphState(TypedDict):
     formulated_task: str
     plan_text: str
     plan_agent_stderr: str
+    plan_agent_returncode: int | None
     plan_approved: bool
     plan_review_reason: str
     plan_correction: str
@@ -358,6 +359,7 @@ def build_initial_graph_state(
         "formulated_task": "",
         "plan_text": "",
         "plan_agent_stderr": "",
+        "plan_agent_returncode": None,
         "plan_approved": False,
         "plan_review_reason": "",
         "plan_correction": "",
@@ -1777,6 +1779,7 @@ def request_plan_node(
     return {
         "plan_text": plan_text,
         "plan_agent_stderr": plan_stderr,
+        "plan_agent_returncode": result.returncode,
         "plan_approved": False,
         "plan_correction": "",
     }
@@ -1817,6 +1820,7 @@ def review_plan_node(
 
     plan_text = state.get("plan_text", "").strip()
     plan_agent_stderr = state.get("plan_agent_stderr", "").strip()
+    plan_agent_returncode = state.get("plan_agent_returncode")
     formulated_task = state.get("formulated_task", "") or state["request"]
     rejection_count = state.get("plan_rejection_count", 0)
 
@@ -1827,6 +1831,23 @@ def review_plan_node(
 
     logger.info("Reviewing plan (rejection_count=%d):", rejection_count)
     logger.info("Plan text:\n%s", plan_text or "<empty>")
+
+    if plan_agent_returncode not in (None, 0):
+        diagnostic = plan_agent_stderr or plan_text or "No backend diagnostic was returned."
+        reason = (
+            "Coding backend could not produce an implementation plan "
+            f"(exit code {plan_agent_returncode}): {_single_line_preview(diagnostic, limit=500)}"
+        )
+        logger.warning("Plan backend failure requires operator guidance: %s", reason)
+        if progress_callback is not None:
+            progress_callback("Plan backend failed. Human review is required.")
+        return {
+            "plan_approved": False,
+            "plan_review_reason": reason,
+            "plan_correction": "",
+            "plan_rejection_count": rejection_count,
+            "plan_needs_human_review": True,
+        }
 
     project_guidance, guidance_changed = _recheck_project_guidance_for_proposed_files(
         state, settings, plan_text

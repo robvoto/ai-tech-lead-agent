@@ -122,6 +122,7 @@ def graph_state(**overrides: object) -> dict[str, object]:
         "approval_last_answer": "",
         "formulated_task": "",
         "plan_text": "",
+        "plan_agent_returncode": None,
         "plan_approved": False,
         "plan_review_reason": "",
         "plan_correction": "",
@@ -731,6 +732,7 @@ def test_request_plan_node_uses_generated_instruction_and_stores_stdout(monkeypa
     ]
     assert result["plan_text"] == "1. Do the thing\n2. Validate it"
     assert result["plan_agent_stderr"] == ""
+    assert result["plan_agent_returncode"] == 0
     assert result["plan_approved"] is False
     assert result["plan_correction"] == ""
 
@@ -763,6 +765,43 @@ def test_request_plan_node_captures_stderr_when_stdout_empty(monkeypatch) -> Non
 
     assert result["plan_text"] == ""
     assert result["plan_agent_stderr"] == "ERROR: You've hit your usage limit."
+    assert result["plan_agent_returncode"] == 1
+
+
+def test_review_plan_node_routes_plan_backend_failure_to_human_without_llm(monkeypatch) -> None:
+    settings = replace(
+        parse_settings(valid_settings_dict()),
+        orchestrator_ai_enabled=True,
+        project_guidance_discovery_enabled=False,
+    )
+    progress_messages: list[str] = []
+
+    monkeypatch.setattr("ai_tech_lead.coding_workflow_graph.load_settings", lambda: settings)
+    monkeypatch.setattr(
+        "ai_tech_lead.coding_workflow_graph.review_plan",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("LLM plan review must not run when the backend plan command failed")
+        ),
+    )
+
+    result = review_plan_node(
+        graph_state(
+            plan_text="",
+            plan_agent_stderr="ERROR: usage limit reached",
+            plan_agent_returncode=1,
+        ),
+        progress_callback=progress_messages.append,
+    )
+
+    assert result["plan_approved"] is False
+    assert result["plan_needs_human_review"] is True
+    assert result["plan_rejection_count"] == 0
+    assert "exit code 1" in result["plan_review_reason"]
+    assert "usage limit reached" in result["plan_review_reason"]
+    assert progress_messages == [
+        "Plan received. Reviewing...",
+        "Plan backend failed. Human review is required.",
+    ]
 
 
 def test_request_plan_node_includes_selected_project_guidance_in_the_instruction(
